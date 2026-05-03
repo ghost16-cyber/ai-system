@@ -1,3 +1,5 @@
 {
-  "python.defaultInterpreterPath": "C:/Users/palla/miniconda3/envs/py311_trt/python.exe"
+  "python.defaultInterpreterPath": "C:/Users/palla/miniconda3/envs/py311_trt/python.exe",
+  "chatgpt.gpt3.responsesAPI.enabled": true,
+  "chatgpt.promptBasedTools.enabled": true
 }
