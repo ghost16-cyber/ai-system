@@ -5,6 +5,11 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+pytest-cache-files-*/
+testing/.pytest_cache/
+testing/pytest-cache-files-*/
+testing/pytest_tmp/
 .ipynb_checkpoints/
 .vscode/*
 !/.vscode/settings.json
