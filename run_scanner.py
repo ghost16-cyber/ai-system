@@ -8,7 +8,6 @@ from repo_scanner.scanner import scan_repository
 from repo_scanner.ast_engine.graph_builder import build_full_graph
 from repo_scanner.analysis_engine.analyzer import analyze_graph
 
-
 def print_summary(scan, limit):
     summary = scan["summary"]
     print(f"Repository: {scan['root']}")
@@ -29,7 +28,6 @@ def print_summary(scan, limit):
         for file_info in scan["files"][:limit]:
             print(f"- {file_info['path']} ({file_info['language']}, {file_info['size_bytes']} bytes)")
 
-
 def print_graph_samples(graph):
     """Tiny snapshot of the generated graphs."""
     print("\n===== SAMPLE FILE ANALYSIS =====")
@@ -48,7 +46,6 @@ def print_graph_samples(graph):
     print("\n===== CALL GRAPH SAMPLE =====")
     for k, v in list(graph.get("call_graph", {}).items())[:10]:
         print(f"{k} -> {v[:5]}")
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -88,17 +85,22 @@ def main():
             # 3️⃣ Optional LLM reasoning
             if args.llm:
                 try:
-                    # Lazy import – only when the flag is used
+                    # Lazy imports – only when the flag is used
                     from repo_scanner.llm_engine.prompt_builder import (
-                        build_repo_reasoning_prompt,
+                        build_structured_repo_decision_prompt,
                     )
                     from repo_scanner.llm_engine.reasoning_engine import RepoReasoningLLM
+                    from repo_scanner.llm_engine.output_parser import (
+                        parse_repo_decision,
+                        repo_decision_to_json,
+                        LLMOutputParseError,
+                    )
 
                     print("\n===== LLM REASONING =====")
                     # Build a compact summary for the prompt builder
                     scan_summary = {
                         "repository": str(repo_path),
-                        "files": scan["files"],                     # will be trimmed inside the builder
+                        "files": scan["files"],                     # trimmed inside builder
                         "total_files": scan["summary"]["total_files"],
                         "total_directories": scan["summary"]["total_directories"],
                         "size_bytes": scan["summary"]["total_size_bytes"],
@@ -109,15 +111,26 @@ def main():
                         "python_parse_errors": scan["python"]["parse_errors"],
                     }
 
-                    prompt = build_repo_reasoning_prompt(
+                    # ---- Structured prompt -------------------------------------------------
+                    prompt = build_structured_repo_decision_prompt(
                         scan_summary=scan_summary,
                         graph_analysis=analysis,
-                        user_task="Analyze this repository and recommend what to build or inspect next.",
+                        user_task="Analyze this repository and recommend what to inspect or build next.",
                     )
 
                     llm = RepoReasoningLLM()
-                    response = llm.reason(prompt)
-                    print(response)
+                    raw_response = llm.reason(prompt)
+
+                    print("\n===== RAW LLM OUTPUT =====")
+                    print(raw_response)
+
+                    print("\n===== STRUCTURED DECISION =====")
+                    try:
+                        decision = parse_repo_decision(raw_response)
+                        print(repo_decision_to_json(decision))
+                    except LLMOutputParseError as parse_err:
+                        print("[Warning] Failed to parse structured LLM output:")
+                        print(parse_err)
 
                 except Exception as llm_err:
                     # Show full traceback so we can see the real failure
@@ -127,7 +140,6 @@ def main():
 
         except Exception as e:
             print(f"\n[Warning] Failed to build graph or run static analysis: {e}")
-
 
 if __name__ == "__main__":
     main()
