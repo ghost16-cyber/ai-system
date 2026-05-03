@@ -1,8 +1,12 @@
+# run_scanner.py
 import argparse
 import json
+import traceback
 from pathlib import Path
 
 from repo_scanner.scanner import scan_repository
+from repo_scanner.ast_engine.graph_builder import build_full_graph
+from repo_scanner.analysis_engine.analyzer import analyze_graph
 
 
 def print_summary(scan, limit):
@@ -26,12 +30,39 @@ def print_summary(scan, limit):
             print(f"- {file_info['path']} ({file_info['language']}, {file_info['size_bytes']} bytes)")
 
 
+def print_graph_samples(graph):
+    """Tiny snapshot of the generated graphs."""
+    print("\n===== SAMPLE FILE ANALYSIS =====")
+    for file, data in list(graph.get("files_data", {}).items())[:1]:
+        print("FILE:", file)
+        print("Functions:", data.get("functions", [])[:10])
+        print("Classes:", data.get("classes", [])[:10])
+        print("Imports:", data.get("imports", [])[:10])
+        print("Calls:", data.get("calls", [])[:10])
+        break
+
+    print("\n===== DEPENDENCY GRAPH SAMPLE =====")
+    for k, v in list(graph.get("dependency_graph", {}).items())[:5]:
+        print(f"{k} -> {v[:5]}")
+
+    print("\n===== CALL GRAPH SAMPLE =====")
+    for k, v in list(graph.get("call_graph", {}).items())[:10]:
+        print(f"{k} -> {v[:5]}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Scan a repository and extract structure metadata.")
+    parser = argparse.ArgumentParser(
+        description="Scan a repository and extract structure metadata."
+    )
     parser.add_argument("path", nargs="?", default=".", help="Repository path to scan.")
     parser.add_argument("--json", action="store_true", help="Print full JSON scan data.")
     parser.add_argument("--no-ast", action="store_true", help="Skip Python AST parsing.")
-    parser.add_argument("--limit", type=int, default=20, help="Number of files to show in summary mode.")
+    parser.add_argument(
+        "--limit", type=int, default=20, help="Number of files to show in summary mode."
+    )
+    parser.add_argument(
+        "--llm", action="store_true", help="Run LLM reasoning after static analysis."
+    )
     args = parser.parse_args()
 
     repo_path = Path(args.path)
@@ -41,6 +72,61 @@ def main():
         print(json.dumps(scan, indent=2))
     else:
         print_summary(scan, args.limit)
+
+    # -----------------------------------------------------------------
+    # Build graph, run static analysis, and optionally invoke the LLM
+    # -----------------------------------------------------------------
+    if not args.no_ast:
+        try:
+            # 1️⃣ Build full graph
+            graph = build_full_graph(repo_path)
+            print_graph_samples(graph)
+
+            # 2️⃣ Run static analysis
+            analysis = analyze_graph(graph)
+
+            # 3️⃣ Optional LLM reasoning
+            if args.llm:
+                try:
+                    # Lazy import – only when the flag is used
+                    from repo_scanner.llm_engine.prompt_builder import (
+                        build_repo_reasoning_prompt,
+                    )
+                    from repo_scanner.llm_engine.reasoning_engine import RepoReasoningLLM
+
+                    print("\n===== LLM REASONING =====")
+                    # Build a compact summary for the prompt builder
+                    scan_summary = {
+                        "repository": str(repo_path),
+                        "files": scan["files"],                     # will be trimmed inside the builder
+                        "total_files": scan["summary"]["total_files"],
+                        "total_directories": scan["summary"]["total_directories"],
+                        "size_bytes": scan["summary"]["total_size_bytes"],
+                        "languages": scan["languages"],
+                        "frameworks": scan["frameworks"],
+                        "structure": scan["structure"],
+                        "python_files_parsed": scan["python"]["files_parsed"],
+                        "python_parse_errors": scan["python"]["parse_errors"],
+                    }
+
+                    prompt = build_repo_reasoning_prompt(
+                        scan_summary=scan_summary,
+                        graph_analysis=analysis,
+                        user_task="Analyze this repository and recommend what to build or inspect next.",
+                    )
+
+                    llm = RepoReasoningLLM()
+                    response = llm.reason(prompt)
+                    print(response)
+
+                except Exception as llm_err:
+                    # Show full traceback so we can see the real failure
+                    print("\n[Warning] LLM step failed:")
+                    print(type(llm_err).__name__, repr(llm_err))
+                    traceback.print_exc()
+
+        except Exception as e:
+            print(f"\n[Warning] Failed to build graph or run static analysis: {e}")
 
 
 if __name__ == "__main__":
