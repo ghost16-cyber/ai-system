@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title">Inventory Management</h2>
+
+<div class="inventory-grid">
+  {% for p in prods %}
+  <div class="card lift inv-card">
+    <div class="inv-top">
+      <div class="inv-name">{{ p.name }}</div>
+      <div class="inv-type chip {{ p.type }}">{{ p.type|capitalize }}</div>
+    </div>
+    <div class="inv-meta">
+      <span>Price: Rs {{ '%.2f'|format(p.price) }}</span>
+      <span>Qty: {{ p.quantity }}</span>
+    </div>
+    <div class="inv-id muted">ID: {{ p.id }}</div>
+  </div>
+  {% else %}
+  <p class="muted">No products in inventory.</p>
+  {% endfor %}
+</div>
+
+<section class="admin-forms">
+  <h3>Modify Inventory</h3>
+  <form method="post" action="{{ url_for('admin_add_prod') }}" class="form grid-2">
+    <input name="id" placeholder="ID" required>
+    <input name="name" placeholder="Name" required>
+    <input name="price" placeholder="Price" required>
+    <input name="quantity" placeholder="Qty" required>
+    <select name="type"><option value="cake">Cake</option><option value="drink">Drink</option></select>
+    <button type="submit" class="btn primary wide">Add Product</button>
+  </form>
+
+  <form method="post" action="{{ url_for('admin_update_prod') }}" class="form grid-2">
+    <input name="id" placeholder="ID" required>
+    <input name="name" placeholder="Name" required>
+    <input name="price" placeholder="Price" required>
+    <input name="quantity" placeholder="Qty" required>
+    <select name="type"><option value="cake">Cake</option><option value="drink">Drink</option></select>
+    <button type="submit" class="btn primary wide">Update Product</button>
+  </form>
+
+  <form method="post" action="{{ url_for('admin_delete_prod') }}" class="form grid-2">
+    <input name="id" placeholder="ID" required>
+    <button type="submit" class="btn danger wide">Delete Product</button>
+  </form>
+
+  <p class="mt"><a class="btn ghost" href="{{ url_for('admin_tx') }}">View Transactions →</a></p>
+</section>
+{% endblock %}

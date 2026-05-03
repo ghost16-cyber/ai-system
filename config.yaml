@@ -1,0 +1,8 @@
+pipeline:
+  classifier_path: "data/models/pattern_clf.pkl"
+  rag_index_path: "data/models/rag_index.faiss"
+  rag_metadata_path: "data/models/rag_metadata.json"
+  embedder_model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedder_device: "cpu"          # change to "cuda" if you have a GPU for embeddings
+  cache_size: 256
+  bandit_alpha: 1.0

@@ -1,0 +1,101 @@
+2026-05-02 23:10:49,481 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-02 23:10:49,507 - ai-system - INFO - Initializing inference pipeline...
+2026-05-02 23:10:49,508 - ai-system - ERROR - Missing model files: [Errno 2] No such file or directory: 'data/models/pattern_clf.pkl'
+2026-05-02 23:10:49,508 - ai-system - INFO - Run training scripts first:
+2026-05-02 23:10:49,508 - ai-system - INFO -   1. python training/scripts/setup.py
+2026-05-02 23:10:49,508 - ai-system - INFO -   2. python training/scripts/train_classifier.py
+2026-05-02 23:10:49,509 - ai-system - INFO -   3. python training/scripts/build_rag.py
+2026-05-02 23:26:27,790 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-02 23:26:27,817 - ai-system - INFO - Initializing inference pipeline...
+2026-05-02 23:29:07,441 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-02 23:29:07,461 - ai-system - INFO - Initializing inference pipeline...
+2026-05-02 23:41:44,255 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-02 23:41:44,256 - ai-system - INFO - Initializing inference pipeline...
+2026-05-02 23:43:02,518 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-02 23:43:02,527 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.0, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': 'Use direct iteration instead', 'used_llm': False, 'retrieved_examples': []}
+2026-05-03 01:03:43,487 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:03:43,514 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:04:26,291 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:04:26,292 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:05:25,002 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:05:25,008 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.0, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': 'Use direct iteration instead', 'used_llm': False, 'retrieved_examples': []}
+2026-05-03 01:15:00,426 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:15:00,451 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:15:18,526 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:15:18,538 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.0, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': 'Use direct iteration instead', 'used_llm': False, 'retrieved_examples': []}
+2026-05-03 01:28:07,923 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:28:07,946 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:28:24,894 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:28:24,896 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.0, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': 'Use direct iteration instead', 'used_llm': False, 'retrieved_examples': []}
+2026-05-03 01:38:24,708 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:38:24,731 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:38:41,586 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:38:41,588 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.0, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': 'Use direct iteration instead', 'used_llm': False, 'retrieved_examples': []}
+2026-05-03 01:46:39,836 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:46:39,860 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:46:57,027 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:47:01,967 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "You are an expert Python code analyzer. Explain issues and suggest fixes.\n\nExample 1:\nCode:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nAnalysis:\nThe code provided is a simple loop that iterates over the items in the list and prints each item. The loop is efficient and does not require any changes.", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}
+2026-05-03 01:49:18,912 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 01:49:18,935 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 01:49:36,195 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 01:49:41,243 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "You are an expert Python code analyzer. Explain issues and suggest fixes.\n\nExample 1:\nCode:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nAnalysis:\nThe code provided is a simple loop that iterates over the items in the list and prints each item. The loop is efficient and does not require any changes.", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}
+2026-05-03 08:53:24,402 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 08:53:24,426 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 08:53:41,248 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 08:53:44,601 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "You are an expert Python code analyzer. Explain issues and suggest fixes.\n\nExample 1:\nCode:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nAnalysis:\nThe code provided is a simple loop that iterates over the items in the list and prints each item. The loop is efficient and does not require any changes.", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}
+2026-05-03 12:10:20,191 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 12:10:20,218 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 12:10:37,629 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 12:10:45,937 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "You are an expert Python code analyzer. When analyzing code patterns, first identify the issue, then explain the suggested fix, and finally show how to implement it.\n\nExample 1:\nCode:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nSuggested Fix: Use direct iteration instead\nAnalysis (explain the issue, confirm the suggested fix, and show the improved code):\nThe issue is that the code uses a for loop to iterate over the items list, but it prints each item one by one. This can be inefficient if the list is large, as it requires multiple function calls and memory allocations. The suggested fix is to use a direct iteration over the items list, which will be more efficient. The improved code is as follows:\n\nfor item in items:\n    print(item)", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}
+2026-05-03 12:26:34,242 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 12:26:34,264 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 12:26:51,233 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 12:26:59,445 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "Issue: The loop uses `range(len(...))` which is less idiomatic.\nSuggested fix: Use direct iteration instead\nCorrected code:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nSuggested Fix: Use direct iteration instead\nAnalysis (explain the issue, confirm the suggested fix, and show the improved code):\nThe issue is that the code uses a for loop to iterate over the items list, but it prints each item one by one. This can be inefficient if the list is large, as it requires multiple function calls and memory allocations. The suggested fix is to use a direct iteration over the items list, which will be more efficient. The improved code is as follows:\n\nfor item in items:\n    print(item)", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}
+2026-05-03 12:29:06,402 - ai-system - INFO - Starting AI Code Analysis System
+2026-05-03 12:29:06,428 - ai-system - INFO - Initializing inference pipeline...
+2026-05-03 12:29:28,497 - ai-system - INFO - Analyzing code...
+
+for i in range(len(items)):
+    print(items[i])
+
+2026-05-03 12:29:37,562 - ai-system - INFO - Result: {'pattern': np.str_('inefficient_loop'), 'confidence': 0.8547920361726354, 'suggestion': 'Use direct iteration instead', 'issue': 'Inefficient loop using range(len(...))', 'example': 'for item in items:', 'analysis': "Issue: The loop uses `range(len(...))` which is less idiomatic.\nSuggested fix: Use direct iteration instead\nCorrected code:\nfor i in range(len(arr)): print(arr[i])\nExplanation:\nPattern: inefficient_loop\n\nExample 2:\nCode:\nfor j in range(len(items)): process(items[j])\nExplanation:\nPattern: inefficient_loop\n\nUser's Code:\n\nfor i in range(len(items)):\n    print(items[i])\n\nSuggested Fix: Use direct iteration instead\nAnalysis (explain the issue, confirm the suggested fix, and show the improved code):\nThe issue is that the code uses a for loop to iterate over the items list, but it prints each item one by one. This can be inefficient if the list is large, as it requires multiple function calls and memory allocations. The suggested fix is to use a direct iteration over the items list, which will be more efficient. The improved code is as follows:\n\nfor item in items:\n    print(item)", 'used_llm': True, 'retrieved_examples': [{'code': 'for i in range(len(arr)): print(arr[i])', 'explanation': 'Pattern: inefficient_loop'}, {'code': 'for j in range(len(items)): process(items[j])', 'explanation': 'Pattern: inefficient_loop'}]}

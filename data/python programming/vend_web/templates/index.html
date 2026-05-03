@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="topbar">
+  <form method="get" action="{{ url_for('index') }}" class="search search-pill">
+    <span class="search-icon">⌕</span>
+    <input name="q" placeholder="Search cakes & drinks…" value="{{ query or '' }}">
+    <button type="submit" class="btn">Search</button>
+  </form>
+</div>
+
+<div class="twocol">
+  <!-- CATALOG -->
+  <section class="catalog">
+    <h2 class="section-title">Cakes</h2>
+    <div class="grid cards-ghost">
+      {% for p in cakes %}
+      <div class="card lift">
+        <div class="thumb shimmer" aria-hidden="true"></div>
+
+        <div class="info">
+          <div class="name">{{ p.name }}</div>
+          <div class="meta">
+            <span class="price">Rs {{ '%.2f'|format(p.price) }}</span>
+            <span class="dot">•</span>
+            <span class="stock {{ 'low' if p.quantity < 5 else '' }}">In stock: {{ p.quantity }}</span>
+          </div>
+        </div>
+
+        <form method="post" action="{{ url_for('add') }}" class="actions">
+          <input type="hidden" name="pid" value="{{ p.id }}">
+          <input type="hidden" name="name" value="{{ p.name }}">
+          <input type="hidden" name="price" value="{{ p.price }}">
+
+          <div class="qty">
+            <button type="button" class="step" onclick="this.nextElementSibling.stepDown();this.nextElementSibling.dispatchEvent(new Event('change'))">−</button>
+            <input type="number" name="qty" min="1" max="{{ p.quantity }}" value="1">
+            <button type="button" class="step" onclick="this.previousElementSibling.stepUp();this.previousElementSibling.dispatchEvent(new Event('change'))">+</button>
+          </div>
+
+          <button type="submit" class="btn primary">Add</button>
+        </form>
+      </div>
+      {% else %}
+        <p class="muted">No cakes.</p>
+      {% endfor %}
+    </div>
+
+    <h2 class="section-title mt">Drinks</h2>
+    <div class="grid cards-ghost">
+      {% for p in drinks %}
+      <div class="card lift">
+        <div class="thumb shimmer" aria-hidden="true"></div>
+
+        <div class="info">
+          <div class="name">{{ p.name }}</div>
+          <div class="meta">
+            <span class="price">Rs {{ '%.2f'|format(p.price) }}</span>
+            <span class="dot">•</span>
+            <span class="stock {{ 'low' if p.quantity < 5 else '' }}">In stock: {{ p.quantity }}</span>
+          </div>
+        </div>
+
+        <form method="post" action="{{ url_for('add') }}" class="actions">
+          <input type="hidden" name="pid" value="{{ p.id }}">
+          <input type="hidden" name="name" value="{{ p.name }}">
+          <input type="hidden" name="price" value="{{ p.price }}">
+
+          <div class="qty">
+            <button type="button" class="step" onclick="this.nextElementSibling.stepDown();this.nextElementSibling.dispatchEvent(new Event('change'))">−</button>
+            <input type="number" name="qty" min="1" max="{{ p.quantity }}" value="1">
+            <button type="button" class="step" onclick="this.previousElementSibling.stepUp();this.previousElementSibling.dispatchEvent(new Event('change'))">+</button>
+          </div>
+
+          <button type="submit" class="btn primary">Add</button>
+        </form>
+      </div>
+      {% else %}
+        <p class="muted">No drinks.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- STICKY CART -->
+  <aside class="cart-panel">
+    <h2 class="section-title">Cart</h2>
+
+    {% if cart %}
+      <div class="cart-list">
+        {% for pid, it in cart.items() %}
+        <div class="cart-row">
+          <div class="cart-main">
+            <div class="cart-name">{{ it.name }}</div>
+            <div class="cart-sub">Rs {{ '%.2f'|format(it.price) }} × {{ it.qty }}</div>
+          </div>
+          <div class="cart-actions">
+            <div class="cart-line">Rs {{ '%.2f'|format(it.qty * it.price) }}</div>
+            <form method="post" action="{{ url_for('remove') }}">
+              <input type="hidden" name="pid" value="{{ pid }}">
+              <button class="link danger">Remove</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="cart-total">
+        <span>Total</span>
+        <strong>Rs {{ '%.2f'|format(total) }}</strong>
+      </div>
+
+      <details class="denoms modern" open>
+        <summary>Insert Money</summary>
+        <form method="post" action="{{ url_for('checkout') }}" class="denoms-form">
+          <div class="cols">
+            <div class="denom-col">
+              <h4>Notes</h4>
+              {% for d in [2000,1000,500,200,100,50,25] %}
+                <label><span>Rs {{ d }}</span><input type="number" name="note_{{ d }}" min="0" value="0"></label>
+              {% endfor %}
+            </div>
+            <div class="denom-col">
+              <h4>Coins</h4>
+              {% for d in [20,10,5,1] %}
+                <label><span>Rs {{ d }}</span><input type="number" name="coin_{{ d }}" min="0" value="0"></label>
+              {% endfor %}
+            </div>
+          </div>
+          <button type="submit" class="btn primary wide">Pay & Checkout</button>
+        </form>
+      </details>
+
+      <form method="post" action="{{ url_for('clear') }}" class="mt-sm">
+        <button class="btn ghost wide" type="submit">Clear cart</button>
+      </form>
+    {% else %}
+      <p class="muted">Your cart is empty.</p>
+    {% endif %}
+
+    {% if session.get('last_change') %}
+      {% set ch = session.get('last_change') %}
+      <div class="change-card">
+        <div class="change-header">Last Change Returned</div>
+        <div class="change-amount">Rs {{ '%.2f'|format(ch['amount']) }}</div>
+        <div class="change-grid">
+          <div>
+            <div class="chip">Notes</div>
+            <ul class="change-list">
+              {% for d,c in ch['notes'].items() if c %}<li>Rs {{ d }} × {{ c }}</li>{% endfor %}
+            </ul>
+          </div>
+          <div>
+            <div class="chip">Coins</div>
+            <ul class="change-list">
+              {% for d,c in ch['coins'].items() if c %}<li>Rs {{ d }} × {{ c }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

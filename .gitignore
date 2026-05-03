@@ -1,0 +1,10 @@
+.venv/
+env/
+py311_trt/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+.vscode/*
+!/.vscode/settings.json

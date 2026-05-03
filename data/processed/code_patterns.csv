@@ -1,0 +1,97 @@
+code_snippet,label
+for i in range(len(arr)): print(arr[i]),inefficient_loop
+for j in range(len(items)): process(items[j]),inefficient_loop
+for idx in range(len(data)): print(data[idx]),inefficient_loop
+for x in arr: print(x),good_loop
+for item in items: process(item),good_loop
+for element in data: print(element),good_loop
+x = x + 1,non_pythonic
+count = count + 5,non_pythonic
+x += 1,pythonic
+count += 5,pythonic
+if a == True:,redundant_bool_compare
+if flag == False:,redundant_bool_compare
+if a:,good_bool_check
+if not flag:,good_bool_check
+"my_list = []
+for i in range(10):
+    my_list.append(i)",inefficient_append
+"result = []
+for x in data:
+    result.append(process(x))",inefficient_append
+my_list = list(range(10)),good_list_creation
+result = [process(x) for x in data],good_list_creation
+"def foo():
+    pass",missing_docstring
+"def calculate(a, b):
+    return a + b",missing_docstring
+"def foo():
+    """"""Do something.""""""
+    pass",has_docstring
+"def calculate(a, b):
+    """"""Add two numbers.""""""
+    return a + b",has_docstring
+x = 3.1415926535,magic_number
+threshold = 0.5,magic_number
+PI = 3.14159,named_constant
+THRESHOLD = 0.5,named_constant
+if len(my_list) > 0:,len_check_nonzero
+if len(data) != 0:,len_check_nonzero
+if my_list:,good_len_check
+if not data:,good_len_check
+"try:
+    risky()
+except Exception as e:
+    print(e)",bare_exception
+"try:
+    func()
+except Exception:
+    pass",bare_exception
+"try:
+    risky()
+except ValueError as e:
+    print(e)",specific_exception
+"try:
+    func()
+except FileNotFoundError:
+    handle_error()",specific_exception
+"a = [1,2,3]
+b = a",shallow_copy
+x = original_list,shallow_copy
+b = a.copy(),deep_copy
+"import copy
+x = copy.deepcopy(original)",deep_copy
+"while True:
+    if condition:
+        break",while_true_break
+"while 1:
+    if done:
+        break",while_true_break
+"for _ in range(10):
+    do_something()",unused_loop_var
+"for _ in items:
+    process()",unused_loop_var
+if x is None:,good_none_check
+if value is not None:,good_none_check
+if x == None:,bad_none_check
+if y != None:,bad_none_check
+from module import *,star_import
+from collections import *,star_import
+from module import specific,good_import
+import numpy as np,good_import
+"print ""Hello""",python2_print
+print 'World',python2_print
+"print(""Hello"")",python3_print
+print('World'),python3_print
+data = json.loads(s),good_json_load
+obj = json.load(fp),good_json_load
+data = eval(s),dangerous_eval
+result = eval(user_input),dangerous_eval
+"with open(file) as f:
+    data = f.read()",missing_encoding
+"with open('data.txt') as fp:
+    content = fp.read()",missing_encoding
+"with open(file, encoding=""utf-8"") as f:
+    data = f.read()",good_file_open
+"with open('data.txt', encoding='utf-8') as fp:
+    content = fp.read()",good_file_open

@@ -1,0 +1,15 @@
+
+# AI-engine workspace data
+.ai-engine/
+
+# Python virtual environments (exclude from AI indexing)
+vend_web.venv/
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
