@@ -60,6 +60,12 @@ def main():
     parser.add_argument(
         "--llm", action="store_true", help="Run LLM reasoning after static analysis."
     )
+    parser.add_argument(
+        "--llm-max-new-tokens",
+        type=int,
+        default=350,
+        help="Maximum new tokens for structured LLM reasoning.",
+    )
     args = parser.parse_args()
 
     repo_path = Path(args.path)
@@ -89,7 +95,10 @@ def main():
                     from repo_scanner.llm_engine.prompt_builder import (
                         build_structured_repo_decision_prompt,
                     )
-                    from repo_scanner.llm_engine.reasoning_engine import RepoReasoningLLM
+                    from repo_scanner.llm_engine.reasoning_engine import (
+                        LLMConfig,
+                        RepoReasoningLLM,
+                    )
                     from repo_scanner.llm_engine.output_parser import (
                         parse_repo_decision,
                         repo_decision_to_json,
@@ -118,7 +127,12 @@ def main():
                         user_task="Analyze this repository and recommend what to inspect or build next.",
                     )
 
-                    llm = RepoReasoningLLM()
+                    llm = RepoReasoningLLM(
+                        LLMConfig(
+                            max_new_tokens=args.llm_max_new_tokens,
+                            temperature=0.0,
+                        )
+                    )
                     raw_response = llm.reason(prompt)
 
                     print("\n===== RAW LLM OUTPUT =====")

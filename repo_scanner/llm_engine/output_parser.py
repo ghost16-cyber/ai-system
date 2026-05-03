@@ -1,5 +1,4 @@
 # repo_scanner/llm_engine/output_parser.py
-
 from __future__ import annotations
 
 import json
@@ -18,21 +17,15 @@ class LLMOutputParseError(Exception):
 def extract_json_object(text: str) -> str:
     """
     Extract the first JSON object from an LLM response.
-
-    Handles:
-    - pure JSON
-    - JSON inside markdown fences
-    - prose before/after JSON
+    Handles pure JSON, JSON in markdown fences, and prose around JSON.
     """
     text = text.strip()
-
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
     if fenced:
         return fenced.group(1).strip()
 
     start = text.find("{")
     end = text.rfind("}")
-
     if start == -1 or end == -1 or end <= start:
         raise LLMOutputParseError("No JSON object found in LLM output.")
 
@@ -40,9 +33,7 @@ def extract_json_object(text: str) -> str:
 
 
 def parse_repo_decision(text: str) -> RepoDecision:
-    """
-    Parse and validate an LLM response as a RepoDecision.
-    """
+    """Parse and validate an LLM response as a RepoDecision."""
     json_text = extract_json_object(text)
 
     try:
@@ -53,7 +44,9 @@ def parse_repo_decision(text: str) -> RepoDecision:
     try:
         return RepoDecision.model_validate(data)
     except ValidationError as exc:
-        raise LLMOutputParseError(f"JSON did not match RepoDecision schema: {exc}") from exc
+        raise LLMOutputParseError(
+            f"JSON did not match RepoDecision schema: {exc}"
+        ) from exc
 
 
 def repo_decision_to_json(decision: RepoDecision) -> str:
