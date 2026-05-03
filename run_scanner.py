@@ -106,6 +106,7 @@ def main():
                         repo_decision_to_json,
                         LLMOutputParseError,
                     )
+                    from repo_scanner.planner.planner import build_execution_plan
 
                     print("\n===== LLM REASONING =====")
                     # Build a compact summary for the prompt builder
@@ -145,6 +146,9 @@ def main():
                         decision = parse_repo_decision(raw_response)
                         decision = validate_repo_decision_grounding(decision, scan["files"])
                         print(repo_decision_to_json(decision))
+                        plan = build_execution_plan(decision)
+                        print("\n===== EXECUTION PLAN =====")
+                        print(plan.model_dump_json(indent=2))
                     except LLMOutputParseError as parse_err:
                         print("[Warning] Initial structured parse failed. Attempting repair once...")
                         print(parse_err)
@@ -166,6 +170,9 @@ def main():
                             )
                             print("\n===== REPAIRED STRUCTURED DECISION =====")
                             print(repo_decision_to_json(decision))
+                            plan = build_execution_plan(decision)
+                            print("\n===== REPAIRED EXECUTION PLAN =====")
+                            print(plan.model_dump_json(indent=2))
                         except LLMOutputParseError as repair_err:
                             print("[Warning] Repair failed. Keeping raw output only.")
                             print(repair_err)
