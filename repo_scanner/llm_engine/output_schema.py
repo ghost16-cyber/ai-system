@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 Severity = Literal["low", "medium", "high"]
@@ -34,6 +34,29 @@ class RepoRisk(BaseModel):
             return value.strip().lower()
         return value
 
+    @model_validator(mode="after")
+    def reject_absence_as_security_evidence(self) -> "RepoRisk":
+        risk_text = self.risk.lower()
+        evidence_text = self.evidence.lower()
+        mentions_security = any(
+            term in risk_text or term in evidence_text
+            for term in ("security", "vulnerab", "sql injection", "xss")
+        )
+        absence_markers = (
+            "no evidence",
+            "no specific evidence",
+            "no known",
+            "not found",
+            "absence of evidence",
+        )
+
+        if mentions_security and any(marker in evidence_text for marker in absence_markers):
+            raise ValueError(
+                "Security risks require positive evidence from context, not absence of evidence."
+            )
+
+        return self
+
 
 class RecommendedAction(BaseModel):
     action_type: ActionType = Field(..., description="Machine-readable action category.")
@@ -56,6 +79,18 @@ class RecommendedAction(BaseModel):
             return value.strip().lower().replace(" ", "_")
         return value
 
+    @model_validator(mode="after")
+    def validate_non_editing_actions(self) -> "RecommendedAction":
+        if self.action_type in {
+            "inspect_file",
+            "inspect_module",
+            "continue_analysis",
+        } and self.requires_file_edit:
+            raise ValueError(
+                f"{self.action_type} actions must set requires_file_edit to false."
+            )
+        return self
+
 
 class RepoDecision(BaseModel):
     repo_identity: str = Field(
@@ -67,7 +102,9 @@ class RepoDecision(BaseModel):
     confidence: float = Field(
         ..., ge=0.0, le=1.0, description="Confidence in this analysis."
     )
-    risks: list[RepoRisk] = Field(default_factory=list)
-    recommended_actions: list[RecommendedAction] = Field(default_factory=list)
-    inspect_next: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
+    risks: list[RepoRisk] = Field(default_factory=list, max_length=2)
+    recommended_actions: list[RecommendedAction] = Field(
+        default_factory=list, max_length=3
+    )
+    inspect_next: list[str] = Field(default_factory=list, max_length=5)
+    assumptions: list[str] = Field(default_factory=list, max_length=3)

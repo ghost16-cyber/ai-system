@@ -63,7 +63,7 @@ def main():
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=350,
+        default=500,
         help="Maximum new tokens for structured LLM reasoning.",
     )
     args = parser.parse_args()
@@ -93,6 +93,7 @@ def main():
                 try:
                     # Lazy imports – only when the flag is used
                     from repo_scanner.llm_engine.prompt_builder import (
+                        build_json_repair_prompt,
                         build_structured_repo_decision_prompt,
                     )
                     from repo_scanner.llm_engine.reasoning_engine import (
@@ -100,6 +101,7 @@ def main():
                         RepoReasoningLLM,
                     )
                     from repo_scanner.llm_engine.output_parser import (
+                        validate_repo_decision_grounding,
                         parse_repo_decision,
                         repo_decision_to_json,
                         LLMOutputParseError,
@@ -141,10 +143,32 @@ def main():
                     print("\n===== STRUCTURED DECISION =====")
                     try:
                         decision = parse_repo_decision(raw_response)
+                        decision = validate_repo_decision_grounding(decision, scan["files"])
                         print(repo_decision_to_json(decision))
                     except LLMOutputParseError as parse_err:
-                        print("[Warning] Failed to parse structured LLM output:")
+                        print("[Warning] Initial structured parse failed. Attempting repair once...")
                         print(parse_err)
+
+                        repair_prompt = build_json_repair_prompt(
+                            broken_output=raw_response,
+                            parse_error=str(parse_err),
+                        )
+
+                        repaired_response = llm.reason(repair_prompt)
+
+                        print("\n===== REPAIRED RAW OUTPUT =====")
+                        print(repaired_response)
+
+                        try:
+                            decision = parse_repo_decision(repaired_response)
+                            decision = validate_repo_decision_grounding(
+                                decision, scan["files"]
+                            )
+                            print("\n===== REPAIRED STRUCTURED DECISION =====")
+                            print(repo_decision_to_json(decision))
+                        except LLMOutputParseError as repair_err:
+                            print("[Warning] Repair failed. Keeping raw output only.")
+                            print(repair_err)
 
                 except Exception as llm_err:
                     # Show full traceback so we can see the real failure

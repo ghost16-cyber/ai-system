@@ -15,8 +15,8 @@ class LLMConfig:
     """Configuration for the Qwen LLM."""
 
     model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
-    max_new_tokens: int = 200
-    temperature: float = 0.1
+    max_new_tokens: int = 500
+    temperature: float = 0.0
     top_p: float = 0.9
     device_map: str = "auto"
     offload_folder: str = "model_offload"

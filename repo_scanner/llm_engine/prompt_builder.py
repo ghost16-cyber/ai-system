@@ -110,36 +110,50 @@ def build_structured_repo_decision_prompt(
             "frameworks": scan_summary.get("frameworks"),
             "structure": scan_summary.get("structure"),
             "python_files_parsed": scan_summary.get("python_files_parsed"),
-            "python_parse_errors": scan_summary.get("python_parse_errors"),
-            "files_sample": compact_files(scan_summary.get("files", []), limit=30),
+            "python_parse_errors_count": len(
+                scan_summary.get("python_parse_errors", [])
+            ),
+            "files_sample": compact_files(scan_summary.get("files", []), limit=20),
         },
         "analysis": {
             "unused_functions_sample": trim_list(
-                graph_analysis.get("unused_functions", []), 20
+                graph_analysis.get("unused_functions", []), 10
             ),
             "entry_points_sample": trim_list(
-                graph_analysis.get("entry_points", []), 20
+                graph_analysis.get("entry_points", []), 10
             ),
             "high_coupling_files_sample": trim_dict_items(
-                graph_analysis.get("high_coupling_files", {}), 20
+                graph_analysis.get("high_coupling_files", {}), 10
             ),
             "circular_dependencies_sample": trim_list(
-                graph_analysis.get("circular_dependencies", []), 20
+                graph_analysis.get("circular_dependencies", []), 5
             ),
         },
     }
 
-    return f"""You are an AI coding assistant analyzing a software repository.
+    return f"""
+You are an AI coding assistant analyzing a software repository.
+
 User task:
 {user_task}
 
 Repository analysis context:
 {json.dumps(compact_context, indent=2)}
 
-Return ONLY valid JSON.
-Do not use markdown.
+Return ONLY compact valid JSON.
+Do not use markdown fences.
 Do not include explanations outside JSON.
-The JSON must match this exact schema:
+Do not invent files, folders, bugs, vulnerabilities, or errors not shown in context.
+Use short strings.
+
+Limits:
+- Max 2 risks.
+- Max 3 recommended_actions.
+- Max 5 inspect_next items.
+- Max 3 assumptions.
+
+The JSON must match this exact shape:
+
 {{
   "repo_identity": "short repository classification",
   "architecture_summary": "short architecture summary",
@@ -147,32 +161,107 @@ The JSON must match this exact schema:
   "risks": [
     {{
       "risk": "technical risk",
-      "severity": "low|medium|high",
+      "severity": "low",
       "evidence": "evidence from context"
     }}
   ],
   "recommended_actions": [
     {{
-      "action_type": "inspect_file|inspect_module|refactor|add_tests|improve_docs|optimize|fix_bug|continue_analysis",
+      "action_type": "inspect_module",
       "action": "specific recommended action",
       "priority": 1,
-      "target_area": "file, folder, module, or subsystem",
+      "target_area": "specific file/folder/module/subsystem",
       "requires_file_edit": false,
-      "rationale": "why this action matters"
+      "rationale": "short reason"
     }}
   ],
-  "inspect_next": [
-    "specific file, folder, module, or subsystem"
-  ],
-  "assumptions": [
-    "assumption made because context is incomplete"
-  ]
+  "inspect_next": ["specific file/folder/module/subsystem"],
+  "assumptions": ["short uncertainty note"]
 }}
-Rules:
-- Use only the provided context.
-- Do not invent files.
-- Do not invent frameworks; an empty frameworks list means no framework was detected.
-- Use lowercase enum values exactly as shown.
-- Priority must be 1 to 5.
-- Confidence must be between 0.0 and 1.0.
-- If unsure, put the uncertainty in assumptions.""".strip()
+
+Allowed severity values:
+- low
+- medium
+- high
+
+Allowed action_type values:
+- inspect_file
+- inspect_module
+- refactor
+- add_tests
+- improve_docs
+- optimize
+- fix_bug
+- continue_analysis
+
+Important:
+- If evidence is weak, set confidence below 0.7.
+- If no real security evidence exists, do not claim security vulnerabilities.
+- Never list "no known vulnerabilities", "no specific evidence", or absence of evidence as a risk.
+- A risk must cite an actual scanner or graph signal from context.
+- If no risks are proven by context, return "risks": [].
+- Prefer inspect_module or continue_analysis before refactor/fix_bug unless context proves an edit is needed.
+- For inspect_file, inspect_module, and continue_analysis actions, set requires_file_edit to false.
+""".strip()
+
+
+def build_json_repair_prompt(
+    broken_output: str,
+    parse_error: str,
+) -> str:
+    required_fixes: list[str] = []
+    if "Security risks require positive evidence" in parse_error:
+        required_fixes.append(
+            'Set "risks" to [] and remove unsupported security-risk assumptions.'
+        )
+    if "actions must set requires_file_edit to false" in parse_error:
+        required_fixes.append(
+            "Set requires_file_edit to false for inspect_file, inspect_module, and continue_analysis actions."
+        )
+    if "Ungrounded file references" in parse_error:
+        required_fixes.append(
+            "Remove ungrounded file references from recommended_actions and inspect_next."
+        )
+
+    required_fix_text = "\n".join(f"- {fix}" for fix in required_fixes)
+    if not required_fix_text:
+        required_fix_text = "- Fix every validation error shown below."
+
+    return f"""
+Fix the following broken LLM output into valid compact JSON only.
+Do not use markdown.
+Do not explain.
+Do not add new facts.
+Preserve the original meaning as much as possible, except invalid items must be removed or corrected.
+The parse error is binding.
+Do not keep any risk, action, or field that caused the parse error.
+
+The JSON must have exactly these top-level keys:
+repo_identity, architecture_summary, confidence, risks, recommended_actions, inspect_next, assumptions
+
+Required fixes:
+{required_fix_text}
+
+Constraints:
+- confidence must be 0.0 to 1.0
+- risks must be a list
+- recommended_actions must be a list
+- inspect_next must be a list of strings
+- assumptions must be a list of strings
+- max 2 risks
+- max 3 recommended_actions
+- max 5 inspect_next items
+- max 3 assumptions
+- inspect_file, inspect_module, and continue_analysis actions must set requires_file_edit to false
+- do not list absence of evidence as a risk
+- if a security risk has no positive evidence, remove that risk
+- if evidence says "no evidence", "no specific evidence", "no known", or "not found", remove that risk
+- if unsure whether a risk is valid, return "risks": []
+- remove file-like targets named in ungrounded file reference errors
+
+Parse error:
+{parse_error}
+
+Broken output:
+{broken_output}
+""".strip()
