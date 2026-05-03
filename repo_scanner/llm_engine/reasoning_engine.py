@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 @dataclass
@@ -20,6 +20,7 @@ class LLMConfig:
     top_p: float = 0.9
     device_map: str = "auto"
     offload_folder: str = "model_offload"
+    load_in_4bit: bool = True
 
 
 class RepoReasoningLLM:
@@ -36,6 +37,18 @@ class RepoReasoningLLM:
             trust_remote_code=True,
         )
 
+        quantization_config = None
+        if self.config.load_in_4bit and torch.cuda.is_available():
+            print("[LLM] Using 4-bit bitsandbytes quantization.")
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+        elif self.config.load_in_4bit:
+            print("[LLM] 4-bit quantization requested, but CUDA is unavailable.")
+
         print("[LLM] Loading model...")
         self.model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name,
@@ -43,6 +56,7 @@ class RepoReasoningLLM:
             device_map=self.config.device_map,
             offload_folder=self.config.offload_folder,
             low_cpu_mem_usage=True,
+            quantization_config=quantization_config,
             trust_remote_code=True,
         )
         self.model.eval()
