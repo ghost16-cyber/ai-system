@@ -1,4 +1,4 @@
-# run_scanner.py
+# repo_scanner/run_scanner.py
 import argparse
 import json
 import traceback
@@ -7,6 +7,8 @@ from pathlib import Path
 from repo_scanner.scanner import scan_repository
 from repo_scanner.ast_engine.graph_builder import build_full_graph
 from repo_scanner.analysis_engine.analyzer import analyze_graph
+from repo_scanner.workers.inspector import inspect_target
+
 
 def print_summary(scan, limit):
     summary = scan["summary"]
@@ -28,6 +30,7 @@ def print_summary(scan, limit):
         for file_info in scan["files"][:limit]:
             print(f"- {file_info['path']} ({file_info['language']}, {file_info['size_bytes']} bytes)")
 
+
 def print_graph_samples(graph):
     """Tiny snapshot of the generated graphs."""
     print("\n===== SAMPLE FILE ANALYSIS =====")
@@ -46,6 +49,7 @@ def print_graph_samples(graph):
     print("\n===== CALL GRAPH SAMPLE =====")
     for k, v in list(graph.get("call_graph", {}).items())[:10]:
         print(f"{k} -> {v[:5]}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -93,18 +97,21 @@ def main():
                 try:
                     # Lazy imports – only when the flag is used
                     from repo_scanner.llm_engine.prompt_builder import (
-                        build_json_repair_prompt,
                         build_structured_repo_decision_prompt,
+                        build_feedback_reasoning_prompt,
                     )
                     from repo_scanner.llm_engine.reasoning_engine import (
                         LLMConfig,
                         RepoReasoningLLM,
                     )
                     from repo_scanner.llm_engine.output_parser import (
-                        validate_repo_decision_grounding,
                         parse_repo_decision,
                         repo_decision_to_json,
+                        validate_repo_decision_grounding,
                         LLMOutputParseError,
+                    )
+                    from repo_scanner.llm_engine.feedback_builder import (
+                        build_inspection_feedback_context,
                     )
                     from repo_scanner.planner.planner import build_execution_plan
 
@@ -146,18 +153,75 @@ def main():
                         decision = parse_repo_decision(raw_response)
                         decision = validate_repo_decision_grounding(decision, scan["files"])
                         print(repo_decision_to_json(decision))
+
+                        # ----- Build execution plan ------------------------------------
                         plan = build_execution_plan(decision, scan=scan)
                         print("\n===== EXECUTION PLAN =====")
                         print(plan.model_dump_json(indent=2))
+
+                        # ----- Inspection step -----------------------------------------
+                        repo_root = Path(repo_path)
+                        print("\n===== INSPECTION RESULTS =====")
+                        inspect_results = []  # collect for feedback loop
+                        for step in plan.steps:
+                            if getattr(step, "step_type", None) == "inspect":
+                                result = inspect_target(
+                                    repo_root,
+                                    step.target,
+                                    step.target_kind,
+                                )
+                                print(result.model_dump_json(indent=2))
+                                # Store a plain dict for the feedback prompt
+                                inspect_results.append(result.model_dump())
+
+                        # ----- Feedback loop -------------------------------------------
+                        if inspect_results:
+                            print("\n===== FEEDBACK LOOP =====")
+                            feedback_context = build_inspection_feedback_context(inspect_results)
+                            feedback_prompt = build_feedback_reasoning_prompt(
+                                original_prompt=prompt,
+                                inspect_context=feedback_context,
+                            )
+                            feedback_response = llm.reason(feedback_prompt)
+
+                            print("\n===== FEEDBACK RAW OUTPUT =====")
+                            print(feedback_response)
+
+                            try:
+                                refined_decision = parse_repo_decision(feedback_response)
+                                refined_decision = validate_repo_decision_grounding(
+                                    refined_decision, scan["files"]
+                                )
+                                print("\n===== REFINED DECISION =====")
+                                print(repo_decision_to_json(refined_decision))
+
+                                refined_plan = build_execution_plan(refined_decision, scan=scan)
+                                print("\n===== REFINED PLAN =====")
+                                print(refined_plan.model_dump_json(indent=2))
+                            except Exception as e:
+                                # **Fallback** – safe default with empty risks & actions
+                                print("[Warning] Feedback parsing failed:", e)
+                                fallback = decision.copy()
+                                fallback.risks = []
+                                fallback.recommended_actions = []
+                                print("\n===== FALLBACK REFINED DECISION =====")
+                                print(repo_decision_to_json(fallback))
+
+                                fallback_plan = build_execution_plan(fallback, scan=scan)
+                                print("\n===== FALLBACK REFINED PLAN =====")
+                                print(fallback_plan.model_dump_json(indent=2))
+
                     except LLMOutputParseError as parse_err:
+                        # Initial parse failure – attempt repair once (unchanged)
                         print("[Warning] Initial structured parse failed. Attempting repair once...")
                         print(parse_err)
+
+                        from repo_scanner.llm_engine.prompt_builder import build_json_repair_prompt
 
                         repair_prompt = build_json_repair_prompt(
                             broken_output=raw_response,
                             parse_error=str(parse_err),
                         )
-
                         repaired_response = llm.reason(repair_prompt)
 
                         print("\n===== REPAIRED RAW OUTPUT =====")
@@ -165,14 +229,65 @@ def main():
 
                         try:
                             decision = parse_repo_decision(repaired_response)
-                            decision = validate_repo_decision_grounding(
-                                decision, scan["files"]
-                            )
+                            decision = validate_repo_decision_grounding(decision, scan["files"])
                             print("\n===== REPAIRED STRUCTURED DECISION =====")
                             print(repo_decision_to_json(decision))
+
                             plan = build_execution_plan(decision, scan=scan)
                             print("\n===== REPAIRED EXECUTION PLAN =====")
                             print(plan.model_dump_json(indent=2))
+
+                            # Inspection after repaired plan (same as above)
+                            repo_root = Path(repo_path)
+                            print("\n===== INSPECTION RESULTS (REPAIRED) =====")
+                            inspect_results = []
+                            for step in plan.steps:
+                                if getattr(step, "step_type", None) == "inspect":
+                                    result = inspect_target(
+                                        repo_root,
+                                        step.target,
+                                        step.target_kind,
+                                    )
+                                    print(result.model_dump_json(indent=2))
+                                    inspect_results.append(result.model_dump())
+
+                            # Feedback loop for repaired output
+                            if inspect_results:
+                                print("\n===== FEEDBACK LOOP (REPAIRED) =====")
+                                feedback_context = build_inspection_feedback_context(inspect_results)
+                                feedback_prompt = build_feedback_reasoning_prompt(
+                                    original_prompt=repair_prompt,
+                                    inspect_context=feedback_context,
+                                )
+                                feedback_response = llm.reason(feedback_prompt)
+
+                                print("\n===== FEEDBACK RAW OUTPUT (REPAIRED) =====")
+                                print(feedback_response)
+
+                                try:
+                                    refined_decision = parse_repo_decision(feedback_response)
+                                    refined_decision = validate_repo_decision_grounding(
+                                        refined_decision, scan["files"]
+                                    )
+                                    print("\n===== REFINED DECISION (REPAIRED) =====")
+                                    print(repo_decision_to_json(refined_decision))
+
+                                    refined_plan = build_execution_plan(refined_decision, scan=scan)
+                                    print("\n===== REFINED PLAN (REPAIRED) =====")
+                                    print(refined_plan.model_dump_json(indent=2))
+                                except Exception as e:
+                                    # Fallback for repaired feedback
+                                    print("[Warning] Feedback parsing failed (repaired):", e)
+                                    fallback = decision.copy()
+                                    fallback.risks = []
+                                    fallback.recommended_actions = []
+                                    print("\n===== FALLBACK REFINED DECISION (REPAIRED) =====")
+                                    print(repo_decision_to_json(fallback))
+
+                                    fallback_plan = build_execution_plan(fallback, scan=scan)
+                                    print("\n===== FALLBACK REFINED PLAN (REPAIRED) =====")
+                                    print(fallback_plan.model_dump_json(indent=2))
+
                         except LLMOutputParseError as repair_err:
                             print("[Warning] Repair failed. Keeping raw output only.")
                             print(repair_err)
@@ -185,6 +300,7 @@ def main():
 
         except Exception as e:
             print(f"\n[Warning] Failed to build graph or run static analysis: {e}")
+
 
 if __name__ == "__main__":
     main()

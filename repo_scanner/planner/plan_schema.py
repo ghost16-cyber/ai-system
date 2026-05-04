@@ -18,12 +18,14 @@ StepType = Literal[
     "propose_docs",
     "skip",
 ]
+TargetKind = Literal["file", "directory", "module", "unknown"]
 
 
 class PlanStep(BaseModel):
     step_type: StepType
     source_action_type: str
     target: str
+    target_kind: TargetKind = "unknown"
     description: str
     priority: int = Field(..., ge=1, le=5)
     allowed_to_modify: bool = False

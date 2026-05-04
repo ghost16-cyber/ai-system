@@ -33,16 +33,14 @@ def compact_files(files: List[Dict[str, Any]], limit: int = 30) -> List[str]:
     return result
 
 
+# ----------------------------------------------------------------------
+# Legacy free‑form prompt (kept for backward compatibility)
+# ----------------------------------------------------------------------
 def build_repo_reasoning_prompt(
     scan_summary: Dict[str, Any],
     graph_analysis: Dict[str, Any],
     user_task: str = "Analyze this repository and suggest the next best engineering steps.",
 ) -> str:
-    """
-    Convert scanner + graph-analysis output into a compact LLM prompt.
-    The prompt is deliberately short because LLMs have limited context windows.
-    """
-    # Repository-level context (trimmed)
     compact_context = {
         "repository": {
             "path": scan_summary.get("repository"),
@@ -72,7 +70,6 @@ def build_repo_reasoning_prompt(
         },
     }
 
-    # Final prompt
     return f"""You are an AI coding assistant analyzing a software repository.
 User task: {user_task}
 Repository analysis context: {json.dumps(compact_context, indent=2)}
@@ -95,6 +92,9 @@ Rules:
 """.strip()
 
 
+# ----------------------------------------------------------------------
+# Structured JSON prompt (the main one used for planning)
+# ----------------------------------------------------------------------
 def build_structured_repo_decision_prompt(
     scan_summary: Dict[str, Any],
     graph_analysis: Dict[str, Any],
@@ -205,14 +205,59 @@ Important:
 """.strip()
 
 
+# ----------------------------------------------------------------------
+# Updated feedback prompt (strict, correction‑focused)
+# ----------------------------------------------------------------------
+def build_feedback_reasoning_prompt(original_prompt, inspect_context):
+    return f"""
+You previously generated a RepoDecision.
+
+That decision was incomplete or incorrect.
+
+Now you must generate a NEW RepoDecision.
+
+Original context:
+{original_prompt}
+
+Inspection results:
+{inspect_context}
+
+STRICT RULES:
+
+1. You MUST return a valid RepoDecision JSON
+2. You MUST include:
+   - repo_identity
+   - architecture_summary
+   - confidence
+   - risks
+   - recommended_actions
+   - inspect_next
+   - assumptions
+
+3. You MUST improve the previous decision:
+   - Replace vague targets like "models.py"
+   - Use actual discovered files:
+     loader.py, quantizer.py
+
+4. You MUST NOT summarize inspection results
+5. You MUST produce a NEW decision, not explanation
+
+If no risks exist → return "risks": []
+
+Return ONLY valid RepoDecision JSON.
+"""
 def build_json_repair_prompt(
     broken_output: str,
     parse_error: str,
 ) -> str:
+    """
+    Prompt that asks the model to fix a JSON output that failed validation.
+    It keeps the original intent but forces the output to conform to the schema.
+    """
     required_fixes: list[str] = []
     if "Security risks require positive evidence" in parse_error:
         required_fixes.append(
-            'Set "risks" to [] and remove unsupported security-risk assumptions.'
+            'Set "risks" to [] and remove unsupported security‑risk assumptions.'
         )
     if "actions must set requires_file_edit to false" in parse_error:
         required_fixes.append(
@@ -236,7 +281,7 @@ Preserve the original meaning as much as possible, except invalid items must be 
 The parse error is binding.
 Do not keep any risk, action, or field that caused the parse error.
 
-The JSON must have exactly these top-level keys:
+The JSON must have exactly these top‑level keys:
 repo_identity, architecture_summary, confidence, risks, recommended_actions, inspect_next, assumptions
 
 Required fixes:
@@ -257,7 +302,7 @@ Constraints:
 - if a security risk has no positive evidence, remove that risk
 - if evidence says "no evidence", "no specific evidence", "no known", or "not found", remove that risk
 - if unsure whether a risk is valid, return "risks": []
-- remove file-like targets named in ungrounded file reference errors
+- remove file‑like targets named in ungrounded file reference errors
 
 Parse error:
 {parse_error}

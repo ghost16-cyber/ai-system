@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
+
+
+TargetKind = Literal["file", "directory", "module", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -14,6 +17,7 @@ class ResolvedTarget:
     confidence: float
     reason: str
     candidates: list[str]
+    target_kind: TargetKind
 
 
 def _to_posix(path: str | Path) -> str:
@@ -119,7 +123,9 @@ def _unique_directory_result(
     matches = _prefer_candidates(matches)
 
     if len(matches) == 1:
-        return ResolvedTarget(raw_target, matches[0], confidence, reason, matches)
+        return ResolvedTarget(
+            raw_target, matches[0], confidence, reason, matches, "directory"
+        )
 
     if len(matches) > 1:
         return ResolvedTarget(
@@ -128,6 +134,7 @@ def _unique_directory_result(
             min(confidence, 0.50),
             f"ambiguous_{reason}",
             matches[:max_candidates],
+            "unknown",
         )
 
     return None
@@ -157,6 +164,7 @@ def resolve_target(
             confidence=0.0,
             reason="empty_or_invalid_target",
             candidates=[],
+            target_kind="unknown",
         )
 
     query = _normalize_query(raw_target)
@@ -168,12 +176,14 @@ def resolve_target(
 
     if query_lower in files_lower_map:
         resolved = files_lower_map[query_lower]
-        return ResolvedTarget(raw_target, resolved, 1.0, "exact_file_path", [resolved])
+        return ResolvedTarget(
+            raw_target, resolved, 1.0, "exact_file_path", [resolved], "file"
+        )
 
     if query_lower in dirs_lower_map:
         resolved = dirs_lower_map[query_lower]
         return ResolvedTarget(
-            raw_target, resolved, 0.95, "exact_directory_path", [resolved]
+            raw_target, resolved, 0.95, "exact_directory_path", [resolved], "directory"
         )
 
     stem_dir_result = _unique_directory_result(
@@ -200,6 +210,7 @@ def resolve_target(
             0.90,
             "unique_suffix_file_match",
             suffix_matches,
+            "file",
         )
 
     if len(suffix_matches) > 1:
@@ -212,6 +223,7 @@ def resolve_target(
             0.60,
             "ambiguous_suffix_file_match",
             suffix_matches[:max_candidates],
+            "unknown",
         )
 
     filename_matches = [f for f in files if Path(f).name.lower() == query_lower]
@@ -224,6 +236,7 @@ def resolve_target(
             0.85,
             "unique_filename_match",
             filename_matches,
+            "file",
         )
 
     if len(filename_matches) > 1:
@@ -236,6 +249,7 @@ def resolve_target(
             0.55,
             "ambiguous_filename_match",
             filename_matches[:max_candidates],
+            "unknown",
         )
 
     dir_name_matches = _directory_name_matches(query, dirs)
@@ -253,12 +267,17 @@ def resolve_target(
     close = get_close_matches(query, possibilities, n=max_candidates, cutoff=0.65)
 
     if len(close) == 1:
-        return ResolvedTarget(raw_target, close[0], 0.70, "fuzzy_match", close)
+        target_kind: TargetKind = "directory" if close[0] in dirs else "file"
+        return ResolvedTarget(
+            raw_target, close[0], 0.70, "fuzzy_match", close, target_kind
+        )
 
     if len(close) > 1:
-        return ResolvedTarget(raw_target, None, 0.45, "ambiguous_fuzzy_match", close)
+        return ResolvedTarget(
+            raw_target, None, 0.45, "ambiguous_fuzzy_match", close, "unknown"
+        )
 
-    return ResolvedTarget(raw_target, None, 0.0, "no_match", [])
+    return ResolvedTarget(raw_target, None, 0.0, "no_match", [], "unknown")
 
 
 def resolve_action_target(action, scan: dict) -> ResolvedTarget:

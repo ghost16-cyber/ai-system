@@ -51,6 +51,7 @@ def build_execution_plan(
             continue
 
         if resolved is not None:
+            step.target_kind = resolved.target_kind
             step.description = (
                 f"{step.description} "
                 f"(resolved from {resolved.raw_target!r}, confidence={resolved.confidence:.2f})"

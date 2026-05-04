@@ -19,6 +19,7 @@ def test_resolve_exact_path():
     assert result.resolved_target == "src/models/base_model.py"
     assert result.reason == "exact_file_path"
     assert result.confidence == 1.0
+    assert result.target_kind == "file"
 
 
 def test_resolve_dotted_module_path():
@@ -29,6 +30,7 @@ def test_resolve_dotted_module_path():
 
     assert result.resolved_target == "analysis_engine/rules.py"
     assert result.reason == "exact_file_path"
+    assert result.target_kind == "file"
 
 
 def test_resolve_ambiguous_filename():
@@ -40,6 +42,7 @@ def test_resolve_ambiguous_filename():
     assert result.resolved_target is None
     assert result.reason == "ambiguous_suffix_file_match"
     assert result.candidates == ["src/models.py", "vendor/requests/models.py"]
+    assert result.target_kind == "unknown"
 
 
 def test_resolve_ambiguous_filename_to_unique_directory_stem():
@@ -57,6 +60,7 @@ def test_resolve_ambiguous_filename_to_unique_directory_stem():
     assert result.resolved_target == "src/models"
     assert result.reason == "directory_from_file_stem_match"
     assert result.confidence == 0.72
+    assert result.target_kind == "directory"
 
 
 def test_resolve_models_prefers_src_directory_over_data_and_vendor():
@@ -75,6 +79,7 @@ def test_resolve_models_prefers_src_directory_over_data_and_vendor():
 
     assert result.resolved_target == "src/models"
     assert result.reason == "directory_from_file_stem_match"
+    assert result.target_kind == "directory"
 
 
 def test_resolve_directory_name():
@@ -85,6 +90,7 @@ def test_resolve_directory_name():
 
     assert result.resolved_target == "src/models"
     assert result.reason == "unique_directory_name_match"
+    assert result.target_kind == "directory"
 
 
 def test_resolve_no_match():
@@ -92,3 +98,4 @@ def test_resolve_no_match():
 
     assert result.resolved_target is None
     assert result.reason == "no_match"
+    assert result.target_kind == "unknown"
