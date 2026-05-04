@@ -201,7 +201,7 @@ def main():
                             except Exception as e:
                                 # **Fallback** – safe default with empty risks & actions
                                 print("[Warning] Feedback parsing failed:", e)
-                                fallback = decision.copy()
+                                fallback = decision.model_copy()
                                 fallback.risks = []
                                 fallback.recommended_actions = []
                                 print("\n===== FALLBACK REFINED DECISION =====")
@@ -278,7 +278,7 @@ def main():
                                 except Exception as e:
                                     # Fallback for repaired feedback
                                     print("[Warning] Feedback parsing failed (repaired):", e)
-                                    fallback = decision.copy()
+                                    fallback = decision.model_copy()
                                     fallback.risks = []
                                     fallback.recommended_actions = []
                                     print("\n===== FALLBACK REFINED DECISION (REPAIRED) =====")

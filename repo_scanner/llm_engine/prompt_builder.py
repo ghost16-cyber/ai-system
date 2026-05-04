@@ -210,41 +210,92 @@ Important:
 # ----------------------------------------------------------------------
 def build_feedback_reasoning_prompt(original_prompt, inspect_context):
     return f"""
-You previously generated a RepoDecision.
+You previously generated a RepoDecision JSON.
 
-That decision was incomplete or incorrect.
+That output was INVALID, INCOMPLETE, or INCORRECT.
 
-Now you must generate a NEW RepoDecision.
+You MUST now generate a NEW valid RepoDecision JSON.
 
-Original context:
+---
+
+ORIGINAL CONTEXT:
 {original_prompt}
 
-Inspection results:
+---
+
+INSPECTION RESULTS (REAL DATA):
 {inspect_context}
 
-STRICT RULES:
+---
 
-1. You MUST return a valid RepoDecision JSON
-2. You MUST include:
-   - repo_identity
-   - architecture_summary
-   - confidence
-   - risks
-   - recommended_actions
-   - inspect_next
-   - assumptions
+CRITICAL INSTRUCTIONS:
 
-3. You MUST improve the previous decision:
-   - Replace vague targets like "models.py"
-   - Use actual discovered files:
-     loader.py, quantizer.py
+1. OUTPUT FORMAT (MANDATORY)
+You MUST return ONLY valid JSON matching this schema:
 
-4. You MUST NOT summarize inspection results
-5. You MUST produce a NEW decision, not explanation
+{{
+  "repo_identity": "...",
+  "architecture_summary": "...",
+  "confidence": 0.0,
+  "risks": [],
+  "recommended_actions": [],
+  "inspect_next": [],
+  "assumptions": []
+}}
 
-If no risks exist → return "risks": []
+No extra text.
+No explanation.
+No markdown.
 
-Return ONLY valid RepoDecision JSON.
+---
+
+2. CORRECTION RULES (MANDATORY)
+
+- Your previous output used vague targets like "models.py"
+- This is NOT acceptable
+
+Inspection shows REAL files:
+- loader.py
+- quantizer.py
+
+You MUST replace vague targets with these real files if relevant.
+
+---
+
+3. REASONING RULES
+
+- DO NOT summarize inspection results
+- DO NOT repeat previous answer blindly
+- DO NOT invent risks
+- If no proven risks -> "risks": []
+- Use ONLY observed files and directories
+
+---
+
+4. ACTION QUALITY
+
+Recommended actions MUST:
+- reference REAL paths (e.g. src/models/loader.py)
+- be specific
+- be grounded in inspection
+
+---
+
+5. INSPECT NEXT
+
+inspect_next MUST:
+- contain real file paths
+- NOT contain vague names like "models.py"
+
+---
+
+FINAL RULE:
+
+If you repeat the same incorrect output, you are wrong.
+
+You MUST improve the decision using inspection data.
+
+Return ONLY valid JSON.
 """
 def build_json_repair_prompt(
     broken_output: str,
