@@ -3,14 +3,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from repo_scanner import scan_repository
+from backend.app.repo_scanner import scan_repository
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_scan_repository_extracts_python_metadata():
-    scan = scan_repository(ROOT / "repo_scanner")
+    scan = scan_repository(ROOT / "backend" / "app" / "repo_scanner")
 
     assert scan["summary"]["total_files"] >= 5
     assert scan["languages"]["python"] >= 5

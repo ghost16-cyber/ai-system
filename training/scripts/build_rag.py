@@ -3,12 +3,12 @@ import sys
 from pathlib import Path
 import numpy as np
 
-# Add src to path
+# Add the project package to the import path.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.rag.retriever import VectorStoreRetriever
-from src.rag.builder import RAGBuilder
-from src.embeddings.embedding import CodeEmbedder
+from backend.app.rag.retriever import VectorStoreRetriever
+from backend.app.rag.builder import RAGBuilder
+from backend.app.rag.embeddings.embedding import CodeEmbedder
 import pandas as pd
 
 

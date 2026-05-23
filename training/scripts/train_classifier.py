@@ -3,10 +3,10 @@ import pandas as pd
 import sys
 from pathlib import Path
 
-# Add src to path
+# Add the project package to the import path.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.ml.classifier import PatternClassifier
+from backend.app.ml.classifier import PatternClassifier
 
 
 def main():

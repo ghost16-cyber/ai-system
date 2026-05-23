@@ -2,11 +2,11 @@
 import sys
 from pathlib import Path
 
-# Add src to path
+# Add the project package to the import path.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.models.loader import ModelLoader
-from src.utils.memory_monitor import MemoryMonitor
+from backend.app.llm.loader import ModelLoader
+from backend.app.core.memory_monitor import MemoryMonitor
 import pandas as pd
 import json
 
