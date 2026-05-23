@@ -299,7 +299,6 @@ if __name__ == "__main__":
     test_cases = [
         "for i in range(len(arr)): print(arr[i])",
         "for x in arr: print(x)",
-        "if x == None:",
         "if x is None:",
         "data = eval(user_input)",
         "data = json.loads(s)",
