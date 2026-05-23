@@ -150,3 +150,29 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             "line_count": len(request.code.splitlines()),
         },
     )
+
+@app.post("/fix")
+def fix_code(request: AnalyzeRequest):
+    """
+    Return a fixed version of the submitted code when a safe fix is available.
+    Falls back to the original code when no automatic fix exists.
+    """
+    result = analyze_code(request.code)
+
+    fixed_code = result.get("fixed_code")
+
+    return {
+        "success": True,
+        "language": request.language,
+        "filename": request.filename,
+        "pattern": result.get("predicted_pattern"),
+        "is_issue": result.get("is_issue", True),
+        "original_code": request.code,
+        "fixed_code": fixed_code or request.code,
+        "fix_available": fixed_code is not None,
+        "message": result.get("suggestion"),
+        "metadata": {
+            "engine": "trained-code-analyzer",
+            "raw_result": result,
+        },
+    }

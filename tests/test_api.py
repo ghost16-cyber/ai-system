@@ -83,3 +83,28 @@ def test_analyze_endpoint_returns_fixed_code_for_inefficient_loop():
     assert raw_result["example"] == "for item in arr:\n    print(item)"
     assert raw_result["fixed_code"] == "for item in arr:\n    print(item)"
     assert raw_result["is_issue"] is True
+
+
+def test_fix_endpoint_returns_fixed_code_for_inefficient_loop():
+    response = client.post(
+        "/fix",
+        json={
+            "code": "for i in range(len(arr)):\n    print(arr[i])",
+            "language": "python",
+            "filename": "demo.py",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["success"] is True
+    assert data["language"] == "python"
+    assert data["filename"] == "demo.py"
+    assert data["pattern"] == "inefficient_loop"
+    assert data["is_issue"] is True
+    assert data["original_code"] == "for i in range(len(arr)):\n    print(arr[i])"
+    assert data["fixed_code"] == "for item in arr:\n    print(item)"
+    assert data["fix_available"] is True
+    assert data["message"] == "Use direct iteration instead"
