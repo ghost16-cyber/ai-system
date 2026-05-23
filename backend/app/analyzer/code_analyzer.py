@@ -1,6 +1,51 @@
 # code_analyzer.py - Inference & Suggestion Engine
 import joblib
 from pathlib import Path
+import re
+
+def fix_range_len_loop(code: str) -> str | None:
+    """
+    Convert simple loops like:
+
+        for i in range(len(arr)):
+            print(arr[i])
+
+    into:
+
+        for item in arr:
+            print(item)
+
+    This is intentionally conservative. If the pattern is not simple,
+    it returns None instead of guessing.
+    """
+    pattern = re.compile(
+        r"for\s+(?P<index>\w+)\s+in\s+range\s*\(\s*len\s*\(\s*(?P<array>\w+)\s*\)\s*\)\s*:\s*\n"
+        r"(?P<indent>\s+)(?P<body>.+)",
+        re.DOTALL,
+    )
+
+    match = pattern.search(code)
+
+    if not match:
+        return None
+
+    index_var = match.group("index")
+    array_name = match.group("array")
+    indent = match.group("indent")
+    body = match.group("body")
+
+    item_var = "item"
+
+    fixed_body = re.sub(
+        rf"\b{array_name}\s*\[\s*{index_var}\s*\]",
+        item_var,
+        body,
+    )
+
+    fixed_code = f"for {item_var} in {array_name}:\n{indent}{fixed_body}"
+
+    return fixed_code
+
 
 # ------------------------------------------------------------------
 # Load the trained scikit‑learn model (TF‑IDF + LinearSVC)
@@ -205,11 +250,12 @@ def analyze_code(code_snippet: str) -> dict:
     Analyse a single code snippet.
 
     Returns a dictionary with:
-        - truncated code (for display)
+        - original code
         - predicted pattern label
-        - human‑readable issue description
+        - human-readable issue description
         - suggested fix
         - example snippet
+        - fixed_code when a safe fix is available
     """
     prediction = pipeline.predict([code_snippet])[0]
 
@@ -224,12 +270,22 @@ def analyze_code(code_snippet: str) -> dict:
         },
     )
 
+    fixed_code = None
+    example = suggestion["example"]
+
+    if prediction == "inefficient_loop":
+        fixed_code = fix_range_len_loop(code_snippet)
+        if fixed_code:
+            example = fixed_code
+
     return {
-        "code": code_snippet[:50] + "..." if len(code_snippet) > 50 else code_snippet,
+        "code": code_snippet,
         "predicted_pattern": prediction,
         "issue": suggestion["issue"],
         "suggestion": suggestion["suggestion"],
-        "example": suggestion["example"],
+        "example": example,
+        "fixed_code": fixed_code,
+        "is_issue": suggestion["is_issue"],
     }
 
 # ------------------------------------------------------------------
