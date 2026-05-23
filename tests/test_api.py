@@ -108,3 +108,46 @@ def test_fix_endpoint_returns_fixed_code_for_inefficient_loop():
     assert data["fixed_code"] == "for item in arr:\n    print(item)"
     assert data["fix_available"] is True
     assert data["message"] == "Use direct iteration instead"
+
+def test_fix_endpoint_returns_fixed_code_for_equal_none_check():
+    response = client.post(
+        "/fix",
+        json={
+            "code": "if x == None:\n    print(x)",
+            "language": "python",
+            "filename": "demo.py",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["success"] is True
+    assert data["pattern"] == "bad_none_check"
+    assert data["original_code"] == "if x == None:\n    print(x)"
+    assert data["fixed_code"] == "if x is None:\n    print(x)"
+    assert data["fix_available"] is True
+    assert data["message"] == "Use `is None` (or `is not None`)"
+
+
+def test_fix_endpoint_returns_fixed_code_for_not_equal_none_check():
+    response = client.post(
+        "/fix",
+        json={
+            "code": "if x != None:\n    print(x)",
+            "language": "python",
+            "filename": "demo.py",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["success"] is True
+    assert data["pattern"] == "bad_none_check"
+    assert data["original_code"] == "if x != None:\n    print(x)"
+    assert data["fixed_code"] == "if x is not None:\n    print(x)"
+    assert data["fix_available"] is True
+    assert data["message"] == "Use `is None` (or `is not None`)"

@@ -46,6 +46,42 @@ def fix_range_len_loop(code: str) -> str | None:
 
     return fixed_code
 
+def fix_none_check(code: str) -> str | None:
+    """
+    Convert simple None comparisons:
+
+        if x == None:
+
+    into:
+
+        if x is None:
+
+    Also supports:
+
+        if x != None:
+
+    into:
+
+        if x is not None:
+
+    This is conservative and only rewrites direct comparisons.
+    """
+    fixed_code = re.sub(
+        r"\b(?P<var>[A-Za-z_]\w*)\s*==\s*None\b",
+        r"\g<var> is None",
+        code,
+    )
+
+    fixed_code = re.sub(
+        r"\b(?P<var>[A-Za-z_]\w*)\s*!=\s*None\b",
+        r"\g<var> is not None",
+        fixed_code,
+    )
+
+    if fixed_code == code:
+        return None
+
+    return fixed_code    
 
 # ------------------------------------------------------------------
 # Load the trained scikit‑learn model (TF‑IDF + LinearSVC)
@@ -275,8 +311,11 @@ def analyze_code(code_snippet: str) -> dict:
 
     if prediction == "inefficient_loop":
         fixed_code = fix_range_len_loop(code_snippet)
-        if fixed_code:
-            example = fixed_code
+    elif prediction == "bad_none_check":
+        fixed_code = fix_none_check(code_snippet)
+
+    if fixed_code:
+        example = fixed_code
 
     return {
         "code": code_snippet,
