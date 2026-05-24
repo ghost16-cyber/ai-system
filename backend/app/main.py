@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
+from backend.app.jobs import JobQueue
 from backend.app.schemas.api import (
     AnalyzeFileRequest,
     AnalyzeRequest,
@@ -20,6 +21,9 @@ from backend.app.schemas.api import (
     FeedbackResponse,
     HealthResponse,
     HistoryResponse,
+    JobResponse,
+    JobsResponse,
+    JobStatus,
     MetricsResponse,
     PatchProposalResponse,
     RulesResponse,
@@ -46,10 +50,12 @@ def create_app(
         or os.getenv("AI_SYSTEM_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_ROOT))
     ).expanduser().resolve()
     repository = AnalysisRepository(configured_path)
+    job_queue = JobQueue(configured_path)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         repository.initialize()
+        job_queue.initialize()
         yield
 
     application = FastAPI(
@@ -59,6 +65,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.analysis_repository = repository
+    application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
 
     @application.get("/health", response_model=HealthResponse)
@@ -256,6 +263,27 @@ def create_app(
     @application.get("/metrics", response_model=MetricsResponse)
     def metrics() -> MetricsResponse:
         return repository.get_metrics(phase=APP_PHASE)
+
+    @application.get("/jobs", response_model=JobsResponse)
+    def jobs(
+        limit: int = Query(default=20, ge=1, le=100),
+        status: JobStatus | None = Query(default=None),
+    ) -> JobsResponse:
+        return JobsResponse(items=job_queue.list_jobs(limit=limit, status=status))
+
+    @application.get("/jobs/{job_id}", response_model=JobResponse)
+    def job(job_id: str) -> JobResponse:
+        try:
+            return job_queue.get(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @application.post("/jobs/{job_id}/cancel", response_model=JobResponse)
+    def cancel_job(job_id: str) -> JobResponse:
+        try:
+            return job_queue.request_cancel(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     @application.post("/feedback", response_model=FeedbackResponse)
     def feedback(request: FeedbackRequest) -> FeedbackResponse:

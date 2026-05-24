@@ -6,7 +6,7 @@ A local-first Python learning assistant built in working releases.
 
 Release 4 adds user judgments to the deterministic analyzer:
 
-- FastAPI service with `GET /health`, `POST /analyze`, `POST /analyze-file`, `GET /rules`, `GET /tools`, `POST /feedback`, `GET /history`, and `GET /metrics`.
+- FastAPI service with `GET /health`, `POST /analyze`, `POST /analyze-file`, `GET /rules`, `GET /tools`, `POST /feedback`, `GET /history`, `GET /metrics`, and job status endpoints.
 - SQLite persistence for analysis metadata.
 - Raw submitted code is not stored; history retains a SHA-256 hash and request metadata.
 - Python-only API boundary.
@@ -111,6 +111,9 @@ The live API is then available at:
 - `POST /feedback`
 - `GET /history`
 - `GET /metrics`
+- `GET /jobs`
+- `GET /jobs/{job_id}`
+- `POST /jobs/{job_id}/cancel`
 - Interactive API documentation at `/docs`
 
 Example request:

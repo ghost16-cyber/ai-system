@@ -96,6 +96,25 @@ class ToolsResponse(BaseModel):
     items: list[ToolMetadataResponse]
 
 
+JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    job_type: str
+    status: JobStatus
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    cancel_requested_at: datetime | None = None
+
+
+class JobsResponse(BaseModel):
+    items: list[JobResponse]
+
+
 class AnalysisHistoryItem(BaseModel):
     analysis_id: str
     created_at: datetime
