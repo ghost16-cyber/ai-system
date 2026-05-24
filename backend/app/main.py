@@ -15,6 +15,7 @@ from backend.app.database.repository import AnalysisRepository
 from backend.app.jobs import JobQueue
 from backend.app.schemas.api import (
     AnalyzeFileRequest,
+    AnalyzeProjectRequest,
     AnalyzeRequest,
     AnalyzeResponse,
     FeedbackRequest,
@@ -22,6 +23,7 @@ from backend.app.schemas.api import (
     HealthResponse,
     HistoryResponse,
     JobResponse,
+    JobAcceptedResponse,
     JobsResponse,
     JobStatus,
     MetricsResponse,
@@ -246,6 +248,42 @@ def create_app(
             code,
             relative_path.as_posix(),
             propose_file_patches=True,
+        )
+
+    @application.post(
+        "/analyze-project",
+        response_model=JobAcceptedResponse,
+        status_code=202,
+    )
+    def analyze_project(request: AnalyzeProjectRequest) -> JobAcceptedResponse:
+        requested_path = Path(request.path)
+        if requested_path.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="Project paths must be relative to the configured workspace root.",
+            )
+
+        resolved_path = (configured_workspace_root / requested_path).resolve()
+        try:
+            relative_path = resolved_path.relative_to(configured_workspace_root)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Project path must stay within the configured workspace root.",
+            ) from error
+        if not resolved_path.exists():
+            raise HTTPException(status_code=404, detail="Project directory was not found.")
+        if not resolved_path.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Requested project path is not a directory.",
+            )
+
+        queued = job_queue.enqueue("analyze_project", {"path": relative_path.as_posix()})
+        return JobAcceptedResponse(
+            job_id=queued.job_id,
+            status="queued",
+            status_url=f"/jobs/{queued.job_id}",
         )
 
     @application.get("/rules", response_model=RulesResponse)

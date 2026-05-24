@@ -251,10 +251,17 @@ def test_tools_endpoint_lists_only_available_coordinator_tools(client):
     assert response.status_code == 200
     tools = {item["name"]: item for item in response.json()["items"]}
 
-    assert set(tools) == {"analyze_code", "analyze_file", "get_rules", "get_metrics"}
+    assert set(tools) == {
+        "analyze_code",
+        "analyze_file",
+        "analyze_project",
+        "get_rules",
+        "get_metrics",
+    }
     assert tools["analyze_code"]["input_schema"]["language"] == "python"
     assert all(item["read_only"] is True for item in tools.values())
-    assert all(item["execution"] == "synchronous" for item in tools.values())
+    assert tools["analyze_project"]["execution"] == "job_backed"
+    assert tools["analyze_file"]["execution"] == "synchronous"
 
 
 def test_metrics_aggregate_findings_parse_failures_and_validated_fixes(client):

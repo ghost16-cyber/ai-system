@@ -45,6 +45,10 @@ class AnalyzeFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+class AnalyzeProjectRequest(BaseModel):
+    path: str = Field(default=".", min_length=1)
+
+
 class PatchProposalResponse(BaseModel):
     proposal_id: str
     analysis_id: str
@@ -113,6 +117,12 @@ class JobResponse(BaseModel):
 
 class JobsResponse(BaseModel):
     items: list[JobResponse]
+
+
+class JobAcceptedResponse(BaseModel):
+    job_id: str
+    status: Literal["queued"]
+    status_url: str
 
 
 class AnalysisHistoryItem(BaseModel):

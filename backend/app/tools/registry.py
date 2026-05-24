@@ -30,6 +30,13 @@ TOOL_METADATA: tuple[ToolMetadataResponse, ...] = (
         execution="synchronous",
     ),
     ToolMetadataResponse(
+        name="analyze_project",
+        description="Queue deterministic analysis of Python files in a workspace project.",
+        input_schema={"path": "workspace-relative directory path"},
+        read_only=True,
+        execution="job_backed",
+    ),
+    ToolMetadataResponse(
         name="get_metrics",
         description="Read aggregate analysis, validation, and feedback metrics.",
         input_schema={},

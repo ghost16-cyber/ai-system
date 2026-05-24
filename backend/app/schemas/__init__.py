@@ -3,6 +3,7 @@
 from .api import (
     AnalysisHistoryItem,
     AnalyzeFileRequest,
+    AnalyzeProjectRequest,
     AnalyzeRequest,
     AnalyzeResponse,
     FeedbackRequest,
@@ -12,6 +13,7 @@ from .api import (
     HistoryResponse,
     IssueResponse,
     JobResponse,
+    JobAcceptedResponse,
     JobsResponse,
     JobStatus,
     MetricsResponse,
@@ -25,6 +27,7 @@ from .api import (
 __all__ = [
     "AnalysisHistoryItem",
     "AnalyzeFileRequest",
+    "AnalyzeProjectRequest",
     "AnalyzeRequest",
     "AnalyzeResponse",
     "FeedbackRequest",
@@ -34,6 +37,7 @@ __all__ = [
     "HistoryResponse",
     "IssueResponse",
     "JobResponse",
+    "JobAcceptedResponse",
     "JobsResponse",
     "JobStatus",
     "MetricsResponse",

@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from backend.app.jobs import JobQueue, LocalWorker
+from backend.app.jobs import JobQueue, LocalWorker, build_job_handlers
 from backend.app.main import create_app
 
 
@@ -80,3 +81,74 @@ def test_jobs_api_lists_gets_and_cancels_internal_jobs(tmp_path: Path):
     assert "payload" not in detail.json()
     assert cancelled.json()["status"] == "cancelled"
     assert missing.status_code == 404
+
+
+def test_analyze_project_runs_as_worker_job_without_storing_source(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "style.py").write_text(
+        "if value == None:\n    print(value)\n",
+        encoding="utf-8",
+    )
+    (workspace / "security.py").write_text(
+        "value = eval(user_input)\n",
+        encoding="utf-8",
+    )
+    ignored = workspace / ".venv"
+    ignored.mkdir()
+    (ignored / "ignored.py").write_text("eval(hidden)\n", encoding="utf-8")
+
+    with TestClient(
+        create_app(tmp_path / "project.db", workspace_root=workspace)
+    ) as client:
+        response = client.post("/analyze-project", json={"path": "."})
+
+        assert response.status_code == 202
+        queued = response.json()
+        assert queued["status"] == "queued"
+        assert queued["status_url"] == f"/jobs/{queued['job_id']}"
+
+        worker = LocalWorker(
+            client.app.state.job_queue,
+            handlers=build_job_handlers(workspace),
+        )
+        assert worker.run_once() is True
+        completed = client.get(queued["status_url"]).json()
+
+    assert completed["status"] == "succeeded"
+    result = completed["result"]
+    assert result["python_files_analyzed"] == 2
+    assert result["total_findings"] == 2
+    assert result["findings_by_rule"] == {
+        "bad_none_comparison": 1,
+        "dangerous_eval": 1,
+    }
+    assert result["source_stored"] is False
+    assert "ignored.py" not in json.dumps(result)
+    assert "eval(user_input)" not in json.dumps(result)
+    assert "value == None" not in json.dumps(result)
+
+
+def test_analyze_project_rejects_escape_and_worker_revalidates_payload(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with TestClient(
+        create_app(tmp_path / "project.db", workspace_root=workspace)
+    ) as client:
+        response = client.post("/analyze-project", json={"path": "../outside"})
+        queued = client.app.state.job_queue.enqueue(
+            "analyze_project", {"path": "../outside"}
+        )
+        worker = LocalWorker(
+            client.app.state.job_queue,
+            handlers=build_job_handlers(workspace),
+        )
+        worker.run_once()
+        failed = client.get(f"/jobs/{queued.job_id}").json()
+
+    assert response.status_code == 400
+    assert failed["status"] == "failed"
+    assert "workspace root" in failed["error"]
