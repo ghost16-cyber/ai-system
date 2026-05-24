@@ -306,3 +306,44 @@ def test_feedback_rejects_finding_from_another_analysis(client):
     )
 
     assert response.status_code == 404
+
+def test_analyze_endpoint_suggests_fix_for_true_boolean_comparison(client):
+    response = client.post(
+        "/analyze",
+        json={
+            "code": "if flag == True:\n    print(flag)\n",
+            "language": "python",
+            "filename": "bool_true.py",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    issue = data["issues"][0]
+
+    assert issue["rule_id"] == "redundant_boolean_comparison"
+    assert issue["suggested_code"] == "if flag:\n    print(flag)\n"
+    assert issue["validation"]["status"] == "passed"
+    assert data["metadata"]["validated_fix_count"] == 1
+
+
+def test_analyze_endpoint_suggests_fix_for_false_boolean_comparison(client):
+    response = client.post(
+        "/analyze",
+        json={
+            "code": "if flag == False:\n    print(flag)\n",
+            "language": "python",
+            "filename": "bool_false.py",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+    issue = data["issues"][0]
+
+    assert issue["rule_id"] == "redundant_boolean_comparison"
+    assert issue["suggested_code"] == "if not flag:\n    print(flag)\n"
+    assert issue["validation"]["status"] == "passed"
+    assert data["metadata"]["validated_fix_count"] == 1
