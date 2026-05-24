@@ -154,6 +154,10 @@ def test_metrics_aggregate_findings_parse_failures_and_validated_fixes(client):
     assert data["average_findings_per_analysis"] == 0.75
     assert data["parse_failures"] == 1
     assert data["validated_fixes"] == 1
+    assert data["fixable_findings"] == 1
+    assert data["validated_fix_rate"] == 0.33
+    assert data["findings_without_fix"] == 2
+    assert data["fixes_by_rule"] == {"bad_none_comparison": 1}
     assert data["findings_by_rule"] == {
         "bad_none_comparison": 1,
         "dangerous_eval": 1,
@@ -347,3 +351,33 @@ def test_analyze_endpoint_suggests_fix_for_false_boolean_comparison(client):
     assert issue["suggested_code"] == "if not flag:\n    print(flag)\n"
     assert issue["validation"]["status"] == "passed"
     assert data["metadata"]["validated_fix_count"] == 1
+
+def test_metrics_reports_fix_coverage_for_multiple_fixable_rules(client):
+    submissions = [
+        "if value == None:\n    print(value)\n",
+        "if flag == True:\n    print(flag)\n",
+        "value = eval(user_input)\n",
+    ]
+
+    for code in submissions:
+        response = client.post(
+            "/analyze",
+            json={"code": code, "language": "python"},
+        )
+        assert response.status_code == 200
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["total_findings"] == 3
+    assert data["validated_fixes"] == 2
+    assert data["fixable_findings"] == 2
+    assert data["findings_without_fix"] == 1
+    assert data["validated_fix_rate"] == 0.67
+    assert data["fixes_by_rule"] == {
+        "bad_none_comparison": 1,
+        "redundant_boolean_comparison": 1,
+    }

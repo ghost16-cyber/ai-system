@@ -230,21 +230,25 @@ class AnalysisRepository:
             validation_statuses = self._count_findings_by(
                 connection, "validation_status"
             )
+            fixes_by_rule = self._count_validated_fixes_by_rule(connection)
+            fixable_findings_row = connection.execute(
+                """
+                SELECT COUNT(*) AS fixable_findings
+                FROM findings
+                WHERE validation_status IN ('passed', 'failed')
+                """
+            ).fetchone()
             feedback_totals = connection.execute(
                 """
                 SELECT
                     COUNT(*) AS total_feedback,
-                    COALESCE(SUM(CASE WHEN helpful = 1 THEN 1 ELSE 0 END), 0)
-                        AS helpful_feedback,
-                    COALESCE(SUM(CASE WHEN helpful = 0 THEN 1 ELSE 0 END), 0)
-                        AS unhelpful_feedback,
-                    COALESCE(SUM(CASE WHEN suggestion_accepted = 1 THEN 1 ELSE 0 END), 0)
-                        AS accepted_suggestions,
-                    COALESCE(SUM(CASE WHEN suggestion_accepted = 0 THEN 1 ELSE 0 END), 0)
-                        AS rejected_suggestions
+                    COALESCE(SUM(CASE WHEN helpful = 1 THEN 1 ELSE 0 END), 0) AS helpful_feedback,
+                    COALESCE(SUM(CASE WHEN helpful = 0 THEN 1 ELSE 0 END), 0) AS unhelpful_feedback,
+                    COALESCE(SUM(CASE WHEN suggestion_accepted = 1 THEN 1 ELSE 0 END), 0) AS accepted_suggestions,
+                    COALESCE(SUM(CASE WHEN suggestion_accepted = 0 THEN 1 ELSE 0 END), 0) AS rejected_suggestions
                 FROM feedback
-                """
-            ).fetchone()
+                """            ).fetchone()
+
 
         total_analyses = int(analysis_totals["total_analyses"])
         total_findings = int(analysis_totals["total_findings"])
@@ -263,6 +267,14 @@ class AnalysisRepository:
             ),
             parse_failures=int(analysis_totals["parse_failures"]),
             validated_fixes=int(analysis_totals["validated_fixes"]),
+            fixable_findings=int(fixable_findings_row["fixable_findings"]),
+            validated_fix_rate=(
+                round(int(analysis_totals["validated_fixes"]) / total_findings, 2) 
+                if total_findings 
+                else 0.0
+            ),
+            findings_without_fix=(total_findings - int(analysis_totals["validated_fixes"])),
+            fixes_by_rule=fixes_by_rule,
             findings_by_rule=findings_by_rule,
             findings_by_severity=findings_by_severity,
             validation_statuses=validation_statuses,
@@ -293,6 +305,18 @@ class AnalysisRepository:
             """
         ).fetchall()
         return {str(row[field_name]): int(row["finding_count"]) for row in rows}
+
+    def _count_validated_fixes_by_rule(self, connection: sqlite3.Connection) -> dict[str, int]:
+        rows = connection.execute(
+            """
+            SELECT rule_id, COUNT(*) AS fix_count
+            FROM findings
+            WHERE validation_status = 'passed'
+            GROUP BY rule_id
+            ORDER BY fix_count DESC, rule_id ASC
+            """
+        ).fetchall()
+        return {str(row["rule_id"]): int(row["fix_count"]) for row in rows}    
 
     def store_feedback(
         self,

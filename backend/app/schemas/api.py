@@ -93,6 +93,10 @@ class MetricsResponse(BaseModel):
     average_findings_per_analysis: float
     parse_failures: int
     validated_fixes: int
+    fixable_findings: int
+    validated_fix_rate: float
+    findings_without_fix: int
+    fixes_by_rule: dict[str, int]
     findings_by_rule: dict[str, int]
     findings_by_severity: dict[str, int]
     validation_statuses: dict[str, int]
