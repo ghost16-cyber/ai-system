@@ -23,6 +23,13 @@ TOOL_METADATA: tuple[ToolMetadataResponse, ...] = (
         execution="synchronous",
     ),
     ToolMetadataResponse(
+        name="analyze_file",
+        description="Analyze a Python file located within the configured workspace root.",
+        input_schema={"path": "workspace-relative .py path"},
+        read_only=True,
+        execution="synchronous",
+    ),
+    ToolMetadataResponse(
         name="get_metrics",
         description="Read aggregate analysis, validation, and feedback metrics.",
         input_schema={},

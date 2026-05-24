@@ -13,6 +13,16 @@ def client(tmp_path):
         yield test_client
 
 
+@pytest.fixture
+def workspace_client(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with TestClient(
+        create_app(tmp_path / "workspace-test.db", workspace_root=workspace)
+    ) as test_client:
+        yield test_client, workspace
+
+
 def test_health_endpoint_reports_ready_database(client):
     response = client.get("/health")
 
@@ -132,6 +142,46 @@ def test_analyze_endpoint_rejects_non_python_language(client):
     assert response.status_code == 400
 
 
+def test_analyze_file_uses_workspace_source_without_storing_raw_code(workspace_client):
+    test_client, workspace = workspace_client
+    code = "if value == None:\n    print(value)\n"
+    (workspace / "sample.py").write_text(code, encoding="utf-8")
+
+    response = test_client.post("/analyze-file", json={"path": "sample.py"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["filename"] == "sample.py"
+    assert [issue["rule_id"] for issue in data["issues"]] == ["bad_none_comparison"]
+    assert data["issues"][0]["validation"]["status"] == "passed"
+    assert data["metadata"]["code_stored"] is False
+    assert data["metadata"]["code_sha256"] == hashlib.sha256(code.encode()).hexdigest()
+
+    history = test_client.get("/history").json()["items"]
+    assert history[0]["filename"] == "sample.py"
+    assert "code" not in history[0]
+
+
+def test_analyze_file_rejects_paths_outside_workspace_and_non_python_files(
+    workspace_client, tmp_path
+):
+    test_client, workspace = workspace_client
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("print('outside')\n", encoding="utf-8")
+    (workspace / "escaped.py").symlink_to(outside_file)
+    (workspace / "notes.txt").write_text("not Python\n", encoding="utf-8")
+
+    traversal = test_client.post("/analyze-file", json={"path": "../outside.py"})
+    symlink_escape = test_client.post("/analyze-file", json={"path": "escaped.py"})
+    non_python = test_client.post("/analyze-file", json={"path": "notes.txt"})
+    missing = test_client.post("/analyze-file", json={"path": "missing.py"})
+
+    assert traversal.status_code == 400
+    assert symlink_escape.status_code == 400
+    assert non_python.status_code == 400
+    assert missing.status_code == 404
+
+
 def test_rules_endpoint_lists_supported_deterministic_capabilities(client):
     response = client.get("/rules")
 
@@ -162,7 +212,7 @@ def test_tools_endpoint_lists_only_available_coordinator_tools(client):
     assert response.status_code == 200
     tools = {item["name"]: item for item in response.json()["items"]}
 
-    assert set(tools) == {"analyze_code", "get_rules", "get_metrics"}
+    assert set(tools) == {"analyze_code", "analyze_file", "get_rules", "get_metrics"}
     assert tools["analyze_code"]["input_schema"]["language"] == "python"
     assert all(item["read_only"] is True for item in tools.values())
     assert all(item["execution"] == "synchronous" for item in tools.values())

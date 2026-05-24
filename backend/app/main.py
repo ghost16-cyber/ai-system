@@ -13,6 +13,7 @@ from backend.app.analyzer import add_validated_fixes, analyze_python_code
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
 from backend.app.schemas.api import (
+    AnalyzeFileRequest,
     AnalyzeRequest,
     AnalyzeResponse,
     FeedbackRequest,
@@ -29,12 +30,20 @@ from backend.app.tools import get_tool_metadata
 APP_VERSION = "0.5.0"
 APP_PHASE = "release-4-feedback"
 DEFAULT_DATABASE_PATH = Path("data/app/ai_system.db")
+DEFAULT_WORKSPACE_ROOT = Path.cwd()
 
 
-def create_app(database_path: str | Path | None = None) -> FastAPI:
+def create_app(
+    database_path: str | Path | None = None,
+    workspace_root: str | Path | None = None,
+) -> FastAPI:
     configured_path = database_path or os.getenv(
         "AI_SYSTEM_DB_PATH", str(DEFAULT_DATABASE_PATH)
     )
+    configured_workspace_root = Path(
+        workspace_root
+        or os.getenv("AI_SYSTEM_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_ROOT))
+    ).expanduser().resolve()
     repository = AnalysisRepository(configured_path)
 
     @asynccontextmanager
@@ -49,6 +58,7 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.analysis_repository = repository
+    application.state.workspace_root = configured_workspace_root
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -61,20 +71,12 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             timestamp=datetime.now(timezone.utc),
         )
 
-    @application.post("/analyze", response_model=AnalyzeResponse)
-    def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
-        language = request.language.strip().lower()
-        if language != "python":
-            raise HTTPException(
-                status_code=400,
-                detail="Only Python source code is currently supported.",
-            )
-
+    def analyze_source(code: str, filename: str | None) -> AnalyzeResponse:
         analysis_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        code_hash = hashlib.sha256(request.code.encode("utf-8")).hexdigest()
-        line_count = len(request.code.splitlines())
-        result = add_validated_fixes(request.code, analyze_python_code(request.code))
+        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        line_count = len(code.splitlines())
+        result = add_validated_fixes(code, analyze_python_code(code))
         findings = [
             issue.model_copy(update={"finding_id": str(uuid4())})
             for issue in result.issues
@@ -88,9 +90,9 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             analysis_id=analysis_id,
             created_at=created_at,
             code_hash=code_hash,
-            language=language,
-            filename=request.filename,
-            code_length=len(request.code),
+            language="python",
+            filename=filename,
+            code_length=len(code),
             line_count=line_count,
             issue_count=len(findings),
             parse_success=result.parse_success,
@@ -102,8 +104,8 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
         return AnalyzeResponse(
             analysis_id=analysis_id,
             success=True,
-            language=language,
-            filename=request.filename,
+            language="python",
+            filename=filename,
             issues=findings,
             suggestions=suggestions,
             metadata={
@@ -115,11 +117,60 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
                 "validated_fix_count": validated_fix_count,
                 "code_sha256": code_hash,
                 "code_stored": False,
-                "code_length": len(request.code),
+                "code_length": len(code),
                 "line_count": line_count,
             },
             created_at=created_at,
         )
+
+    @application.post("/analyze", response_model=AnalyzeResponse)
+    def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+        language = request.language.strip().lower()
+        if language != "python":
+            raise HTTPException(
+                status_code=400,
+                detail="Only Python source code is currently supported.",
+            )
+
+        return analyze_source(request.code, request.filename)
+
+    @application.post("/analyze-file", response_model=AnalyzeResponse)
+    def analyze_file(request: AnalyzeFileRequest) -> AnalyzeResponse:
+        requested_path = Path(request.path)
+        if requested_path.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="File paths must be relative to the configured workspace root.",
+            )
+
+        resolved_path = (configured_workspace_root / requested_path).resolve()
+        try:
+            relative_path = resolved_path.relative_to(configured_workspace_root)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="File path must stay within the configured workspace root.",
+            ) from error
+
+        if resolved_path.suffix.lower() != ".py":
+            raise HTTPException(
+                status_code=400,
+                detail="Only Python files can currently be analyzed.",
+            )
+        if not resolved_path.exists():
+            raise HTTPException(status_code=404, detail="Python file was not found.")
+        if not resolved_path.is_file():
+            raise HTTPException(status_code=400, detail="Requested path is not a file.")
+
+        try:
+            code = resolved_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Python file must be UTF-8 encoded.",
+            ) from error
+
+        return analyze_source(code, relative_path.as_posix())
 
     @application.get("/rules", response_model=RulesResponse)
     def rules() -> RulesResponse:

@@ -6,7 +6,7 @@ A local-first Python learning assistant built in working releases.
 
 Release 4 adds user judgments to the deterministic analyzer:
 
-- FastAPI service with `GET /health`, `POST /analyze`, `GET /rules`, `GET /tools`, `POST /feedback`, `GET /history`, and `GET /metrics`.
+- FastAPI service with `GET /health`, `POST /analyze`, `POST /analyze-file`, `GET /rules`, `GET /tools`, `POST /feedback`, `GET /history`, and `GET /metrics`.
 - SQLite persistence for analysis metadata.
 - Raw submitted code is not stored; history retains a SHA-256 hash and request metadata.
 - Python-only API boundary.
@@ -100,6 +100,7 @@ The live API is then available at:
 
 - `GET /health`
 - `POST /analyze`
+- `POST /analyze-file`
 - `GET /rules`
 - `GET /tools`
 - `POST /feedback`
@@ -116,7 +117,9 @@ curl -X POST http://127.0.0.1:8000/analyze \
 ```
 
 Set `AI_SYSTEM_DB_PATH` to use a different SQLite path. The default local
-database is `data/app/ai_system.db`, which is excluded from Git.
+database is `data/app/ai_system.db`, which is excluded from Git. Set
+`AI_SYSTEM_WORKSPACE_ROOT` to limit `POST /analyze-file` to a specific local
+project root; file requests must be relative Python paths within that root.
 
 The `TMP=/tmp TEMP=/tmp` prefix prevents WSL pytest capture errors when the
 shell inherits a Windows temporary directory.

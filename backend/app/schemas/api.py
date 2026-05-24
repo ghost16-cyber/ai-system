@@ -41,6 +41,10 @@ class AnalyzeRequest(BaseModel):
     filename: str | None = None
 
 
+class AnalyzeFileRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
 class AnalyzeResponse(BaseModel):
     analysis_id: str
     success: bool

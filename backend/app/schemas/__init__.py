@@ -2,6 +2,7 @@
 
 from .api import (
     AnalysisHistoryItem,
+    AnalyzeFileRequest,
     AnalyzeRequest,
     AnalyzeResponse,
     FeedbackRequest,
@@ -19,6 +20,7 @@ from .api import (
 
 __all__ = [
     "AnalysisHistoryItem",
+    "AnalyzeFileRequest",
     "AnalyzeRequest",
     "AnalyzeResponse",
     "FeedbackRequest",
