@@ -81,6 +81,45 @@ def test_missing_docstring_ignores_private_documented_and_nested_definitions():
     )
 
 
+def test_unused_import_flags_unreferenced_module_level_bindings():
+    result = analyze_python_code(
+        "import os\n"
+        "import json as codec\n"
+        "from pathlib import Path\n"
+        "\n"
+        "Path('demo.py')\n"
+    )
+
+    issues = [issue for issue in result.issues if issue.rule_id == "unused_import"]
+
+    assert [issue.line for issue in issues] == [1, 2]
+    assert [issue.message for issue in issues] == [
+        "Imported name `os` is not used in this module.",
+        "Imported name `codec` is not used in this module.",
+    ]
+    assert all(issue.category == "maintainability" for issue in issues)
+    assert all(issue.suggested_code is None for issue in issues)
+
+
+def test_unused_import_ignores_used_exports_wildcards_future_and_local_imports():
+    result = analyze_python_code(
+        "from __future__ import annotations\n"
+        "from helpers import *\n"
+        "from service import Handler\n"
+        "import os\n"
+        "\n"
+        "__all__ = ['Handler']\n"
+        "print(os.path)\n"
+        "\n"
+        "def documented():\n"
+        "    \"\"\"Load an optional implementation.\"\"\"\n"
+        "    import optional_dependency\n"
+        "    return optional_dependency\n"
+    )
+
+    assert not any(issue.rule_id == "unused_import" for issue in result.issues)
+
+
 def test_method_named_eval_is_not_treated_as_builtin_eval():
     result = analyze_python_code("parser.eval(value)\n")
 

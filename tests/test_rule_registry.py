@@ -15,6 +15,7 @@ def test_rule_registry_contains_active_rules():
         "bad_none_comparison",
         "redundant_boolean_comparison",
         "missing_docstring",
+        "unused_import",
     }
 
 
