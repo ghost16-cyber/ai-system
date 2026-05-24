@@ -12,6 +12,7 @@ Release 4 adds user judgments to the deterministic analyzer:
 - Python-only API boundary.
 - Python `ast` static analysis with structured rule findings and source locations.
 - Conservative deterministic fix suggestions with validation.
+- Compact patch proposals for validated fixes returned by `POST /analyze-file`; no file edits are applied.
 - SQLite-backed aggregate metrics for analyses, findings, parsing, and validated fixes.
 - Finding-linked feedback for helpfulness and validated suggestion acceptance.
 - No ML, RAG, local model, or automatic code rewriting is active yet.
@@ -47,6 +48,10 @@ Each proposed replacement must:
 - parse as valid Python;
 - remove exactly one target finding;
 - introduce no new medium/high severity finding.
+
+For file analysis, a validated single-line replacement is also returned as a
+patch proposal with the file hash and line number. Proposals are not applied
+automatically.
 
 Other findings keep guidance and report `validation.status: "not_available"`.
 

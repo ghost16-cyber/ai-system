@@ -45,6 +45,19 @@ class AnalyzeFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 
+class PatchProposalResponse(BaseModel):
+    proposal_id: str
+    analysis_id: str
+    finding_id: str
+    path: str
+    original_file_sha256: str
+    start_line: int
+    end_line: int
+    replacement: str
+    validation_status: Literal["passed"]
+    status: Literal["proposed"] = "proposed"
+
+
 class AnalyzeResponse(BaseModel):
     analysis_id: str
     success: bool
@@ -52,6 +65,7 @@ class AnalyzeResponse(BaseModel):
     filename: str | None
     issues: list[IssueResponse]
     suggestions: list[str]
+    patch_proposals: list[PatchProposalResponse] = Field(default_factory=list)
     metadata: dict[str, Any]
     created_at: datetime
 

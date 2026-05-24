@@ -21,6 +21,7 @@ from backend.app.schemas.api import (
     HealthResponse,
     HistoryResponse,
     MetricsResponse,
+    PatchProposalResponse,
     RulesResponse,
     ToolsResponse,
 )
@@ -71,7 +72,53 @@ def create_app(
             timestamp=datetime.now(timezone.utc),
         )
 
-    def analyze_source(code: str, filename: str | None) -> AnalyzeResponse:
+    def build_patch_proposal(
+        *,
+        code: str,
+        code_hash: str,
+        path: str,
+        analysis_id: str,
+        finding,
+    ) -> PatchProposalResponse | None:
+        if finding.validation.status != "passed" or finding.suggested_code is None:
+            return None
+        if finding.finding_id is None:
+            return None
+
+        original_lines = code.splitlines(keepends=True)
+        replacement_lines = finding.suggested_code.splitlines(keepends=True)
+        if len(original_lines) != len(replacement_lines):
+            return None
+
+        changed_lines = [
+            line_number
+            for line_number, (original, replacement) in enumerate(
+                zip(original_lines, replacement_lines), start=1
+            )
+            if original != replacement
+        ]
+        if len(changed_lines) != 1:
+            return None
+
+        line_number = changed_lines[0]
+        return PatchProposalResponse(
+            proposal_id=str(uuid4()),
+            analysis_id=analysis_id,
+            finding_id=finding.finding_id,
+            path=path,
+            original_file_sha256=code_hash,
+            start_line=line_number,
+            end_line=line_number,
+            replacement=replacement_lines[line_number - 1],
+            validation_status="passed",
+        )
+
+    def analyze_source(
+        code: str,
+        filename: str | None,
+        *,
+        propose_file_patches: bool = False,
+    ) -> AnalyzeResponse:
         analysis_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
         code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
@@ -100,6 +147,23 @@ def create_app(
             phase=APP_PHASE,
             findings=findings,
         )
+        patch_proposals = []
+        if propose_file_patches and filename is not None:
+            patch_proposals = [
+                proposal
+                for finding in findings
+                if (
+                    proposal := build_patch_proposal(
+                        code=code,
+                        code_hash=code_hash,
+                        path=filename,
+                        analysis_id=analysis_id,
+                        finding=finding,
+                    )
+                )
+                is not None
+            ]
+            repository.store_patch_proposals(patch_proposals)
 
         return AnalyzeResponse(
             analysis_id=analysis_id,
@@ -108,6 +172,7 @@ def create_app(
             filename=filename,
             issues=findings,
             suggestions=suggestions,
+            patch_proposals=patch_proposals,
             metadata={
                 "phase": APP_PHASE,
                 "engine": "python-ast-static-analyzer",
@@ -170,7 +235,11 @@ def create_app(
                 detail="Python file must be UTF-8 encoded.",
             ) from error
 
-        return analyze_source(code, relative_path.as_posix())
+        return analyze_source(
+            code,
+            relative_path.as_posix(),
+            propose_file_patches=True,
+        )
 
     @application.get("/rules", response_model=RulesResponse)
     def rules() -> RulesResponse:

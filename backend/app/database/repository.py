@@ -9,6 +9,7 @@ from backend.app.schemas.api import (
     FeedbackResponse,
     IssueResponse,
     MetricsResponse,
+    PatchProposalResponse,
 )
 
 
@@ -96,6 +97,29 @@ class AnalysisRepository:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_finding_ref
                 ON feedback (finding_ref)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS patch_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    analysis_id TEXT NOT NULL,
+                    finding_ref TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    original_file_sha256 TEXT NOT NULL,
+                    start_line INTEGER NOT NULL,
+                    end_line INTEGER NOT NULL,
+                    replacement TEXT NOT NULL,
+                    validation_status TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    FOREIGN KEY (analysis_id) REFERENCES analyses (analysis_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_patch_proposals_finding_ref
+                ON patch_proposals (finding_ref)
                 """
             )
 
@@ -209,6 +233,43 @@ class AnalysisRepository:
             ).fetchall()
 
         return [AnalysisHistoryItem.model_validate(dict(row)) for row in rows]
+
+    def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:
+        if not proposals:
+            return
+
+        with self._connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO patch_proposals (
+                    proposal_id,
+                    analysis_id,
+                    finding_ref,
+                    path,
+                    original_file_sha256,
+                    start_line,
+                    end_line,
+                    replacement,
+                    validation_status,
+                    status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        proposal.proposal_id,
+                        proposal.analysis_id,
+                        proposal.finding_id,
+                        proposal.path,
+                        proposal.original_file_sha256,
+                        proposal.start_line,
+                        proposal.end_line,
+                        proposal.replacement,
+                        proposal.validation_status,
+                        proposal.status,
+                    )
+                    for proposal in proposals
+                ],
+            )
 
     def get_metrics(self, *, phase: str) -> MetricsResponse:
         with self._connect() as connection:

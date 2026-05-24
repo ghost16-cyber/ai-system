@@ -46,6 +46,7 @@ def test_analyze_endpoint_records_python_request_without_storing_source(client):
     assert data["filename"] == "demo.py"
     assert data["issues"] == []
     assert data["suggestions"] == []
+    assert data["patch_proposals"] == []
     assert data["metadata"]["engine"] == "python-ast-static-analyzer"
     assert data["metadata"]["suggestion_engine"] == "deterministic-validated-fixes"
     assert data["metadata"]["validated_fix_count"] == 0
@@ -142,7 +143,7 @@ def test_analyze_endpoint_rejects_non_python_language(client):
     assert response.status_code == 400
 
 
-def test_analyze_file_uses_workspace_source_without_storing_raw_code(workspace_client):
+def test_analyze_file_creates_compact_validated_patch_proposal(workspace_client):
     test_client, workspace = workspace_client
     code = "if value == None:\n    print(value)\n"
     (workspace / "sample.py").write_text(code, encoding="utf-8")
@@ -154,12 +155,50 @@ def test_analyze_file_uses_workspace_source_without_storing_raw_code(workspace_c
     assert data["filename"] == "sample.py"
     assert [issue["rule_id"] for issue in data["issues"]] == ["bad_none_comparison"]
     assert data["issues"][0]["validation"]["status"] == "passed"
+    assert data["patch_proposals"] == [
+        {
+            "proposal_id": data["patch_proposals"][0]["proposal_id"],
+            "analysis_id": data["analysis_id"],
+            "finding_id": data["issues"][0]["finding_id"],
+            "path": "sample.py",
+            "original_file_sha256": hashlib.sha256(code.encode()).hexdigest(),
+            "start_line": 1,
+            "end_line": 1,
+            "replacement": "if value is None:\n",
+            "validation_status": "passed",
+            "status": "proposed",
+        }
+    ]
     assert data["metadata"]["code_stored"] is False
     assert data["metadata"]["code_sha256"] == hashlib.sha256(code.encode()).hexdigest()
 
     history = test_client.get("/history").json()["items"]
     assert history[0]["filename"] == "sample.py"
     assert "code" not in history[0]
+
+    with sqlite3.connect(test_client.app.state.analysis_repository.database_path) as connection:
+        stored = connection.execute(
+            "SELECT path, replacement, original_file_sha256 FROM patch_proposals"
+        ).fetchone()
+    assert stored == (
+        "sample.py",
+        "if value is None:\n",
+        hashlib.sha256(code.encode()).hexdigest(),
+    )
+    assert code not in stored[1]
+
+
+def test_analyze_file_does_not_propose_unvalidated_guidance(workspace_client):
+    test_client, workspace = workspace_client
+    (workspace / "unsafe.py").write_text("value = eval(user_input)\n", encoding="utf-8")
+
+    response = test_client.post("/analyze-file", json={"path": "unsafe.py"})
+
+    assert response.status_code == 200
+    assert response.json()["patch_proposals"] == []
+    with sqlite3.connect(test_client.app.state.analysis_repository.database_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM patch_proposals").fetchone()[0]
+    assert count == 0
 
 
 def test_analyze_file_rejects_paths_outside_workspace_and_non_python_files(
@@ -416,6 +455,7 @@ def test_analyze_endpoint_suggests_fix_for_true_boolean_comparison(client):
     assert issue["rule_id"] == "redundant_boolean_comparison"
     assert issue["suggested_code"] == "if flag:\n    print(flag)\n"
     assert issue["validation"]["status"] == "passed"
+    assert data["patch_proposals"] == []
     assert data["metadata"]["validated_fix_count"] == 1
 
 
