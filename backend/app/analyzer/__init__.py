@@ -1,6 +1,6 @@
-# Inference API and pipeline orchestration
-from .pipeline import InferencePipeline
-from .code_analyzer import SUGGESTIONS
-from .file_analyzer import extract_code_snippets
+"""Deterministic analysis used by the active API."""
 
-__all__ = ["InferencePipeline", "SUGGESTIONS", "extract_code_snippets"]
+from .static_analyzer import StaticAnalysisResult, analyze_python_code
+from .fix_engine import add_validated_fixes
+
+__all__ = ["StaticAnalysisResult", "add_validated_fixes", "analyze_python_code"]

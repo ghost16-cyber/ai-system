@@ -11,6 +11,7 @@ testing/.pytest_cache/
 testing/pytest-cache-files-*/
 testing/pytest_tmp/
 data/datasets-main/
+data/app/
 legacy_archive/
 repo_scanner.zip
 logs/

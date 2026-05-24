@@ -26,6 +26,7 @@ ai-coding-assistant/
 |-- vscode-extension/
 |-- docs/
 |-- requirements.txt
+|-- requirements-optional-experiments.txt
 |-- pytest.ini
 |-- README.md
 `-- STRUCTURE.md
@@ -35,11 +36,15 @@ ai-coding-assistant/
 
 | Capability | Location |
 | --- | --- |
-| Main pipeline entry point | `backend/app/main.py` |
-| Inference and code analysis | `backend/app/analyzer/` |
-| Fast ML classification | `backend/app/ml/` |
-| Retrieval and embeddings | `backend/app/rag/` |
-| LLM model loading | `backend/app/llm/` |
+| Active FastAPI entry point | `backend/app/main.py` |
+| Active SQLite history, feedback and metrics repository | `backend/app/database/repository.py` |
+| Active API schemas | `backend/app/schemas/api.py` |
+| Active AST static analyzer | `backend/app/analyzer/static_analyzer.py` |
+| Active validated fix engine | `backend/app/analyzer/fix_engine.py` |
+| Experimental code analysis | `backend/app/analyzer/` |
+| Experimental ML classification | `backend/app/ml/` |
+| Experimental retrieval and embeddings | `backend/app/rag/` |
+| Experimental LLM model loading | `backend/app/llm/` |
 | Repository scanner/planner | `backend/app/repo_scanner/` |
 | Utilities and configuration | `backend/app/core/` |
 | Model artifacts | `data/models/` |
@@ -52,12 +57,13 @@ input data; it is not application source code.
 ## Running
 
 ```bash
-python -m pytest
-python training/scripts/train_classifier.py
-python training/scripts/build_rag.py
-python -m backend.app.main
+TMP=/tmp TEMP=/tmp python -m pytest
+uvicorn backend.app.main:app --reload
 python -m backend.app.repo_scanner.cli .
 ```
 
-`backend/app/api/`, `backend/app/database/`, and `backend/app/schemas/` are
-ready for the planned FastAPI endpoint and SQLite analysis storage.
+Release 4 exposes the FastAPI and SQLite foundation, deterministic Python AST
+findings, conservative validated fixes for simple `None` comparisons,
+privacy-preserving aggregate metrics, and finding-linked user feedback.
+Experimental ML, retrieval, and model-loading modules are preserved for staged
+integration after this backend layer is live-tested.

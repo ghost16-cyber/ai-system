@@ -1,1 +1,5 @@
-"""Database persistence layer for stored analyses."""
+"""SQLite persistence for analysis metadata."""
+
+from .repository import AnalysisRepository
+
+__all__ = ["AnalysisRepository"]
