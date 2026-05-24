@@ -132,6 +132,42 @@ def test_analyze_endpoint_rejects_non_python_language(client):
     assert response.status_code == 400
 
 
+def test_rules_endpoint_lists_supported_deterministic_capabilities(client):
+    response = client.get("/rules")
+
+    assert response.status_code == 200
+    rules = {item["rule_id"]: item for item in response.json()["items"]}
+
+    assert set(rules) == {
+        "syntax_error",
+        "bare_except",
+        "dangerous_eval",
+        "dangerous_exec",
+        "mutable_default_argument",
+        "bad_none_comparison",
+        "redundant_boolean_comparison",
+        "missing_docstring",
+        "unused_import",
+        "inefficient_loop",
+    }
+    assert rules["bad_none_comparison"]["fix_available"] is True
+    assert rules["redundant_boolean_comparison"]["fix_available"] is True
+    assert rules["unused_import"]["fix_available"] is False
+    assert rules["syntax_error"]["source"] == "static_rule"
+
+
+def test_tools_endpoint_lists_only_available_coordinator_tools(client):
+    response = client.get("/tools")
+
+    assert response.status_code == 200
+    tools = {item["name"]: item for item in response.json()["items"]}
+
+    assert set(tools) == {"analyze_code", "get_rules", "get_metrics"}
+    assert tools["analyze_code"]["input_schema"]["language"] == "python"
+    assert all(item["read_only"] is True for item in tools.values())
+    assert all(item["execution"] == "synchronous" for item in tools.values())
+
+
 def test_metrics_aggregate_findings_parse_failures_and_validated_fixes(client):
     submissions = [
         "value = 1\n",

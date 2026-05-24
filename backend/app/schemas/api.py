@@ -52,6 +52,32 @@ class AnalyzeResponse(BaseModel):
     created_at: datetime
 
 
+class RuleMetadataResponse(BaseModel):
+    rule_id: str
+    category: str
+    severity: str
+    description: str
+    suggestion: str
+    source: str = "static_rule"
+    fix_available: bool = False
+
+
+class RulesResponse(BaseModel):
+    items: list[RuleMetadataResponse]
+
+
+class ToolMetadataResponse(BaseModel):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool
+    execution: Literal["synchronous", "job_backed"]
+
+
+class ToolsResponse(BaseModel):
+    items: list[ToolMetadataResponse]
+
+
 class AnalysisHistoryItem(BaseModel):
     analysis_id: str
     created_at: datetime

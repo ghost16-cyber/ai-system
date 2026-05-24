@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
+from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
 from backend.app.schemas.api import (
     AnalyzeRequest,
@@ -19,7 +20,10 @@ from backend.app.schemas.api import (
     HealthResponse,
     HistoryResponse,
     MetricsResponse,
+    RulesResponse,
+    ToolsResponse,
 )
+from backend.app.tools import get_tool_metadata
 
 
 APP_VERSION = "0.5.0"
@@ -116,6 +120,14 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
             },
             created_at=created_at,
         )
+
+    @application.get("/rules", response_model=RulesResponse)
+    def rules() -> RulesResponse:
+        return RulesResponse(items=get_rule_metadata())
+
+    @application.get("/tools", response_model=ToolsResponse)
+    def tools() -> ToolsResponse:
+        return ToolsResponse(items=get_tool_metadata())
 
     @application.get("/history", response_model=HistoryResponse)
     def history(limit: int = Query(default=20, ge=1, le=100)) -> HistoryResponse:
