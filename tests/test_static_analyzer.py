@@ -120,6 +120,36 @@ def test_unused_import_ignores_used_exports_wildcards_future_and_local_imports()
     assert not any(issue.rule_id == "unused_import" for issue in result.issues)
 
 
+def test_inefficient_loop_flags_direct_read_iteration_by_index():
+    result = analyze_python_code(
+        "for index in range(len(items)):\n"
+        "    print(items[index])\n"
+    )
+
+    issues = [issue for issue in result.issues if issue.rule_id == "inefficient_loop"]
+
+    assert len(issues) == 1
+    assert issues[0].line == 1
+    assert issues[0].category == "performance"
+    assert issues[0].severity == "low"
+    assert issues[0].suggested_code is None
+
+
+def test_inefficient_loop_ignores_index_use_mutation_and_unused_index():
+    result = analyze_python_code(
+        "for index in range(len(items)):\n"
+        "    print(index, items[index])\n"
+        "\n"
+        "for index in range(len(items)):\n"
+        "    items[index] = transform(items[index])\n"
+        "\n"
+        "for index in range(len(items)):\n"
+        "    pass\n"
+    )
+
+    assert not any(issue.rule_id == "inefficient_loop" for issue in result.issues)
+
+
 def test_method_named_eval_is_not_treated_as_builtin_eval():
     result = analyze_python_code("parser.eval(value)\n")
 

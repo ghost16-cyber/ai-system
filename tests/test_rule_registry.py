@@ -16,6 +16,7 @@ def test_rule_registry_contains_active_rules():
         "redundant_boolean_comparison",
         "missing_docstring",
         "unused_import",
+        "inefficient_loop",
     }
 
 
