@@ -54,6 +54,7 @@ def test_analyze_endpoint_records_python_request_without_storing_source(client):
 def test_analyze_endpoint_returns_static_findings_and_stores_count(client):
     code = (
         "def risky(values=[]):\n"
+        "    \"\"\"Return a risky sample value.\"\"\"\n"
         "    try:\n"
         "        if eval('1') == None:\n"
         "            return True\n"

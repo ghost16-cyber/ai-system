@@ -6,7 +6,7 @@ from backend.app.analyzer.rules.registry import (
 )
 
 
-def test_rule_registry_contains_release_5_rules():
+def test_rule_registry_contains_active_rules():
     assert get_registered_rule_ids() == {
         "bare_except",
         "dangerous_eval",
@@ -14,6 +14,7 @@ def test_rule_registry_contains_release_5_rules():
         "mutable_default_argument",
         "bad_none_comparison",
         "redundant_boolean_comparison",
+        "missing_docstring",
     }
 
 
@@ -30,6 +31,7 @@ def test_rule_registry_returns_fresh_rule_instances():
 def test_registered_rules_can_run_against_ast_tree():
     tree = ast.parse(
         "def risky(items=[]):\n"
+        "    \"\"\"Return a risky sample value.\"\"\"\n"
         "    try:\n"
         "        if eval('1') == None:\n"
         "            return True\n"

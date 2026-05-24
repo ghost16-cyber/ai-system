@@ -4,6 +4,7 @@ from backend.app.analyzer import add_validated_fixes, analyze_python_code
 def test_clean_python_has_no_static_findings():
     result = analyze_python_code(
         "def add(left, right):\n"
+        "    \"\"\"Add two values.\"\"\"\n"
         "    return left + right\n"
     )
 
@@ -14,6 +15,7 @@ def test_clean_python_has_no_static_findings():
 def test_ast_rules_detect_high_confidence_patterns():
     result = analyze_python_code(
         "def risky(items=[]):\n"
+        "    \"\"\"Return a risky sample value.\"\"\"\n"
         "    try:\n"
         "        value = eval('input')\n"
         "        exec('value = 1')\n"
@@ -33,6 +35,50 @@ def test_ast_rules_detect_high_confidence_patterns():
         "bare_except",
     }
     assert all(issue.source == "static_rule" for issue in result.issues)
+
+
+def test_missing_docstring_flags_public_top_level_definitions():
+    result = analyze_python_code(
+        "def parse_value():\n"
+        "    return 1\n"
+        "\n"
+        "async def fetch_value():\n"
+        "    return 1\n"
+        "\n"
+        "class PublicService:\n"
+        "    pass\n"
+    )
+
+    issues = [
+        issue for issue in result.issues if issue.rule_id == "missing_docstring"
+    ]
+
+    assert [issue.line for issue in issues] == [1, 4, 7]
+    assert all(issue.category == "maintainability" for issue in issues)
+    assert all(issue.severity == "low" for issue in issues)
+    assert all(issue.suggested_code is None for issue in issues)
+
+
+def test_missing_docstring_ignores_private_documented_and_nested_definitions():
+    result = analyze_python_code(
+        "def _private_helper():\n"
+        "    pass\n"
+        "\n"
+        "def documented():\n"
+        "    \"\"\"Describe the public function.\"\"\"\n"
+        "    def nested_without_docstring():\n"
+        "        pass\n"
+        "    return nested_without_docstring\n"
+        "\n"
+        "class DocumentedService:\n"
+        "    \"\"\"Describe the public class.\"\"\"\n"
+        "    def method_without_docstring(self):\n"
+        "        pass\n"
+    )
+
+    assert not any(
+        issue.rule_id == "missing_docstring" for issue in result.issues
+    )
 
 
 def test_method_named_eval_is_not_treated_as_builtin_eval():
