@@ -1,27 +1,39 @@
 # AI Coding Assistant
 
-A local-first Python learning assistant built in working releases.
+A local-first Python coding assistant backend built in working releases.
 
-## Current Release: 4 - Feedback Capture
+## Current Checkpoint: Release 4.1 - Foundation Stabilization
 
-Release 4 adds user judgments to the deterministic analyzer:
+Release 4.1 stabilizes the deterministic backend before any ML, RAG, or SLM
+layer is activated. The current system is a local FastAPI service with
+allowlisted tools, deterministic Python analysis, validated proposals, feedback,
+metrics, and queued project analysis.
+
+### Active Capabilities
 
 - FastAPI service with direct code/file analysis, queued project analysis, rule/tool discovery, feedback, history, metrics, and job status endpoints.
-- SQLite persistence for analysis metadata.
-- Raw submitted code is not stored; history retains a SHA-256 hash and request metadata.
+- SQLite persistence for analysis metadata, finding metadata, feedback, metrics, patch proposals, and queued jobs.
+- Privacy-preserving history: raw submitted code is not stored; history retains a SHA-256 hash and request metadata.
 - Python-only API boundary.
 - Python `ast` static analysis with structured rule findings and source locations.
 - Conservative deterministic fix suggestions with validation.
-- Compact patch proposals for validated fixes returned by `POST /analyze-file`; no file edits are applied.
-- SQLite-backed aggregate metrics for analyses, findings, parsing, and validated fixes.
+- Compact patch proposals for validated single-file fixes returned by `POST /analyze-file`; no file edits are applied automatically.
+- Local SQLite-backed worker for queued project analysis.
+- Project analysis summaries that exclude source code and validated replacement text.
 - Finding-linked feedback for helpfulness and validated suggestion acceptance.
-- No ML, RAG, local model, or automatic code rewriting is active yet.
 
-Existing experimental analyzer, model, and retrieval modules remain in the
-repository for evaluation in later releases. They are not loaded by the active
-static analysis service.
+### Inactive / Future Layers
 
-### Active Rules
+The repository still contains experimental modules for later stages, but they are
+not loaded by the active backend:
+
+- ML classifier hints are inactive.
+- RAG and embeddings are inactive.
+- Local SLM/Ollama coordination is inactive.
+- Dashboard and VS Code extension layers are inactive.
+- No automatic code rewriting is active.
+
+## Active Rules
 
 | Rule | Category |
 | --- | --- |
@@ -36,7 +48,7 @@ static analysis service.
 | `unused_import` | Maintainability |
 | `inefficient_loop` | Performance |
 
-### Active Validated Fixes
+## Active Validated Fixes
 
 The deterministic fix engine currently generates replacements for simple `None`
 comparisons and simple boolean comparisons:
@@ -66,7 +78,7 @@ automatically.
 
 Other findings keep guidance and report `validation.status: "not_available"`.
 
-### Active Metrics
+## Active Metrics
 
 `GET /metrics` returns:
 
@@ -82,7 +94,7 @@ The database stores finding metadata needed for these totals, such as rule ID,
 severity, and validation status. It does not store submitted code or suggested
 replacement code.
 
-### Active Feedback
+## Active Feedback
 
 Each issue returned by `/analyze` includes a `finding_id`. Submit feedback using
 that ID and its `analysis_id`:
@@ -101,7 +113,7 @@ validated replacement. Guidance-only findings can still receive helpfulness
 feedback. Re-submitting feedback for a finding updates its current judgment
 rather than inflating metrics.
 
-Metrics now also report feedback totals, helpful/unhelpful counts, accepted or
+Metrics also report feedback totals, helpful/unhelpful counts, accepted or
 rejected validated suggestions, and suggestion acceptance rate.
 
 ## Run It
@@ -112,6 +124,13 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 TMP=/tmp TEMP=/tmp python -m pytest
 uvicorn backend.app.main:app --reload
+```
+
+Run the single local worker in a second terminal to process queued project
+analysis:
+
+```bash
+python -m backend.app.jobs
 ```
 
 The live API is then available at:
@@ -130,31 +149,19 @@ The live API is then available at:
 - `POST /jobs/{job_id}/cancel`
 - Interactive API documentation at `/docs`
 
-Example request:
-
-```bash
-curl -X POST http://127.0.0.1:8000/analyze \
-  -H 'Content-Type: application/json' \
-  -d '{"code":"print(\"hello\")\n","language":"python","filename":"demo.py"}'
-```
+See `docs/demo.md` for a complete local demonstration flow.
 
 Set `AI_SYSTEM_DB_PATH` to use a different SQLite path. The default local
 database is `data/app/ai_system.db`, which is excluded from Git. Set
 `AI_SYSTEM_WORKSPACE_ROOT` to limit `POST /analyze-file` to a specific local
 project root; file and project requests must stay within that root.
 
-Run the single local worker in a second terminal to process queued project
-analysis:
-
-```bash
-python -m backend.app.jobs
-```
-
 The `TMP=/tmp TEMP=/tmp` prefix prevents WSL pytest capture errors when the
 shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Before adding more issue types or broader fixes, this layer should be exercised
-with realistic code samples. The next implementation layer can add another
-carefully validated fix template or caching for repeated analyses.
+After this stabilization checkpoint, the next planned implementation layer is a
+non-authoritative ML hints layer. ML hints should be returned separately from
+rule findings, should not produce validated patches, and should not affect safety
+decisions.
