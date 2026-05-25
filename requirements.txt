@@ -1,4 +1,4 @@
-# Release 0: working API foundation
+# Release 4: feedback capture backend
 fastapi>=0.100.0
 uvicorn>=0.23.0
 pydantic>=2.0.0
