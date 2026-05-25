@@ -38,10 +38,21 @@ static analysis service.
 
 ### Active Validated Fixes
 
-Only simple `None` comparisons currently receive a generated replacement:
+The deterministic fix engine currently generates replacements for simple `None`
+comparisons and simple boolean comparisons:
 
-- `value == None` -> `value is None`
-- `value != None` -> `value is not None`
+| Finding | Replacement |
+| --- | --- |
+| `value == None` | `value is None` |
+| `value != None` | `value is not None` |
+| `flag == True` | `flag` |
+| `True == flag` | `flag` |
+| `flag != False` | `flag` |
+| `False != flag` | `flag` |
+| `flag == False` | `not flag` |
+| `False == flag` | `not flag` |
+| `flag != True` | `not flag` |
+| `True != flag` | `not flag` |
 
 Each proposed replacement must:
 
@@ -62,8 +73,10 @@ Other findings keep guidance and report `validation.status: "not_available"`.
 - total, clean, and finding-producing analyses;
 - total and average findings;
 - parse failure and validated-fix totals;
+- fixable finding and validated-fix coverage totals;
 - finding counts grouped by rule and severity;
-- validation status counts.
+- validation status counts;
+- feedback totals and suggestion acceptance rate.
 
 The database stores finding metadata needed for these totals, such as rule ID,
 severity, and validation status. It does not store submitted code or suggested
