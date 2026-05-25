@@ -64,6 +64,23 @@ def test_queue_cancels_queued_job_and_recovers_interrupted_running_job(tmp_path:
     assert "Worker stopped" in recovered.error
 
 
+def test_queue_marks_running_job_cancel_requested_without_killing_worker(
+    tmp_path: Path,
+):
+    queue = JobQueue(tmp_path / "jobs.db")
+    queue.initialize()
+    queued = queue.enqueue("long_running", {})
+
+    claimed = queue.claim_next()
+    cancelled = queue.request_cancel(queued.job_id)
+
+    assert claimed is not None
+    assert claimed.job_id == queued.job_id
+    assert cancelled.status == "running"
+    assert cancelled.cancel_requested_at is not None
+    assert cancelled.finished_at is None
+
+
 def test_jobs_api_lists_gets_and_cancels_internal_jobs(tmp_path: Path):
     database_path = tmp_path / "api.db"
     with TestClient(create_app(database_path)) as client:
@@ -152,3 +169,100 @@ def test_analyze_project_rejects_escape_and_worker_revalidates_payload(tmp_path:
     assert response.status_code == 400
     assert failed["status"] == "failed"
     assert "workspace root" in failed["error"]
+
+
+def test_analyze_project_empty_directory_succeeds_with_empty_summary(
+    tmp_path: Path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with TestClient(
+        create_app(tmp_path / "project.db", workspace_root=workspace)
+    ) as client:
+        queued = client.post("/analyze-project", json={"path": "."}).json()
+        worker = LocalWorker(
+            client.app.state.job_queue,
+            handlers=build_job_handlers(workspace),
+        )
+        assert worker.run_once() is True
+        completed = client.get(queued["status_url"]).json()
+
+    assert completed["status"] == "succeeded"
+    assert completed["result"] == {
+        "path": ".",
+        "files_discovered": 0,
+        "python_files_analyzed": 0,
+        "total_findings": 0,
+        "findings_by_rule": {},
+        "findings_by_severity": {},
+        "files": [],
+        "read_errors": [],
+        "source_stored": False,
+    }
+
+
+def test_analyze_project_records_invalid_utf8_read_error_without_failing_job(
+    tmp_path: Path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "bad_encoding.py").write_bytes(b"\xff\xfe\x00\x00")
+
+    with TestClient(
+        create_app(tmp_path / "project.db", workspace_root=workspace)
+    ) as client:
+        queued = client.post("/analyze-project", json={"path": "."}).json()
+        worker = LocalWorker(
+            client.app.state.job_queue,
+            handlers=build_job_handlers(workspace),
+        )
+        assert worker.run_once() is True
+        completed = client.get(queued["status_url"]).json()
+
+    assert completed["status"] == "succeeded"
+    result = completed["result"]
+    assert result["python_files_analyzed"] == 0
+    assert result["total_findings"] == 0
+    assert result["read_errors"] == [
+        {
+            "path": "bad_encoding.py",
+            "error": "Python file must be UTF-8 encoded.",
+        }
+    ]
+
+
+def test_analyze_project_result_excludes_validated_replacement_text(
+    tmp_path: Path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for index in range(25):
+        (workspace / f"module_{index}.py").write_text(
+            "if flag == True:\n    print(flag)\n",
+            encoding="utf-8",
+        )
+
+    with TestClient(
+        create_app(tmp_path / "project.db", workspace_root=workspace)
+    ) as client:
+        queued = client.post("/analyze-project", json={"path": "."}).json()
+        worker = LocalWorker(
+            client.app.state.job_queue,
+            handlers=build_job_handlers(workspace),
+        )
+        assert worker.run_once() is True
+        completed = client.get(queued["status_url"]).json()
+
+    assert completed["status"] == "succeeded"
+    result = completed["result"]
+    result_json = json.dumps(result)
+
+    assert result["python_files_analyzed"] == 25
+    assert result["total_findings"] == 25
+    assert result["findings_by_rule"] == {"redundant_boolean_comparison": 25}
+    assert len(result["files"]) == 25
+    assert "suggested_code" not in result_json
+    assert "replacement" not in result_json
+    assert "if flag:" not in result_json
+    assert "if flag == True" not in result_json
