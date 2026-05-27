@@ -9,8 +9,10 @@ from backend.app.schemas.api import (
     FeedbackResponse,
     IssueResponse,
     MetricsResponse,
+    PatchApplyResponse,
     PatchProposalResponse,
     PatchProposalStatus,
+    PatchVerificationResponse,
 )
 
 
@@ -113,9 +115,36 @@ class AnalysisRepository:
                     replacement TEXT NOT NULL,
                     validation_status TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    updated_file_sha256 TEXT,
+                    applied_at TEXT,
+                    verification_status TEXT NOT NULL DEFAULT 'not_requested',
+                    verification_tool TEXT,
+                    verification_exit_code INTEGER,
+                    verification_checked_at TEXT,
                     FOREIGN KEY (analysis_id) REFERENCES analyses (analysis_id)
                 )
                 """
+            )
+            self._add_column_if_missing(
+                connection, "patch_proposals", "updated_file_sha256", "TEXT"
+            )
+            self._add_column_if_missing(
+                connection, "patch_proposals", "applied_at", "TEXT"
+            )
+            self._add_column_if_missing(
+                connection,
+                "patch_proposals",
+                "verification_status",
+                "TEXT NOT NULL DEFAULT 'not_requested'",
+            )
+            self._add_column_if_missing(
+                connection, "patch_proposals", "verification_tool", "TEXT"
+            )
+            self._add_column_if_missing(
+                connection, "patch_proposals", "verification_exit_code", "INTEGER"
+            )
+            self._add_column_if_missing(
+                connection, "patch_proposals", "verification_checked_at", "TEXT"
             )
             connection.execute(
                 """
@@ -325,6 +354,63 @@ class AnalysisRepository:
             )
         if cursor.rowcount == 0:
             raise LookupError("Patch proposal not found for status update.")
+
+    def record_patch_application(
+        self,
+        result: PatchApplyResponse,
+        *,
+        applied_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE patch_proposals
+                SET
+                    status = ?,
+                    updated_file_sha256 = ?,
+                    applied_at = ?
+                WHERE proposal_id = ?
+                """,
+                (
+                    result.status,
+                    result.updated_file_sha256,
+                    applied_at.isoformat(),
+                    result.proposal_id,
+                ),
+            )
+        if cursor.rowcount == 0:
+            raise LookupError("Patch proposal not found for application update.")
+
+    def record_patch_verification(
+        self,
+        proposal_id: str,
+        verification: PatchVerificationResponse,
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE patch_proposals
+                SET
+                    verification_status = ?,
+                    verification_tool = ?,
+                    verification_exit_code = ?,
+                    verification_checked_at = ?
+                WHERE proposal_id = ?
+                """,
+                (
+                    verification.status,
+                    verification.tool,
+                    verification.exit_code,
+                    (
+                        verification.checked_at.isoformat()
+                        if verification.checked_at is not None
+                        else None
+                    ),
+                    proposal_id,
+                ),
+            )
+        if cursor.rowcount == 0:
+            raise LookupError("Patch proposal not found for verification update.")
 
     def get_metrics(self, *, phase: str) -> MetricsResponse:
         with self._connect() as connection:
