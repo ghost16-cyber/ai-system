@@ -14,6 +14,7 @@ from backend.app.analyzer.patch_apply import (
     PatchApplyConflictError,
     apply_patch_proposal,
 )
+from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
 from backend.app.jobs import JobQueue
@@ -377,10 +378,16 @@ def create_app(
                 workspace_root=configured_workspace_root,
                 proposal=proposal,
             )
-            repository.update_patch_proposal_status(
-                proposal_id=proposal.proposal_id,
-                status=result.status,
+            repository.record_patch_application(
+                result,
+                applied_at=datetime.now(timezone.utc),
             )
+
+            if request.run_pytest:
+                verification = run_pytest_verification(configured_workspace_root)
+                repository.record_patch_verification(proposal.proposal_id, verification)
+                result = result.model_copy(update={"verification": verification})
+
             return result
 
         except LookupError as error:

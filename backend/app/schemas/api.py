@@ -67,6 +67,19 @@ class PatchProposalResponse(BaseModel):
 
 class PatchApplyRequest(BaseModel):
     proposal_id: str = Field(..., min_length=1)
+    run_pytest: bool = False
+
+
+PatchVerificationStatus = Literal["not_requested", "passed", "failed", "error"]
+
+
+class PatchVerificationResponse(BaseModel):
+    requested: bool = False
+    tool: Literal["pytest"] | None = None
+    status: PatchVerificationStatus = "not_requested"
+    exit_code: int | None = None
+    output: str | None = None
+    checked_at: datetime | None = None
 
 
 class PatchApplyResponse(BaseModel):
@@ -79,6 +92,9 @@ class PatchApplyResponse(BaseModel):
     original_file_sha256: str
     updated_file_sha256: str
     message: str
+    verification: PatchVerificationResponse = Field(
+        default_factory=PatchVerificationResponse
+    )
 
 
 class AnalyzeResponse(BaseModel):
