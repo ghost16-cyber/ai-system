@@ -1,4 +1,8 @@
-# Cleanup Complete - Prevention Guide
+# Historical Cleanup Complete - Prevention Guide
+
+> Historical record: paths and runtime claims below describe an earlier cleanup
+> stage. See `README.md`, `STRUCTURE.md`, and `docs/FINAL_SYSTEM_STATUS.md` for
+> the current deterministic backend and queued project-analysis worker.
 
 ## ✅ What Was Cleaned Up
 

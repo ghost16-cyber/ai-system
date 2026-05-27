@@ -1,126 +1,116 @@
-# 🎉 SYSTEM SETUP COMPLETE - ALL COMPONENTS WORKING
+# Current System Status: Deterministic Foundation Stabilized
 
-## ✅ WHAT WE'VE ACCOMPLISHED
+## Checkpoint
 
-### 1. **Repository Organization**
-- Eliminated all duplicate files (10 archived safely)
-- Reorganized into clean modular structure
-- Fixed all import paths
-- Created proper data/model locations
+The active system is a local-first Python coding assistant backend at the
+foundation stabilization checkpoint. It combines deterministic analysis,
+validated fix proposals, metadata and feedback persistence, and a lightweight
+SQLite-backed project-analysis worker.
 
-### 2. **Real Embeddings Implementation** ✨
-- Replaced dummy embeddings with **sentence-transformers/all-MiniLM-L6-v2**
-- Created FAISS vector store with 62 code examples
-- Files: `data/models/rag_index.faiss`, `data/models/rag_metadata.json`
+This document describes the active runtime. Older experimental ML, RAG, and
+model-loading files may remain in the repository, but they are not active
+application capabilities.
 
-### 3. **4-bit Qwen2.5-Coder Integration** ⚡
-- Successfully loads in 4-bit quantization (1.1GB VRAM)
-- Added LoRA adapter for efficient fine-tuning
-- Generates detailed code explanations
+## Active Runtime
 
-### 4. **Complete Pipeline Functionality** 🚀
-- Fast pattern classifier (CPU - instant results)
-- Confidence-based decision making (uses LLM when confidence > threshold)
-- RAG retrieval with real examples
-- LLM generation with caching
-- Memory monitoring (GPU: 4GB, RAM: 32GB)
+### Deterministic Analysis
 
-### 5. **Dependencies Properly Installed**
-- bitsandbytes 0.49.2 (4-bit quantization)
-- transformers 5.7.0
-- peft 0.19.1 (LoRA)
-- sentence-transformers 5.4.1 (embeddings)
-- All in py311_trt conda environment
+The FastAPI backend analyzes Python source using `ast` and the custom rule
+registry. It currently reports these deterministic issue types:
 
-## 📊 SYSTEM PERFORMANCE
+| Rule | Category |
+| --- | --- |
+| `syntax_error` | Correctness |
+| `bare_except` | Reliability |
+| `dangerous_eval` | Security |
+| `dangerous_exec` | Security |
+| `mutable_default_argument` | Correctness |
+| `bad_none_comparison` | Style |
+| `redundant_boolean_comparison` | Style |
+| `missing_docstring` | Maintainability |
+| `unused_import` | Maintainability |
+| `inefficient_loop` | Performance |
 
-```
-GPU VRAM Usage: 1116MB / 4096MB (27.3%)
-System RAM Usage: 18.5GB / 32GB (57.1%)
-Model Load Time: ~3 seconds
-Analysis Time: ~5 seconds (first run), faster with caching
-```
+### Validated Proposals
 
-## 🧪 TEST RESULTS
+The fix engine creates deterministic proposals for simple `None` and boolean
+comparisons. Before a proposal is exposed as validated, the system checks that:
 
-**Input Code:**
-```python
-for i in range(len(items)):
-    print(items[i])
-```
+- the suggested Python source parses;
+- exactly one target finding is removed;
+- no new medium- or high-severity finding is introduced.
 
-**Output:**
-```json
-{
-  "pattern": "inefficient_loop",
-  "confidence": 0.85,
-  "suggestion": "Use direct iteration instead",
-  "issue": "Inefficient loop using range(len(...))",
-  "example": "for item in items:",
-  "analysis": "Detailed LLM-generated explanation...",
-  "used_llm": true,
-  "retrieved_examples": [
-    {"code": "...", "explanation": "inefficient_loop"},
-    {"code": "...", "explanation": "inefficient_loop"}
-  ]
-}
-```
+For `POST /analyze-file`, validated single-line replacements may also be stored
+as compact patch proposals linked to a file hash and source line. The backend
+does not automatically apply those proposals.
 
-## 🚀 HOW TO USE
+### Local Job Worker
 
-### Run Full Analysis:
+Project analysis uses the SQLite-backed job queue under `backend/app/jobs/`.
+`POST /analyze-project` queues an allowlisted job; a separate local worker
+executes it:
+
 ```bash
-conda activate py311_trt
-python main.py
+python -m backend.app.jobs
 ```
 
-### Train Components:
-```bash
-# Fast classifier
-python training/scripts/train_classifier.py
+The project job reuses repository scanning for file discovery and uses the
+production deterministic analyzer for Python findings. Results contain paths,
+counts, parse status, findings, and read errors; they do not contain raw
+source code or replacement code.
 
-# RAG vector store
-python training/scripts/build_rag.py
+### Persistence and Privacy
 
-# 4-bit model + LoRA
-python training/scripts/setup_lora.py
+SQLite stores:
+
+- analysis metadata and SHA-256 source hashes;
+- finding metadata;
+- feedback and suggestion-acceptance judgments;
+- aggregate metrics;
+- compact validated patch proposals;
+- queued job status and structured job results.
+
+Raw submitted or scanned source is not stored by default.
+
+## Active API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Backend and database health |
+| `POST /analyze` | Synchronous Python snippet analysis |
+| `POST /analyze-file` | Workspace-scoped Python file analysis and validated proposals |
+| `POST /analyze-project` | Queue workspace-scoped project analysis |
+| `GET /rules` | Active deterministic rule metadata |
+| `GET /tools` | Current coordinator-facing tool metadata |
+| `POST /feedback` | Record finding feedback |
+| `GET /history` | Analysis metadata history |
+| `GET /metrics` | Aggregate findings, validation, and feedback metrics |
+| `GET /jobs` | Recent job status |
+| `GET /jobs/{job_id}` | Job result or status |
+| `POST /jobs/{job_id}/cancel` | Request job cancellation |
+
+## Inactive Layers
+
+The following are intentionally not enabled in the active backend:
+
+- ML classifier hints or statistical ranking;
+- RAG retrieval and embeddings;
+- local SLM/Ollama explanations or tool coordination;
+- autonomous code changes or patch application;
+- web dashboard;
+- VS Code extension.
+
+These remain later roadmap layers after the deterministic tool and job
+foundation has been exercised.
+
+## Verification
+
+The current backend verification suite passes:
+
+```text
+60 passed
 ```
 
-## 🎯 RESOURCE ALLOCATION
-
-| Component | Resource Usage | Notes |
-|-----------|----------------|-------|
-| 4-bit Qwen2.5-Coder | 1.1GB VRAM | GPU-accelerated |
-| Fast Classifier | 2-4GB RAM | CPU-only |
-| Vector Store | 2-4GB RAM | CPU-based FAISS |
-| Embedding Model | 1GB RAM | CPU/GPU option |
-| **Total** | **~2.1GB VRAM, ~8GB RAM** | Leaves plenty of headroom |
-
-## ✨ KEY FEATURES
-
-✅ **Hardware Optimized** - Respects RTX 3050 4GB VRAM limits  
-✅ **Fast Responses** - Classifier gives instant results, LLM only when needed  
-✅ **Smart Caching** - Embeddings and LLM responses cached for speed  
-✅ **Real Examples** - RAG retrieves actual code patterns from your dataset  
-✅ **Extensible** - Modular design makes it easy to add new components  
-✅ **Production Ready** - Proper logging, error handling, monitoring  
-
-## 📚 DOCUMENTATION
-
-- `README.md` - Quick start guide
-- `STRUCTURE.md` - Detailed architecture
-- `CLEANUP_GUIDE.md` - Prevention rules for duplicates
-- `VERIFICATION_REPORT.md` - Technical verification details
-
----
-
-**Your AI Code Analysis System is now fully operational!** 🎉
-
-It combines:
-- Speed (fast classifier for 90% of cases)
-- Accuracy (LLM for complex cases)
-- Efficiency (4-bit quantization)
-- Intelligence (RAG with real examples)
-- Reliability (proper error handling)
-
-Ready for production use! 🚀
+The next planned intelligence layer is non-authoritative ML hints, returned
+separately from deterministic findings and never used to authorize code
+changes.

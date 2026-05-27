@@ -1,4 +1,8 @@
-# 🎯 DUPLICATE FILES ELIMINATED - FINAL SUMMARY
+# Historical Duplicate Files Cleanup Summary
+
+> Historical record: this summarizes an earlier repository cleanup and does not
+> describe the active runtime layout. See `README.md`, `STRUCTURE.md`, and
+> `docs/FINAL_SYSTEM_STATUS.md` for current system status.
 
 ## What You Asked For
 > "3. Duplicate Files = Future Bugs"

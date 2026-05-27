@@ -1,4 +1,8 @@
-# 📋 Repository Reorganization - Migration Guide
+# Historical Repository Reorganization - Migration Guide
+
+> Historical record: this document describes an earlier experimental layout and
+> does not represent the active runtime. See `README.md`, `STRUCTURE.md`, and
+> `docs/FINAL_SYSTEM_STATUS.md` for the current deterministic backend.
 
 Your repository has been reorganized into a clean, professional structure for the ML/RL system. Here's what changed:
 

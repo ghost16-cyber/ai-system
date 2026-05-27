@@ -1,4 +1,8 @@
-# Verification Report - Cleanup Success
+# Historical Verification Report - Cleanup Success
+
+> Historical record: this report verifies an earlier cleanup stage and contains
+> old layout references. See `README.md`, `STRUCTURE.md`, and
+> `docs/FINAL_SYSTEM_STATUS.md` for the active verified backend.
 
 ## 📊 Cleanup Summary
 
