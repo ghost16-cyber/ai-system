@@ -10,6 +10,7 @@ from backend.app.schemas.api import (
     IssueResponse,
     MetricsResponse,
     PatchProposalResponse,
+    PatchProposalStatus,
 )
 
 
@@ -270,6 +271,60 @@ class AnalysisRepository:
                     for proposal in proposals
                 ],
             )
+
+    def get_patch_proposal(self, proposal_id: str) -> PatchProposalResponse:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    proposal_id,
+                    analysis_id,
+                    finding_ref AS finding_id,
+                    path,
+                    original_file_sha256,
+                    start_line,
+                    end_line,
+                    replacement,
+                    validation_status,
+                    status
+                FROM patch_proposals
+                WHERE proposal_id = ?
+                """,
+                (proposal_id,),
+            ).fetchone()
+
+        if row is None:
+            raise LookupError("Patch proposal not found.")
+
+        return PatchProposalResponse(
+            proposal_id=row["proposal_id"],
+            analysis_id=row["analysis_id"],
+            finding_id=row["finding_id"],
+            path=row["path"],
+            original_file_sha256=row["original_file_sha256"],
+            start_line=row["start_line"],
+            end_line=row["end_line"],
+            replacement=row["replacement"],
+            validation_status=row["validation_status"],
+            status=row["status"],
+        )
+
+    def update_patch_proposal_status(
+        self,
+        proposal_id: str,
+        status: PatchProposalStatus,
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE patch_proposals
+                SET status = ?
+                WHERE proposal_id = ?
+                """,
+                (status, proposal_id),
+            )
+        if cursor.rowcount == 0:
+            raise LookupError("Patch proposal not found for status update.")
 
     def get_metrics(self, *, phase: str) -> MetricsResponse:
         with self._connect() as connection:
