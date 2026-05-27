@@ -49,6 +49,9 @@ class AnalyzeProjectRequest(BaseModel):
     path: str = Field(default=".", min_length=1)
 
 
+PatchProposalStatus = Literal["proposed", "applied", "conflict"]
+
+
 class PatchProposalResponse(BaseModel):
     proposal_id: str
     analysis_id: str
@@ -59,7 +62,23 @@ class PatchProposalResponse(BaseModel):
     end_line: int
     replacement: str
     validation_status: Literal["passed"]
-    status: Literal["proposed"] = "proposed"
+    status: PatchProposalStatus = "proposed"
+
+
+class PatchApplyRequest(BaseModel):
+    proposal_id: str = Field(..., min_length=1)
+
+
+class PatchApplyResponse(BaseModel):
+    proposal_id: str
+    analysis_id: str
+    finding_id: str
+    path: str
+    status: Literal["applied"]
+    applied: bool
+    original_file_sha256: str
+    updated_file_sha256: str
+    message: str
 
 
 class AnalyzeResponse(BaseModel):

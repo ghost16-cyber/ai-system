@@ -10,6 +10,10 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
+from backend.app.analyzer.patch_apply import (
+    PatchApplyConflictError,
+    apply_patch_proposal,
+)
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
 from backend.app.jobs import JobQueue
@@ -22,11 +26,13 @@ from backend.app.schemas.api import (
     FeedbackResponse,
     HealthResponse,
     HistoryResponse,
-    JobResponse,
     JobAcceptedResponse,
+    JobResponse,
     JobsResponse,
     JobStatus,
     MetricsResponse,
+    PatchApplyRequest,
+    PatchApplyResponse,
     PatchProposalResponse,
     RulesResponse,
     ToolsResponse,
@@ -51,6 +57,7 @@ def create_app(
         workspace_root
         or os.getenv("AI_SYSTEM_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_ROOT))
     ).expanduser().resolve()
+
     repository = AnalysisRepository(configured_path)
     job_queue = JobQueue(configured_path)
 
@@ -66,6 +73,7 @@ def create_app(
         version=APP_VERSION,
         lifespan=lifespan,
     )
+
     application.state.analysis_repository = repository
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
@@ -96,20 +104,24 @@ def create_app(
 
         original_lines = code.splitlines(keepends=True)
         replacement_lines = finding.suggested_code.splitlines(keepends=True)
+
         if len(original_lines) != len(replacement_lines):
             return None
 
         changed_lines = [
             line_number
             for line_number, (original, replacement) in enumerate(
-                zip(original_lines, replacement_lines), start=1
+                zip(original_lines, replacement_lines),
+                start=1,
             )
             if original != replacement
         ]
+
         if len(changed_lines) != 1:
             return None
 
         line_number = changed_lines[0]
+
         return PatchProposalResponse(
             proposal_id=str(uuid4()),
             analysis_id=analysis_id,
@@ -132,11 +144,14 @@ def create_app(
         created_at = datetime.now(timezone.utc)
         code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
         line_count = len(code.splitlines())
+
         result = add_validated_fixes(code, analyze_python_code(code))
+
         findings = [
             issue.model_copy(update={"finding_id": str(uuid4())})
             for issue in result.issues
         ]
+
         suggestions = list(dict.fromkeys(issue.suggestion for issue in findings))
         validated_fix_count = sum(
             issue.validation.status == "passed" for issue in findings
@@ -156,7 +171,9 @@ def create_app(
             phase=APP_PHASE,
             findings=findings,
         )
+
         patch_proposals = []
+
         if propose_file_patches and filename is not None:
             patch_proposals = [
                 proposal
@@ -200,6 +217,7 @@ def create_app(
     @application.post("/analyze", response_model=AnalyzeResponse)
     def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         language = request.language.strip().lower()
+
         if language != "python":
             raise HTTPException(
                 status_code=400,
@@ -211,6 +229,7 @@ def create_app(
     @application.post("/analyze-file", response_model=AnalyzeResponse)
     def analyze_file(request: AnalyzeFileRequest) -> AnalyzeResponse:
         requested_path = Path(request.path)
+
         if requested_path.is_absolute():
             raise HTTPException(
                 status_code=400,
@@ -218,6 +237,7 @@ def create_app(
             )
 
         resolved_path = (configured_workspace_root / requested_path).resolve()
+
         try:
             relative_path = resolved_path.relative_to(configured_workspace_root)
         except ValueError as error:
@@ -231,8 +251,10 @@ def create_app(
                 status_code=400,
                 detail="Only Python files can currently be analyzed.",
             )
+
         if not resolved_path.exists():
             raise HTTPException(status_code=404, detail="Python file was not found.")
+
         if not resolved_path.is_file():
             raise HTTPException(status_code=400, detail="Requested path is not a file.")
 
@@ -257,6 +279,7 @@ def create_app(
     )
     def analyze_project(request: AnalyzeProjectRequest) -> JobAcceptedResponse:
         requested_path = Path(request.path)
+
         if requested_path.is_absolute():
             raise HTTPException(
                 status_code=400,
@@ -264,6 +287,7 @@ def create_app(
             )
 
         resolved_path = (configured_workspace_root / requested_path).resolve()
+
         try:
             relative_path = resolved_path.relative_to(configured_workspace_root)
         except ValueError as error:
@@ -271,15 +295,21 @@ def create_app(
                 status_code=400,
                 detail="Project path must stay within the configured workspace root.",
             ) from error
+
         if not resolved_path.exists():
             raise HTTPException(status_code=404, detail="Project directory was not found.")
+
         if not resolved_path.is_dir():
             raise HTTPException(
                 status_code=400,
                 detail="Requested project path is not a directory.",
             )
 
-        queued = job_queue.enqueue("analyze_project", {"path": relative_path.as_posix()})
+        queued = job_queue.enqueue(
+            "analyze_project",
+            {"path": relative_path.as_posix()},
+        )
+
         return JobAcceptedResponse(
             job_id=queued.job_id,
             status="queued",
@@ -336,6 +366,40 @@ def create_app(
             )
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/patch/apply", response_model=PatchApplyResponse)
+    def patch_apply(request: PatchApplyRequest) -> PatchApplyResponse:
+        try:
+            proposal = repository.get_patch_proposal(request.proposal_id)
+            result = apply_patch_proposal(
+                workspace_root=configured_workspace_root,
+                proposal=proposal,
+            )
+            repository.update_patch_proposal_status(
+                proposal_id=proposal.proposal_id,
+                status=result.status,
+            )
+            return result
+
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        except PatchApplyConflictError as error:
+            try:
+                repository.update_patch_proposal_status(
+                    proposal_id=request.proposal_id,
+                    status="conflict",
+                )
+            except LookupError:
+                pass
+
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
