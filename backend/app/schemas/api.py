@@ -65,6 +65,20 @@ class PatchProposalResponse(BaseModel):
     status: PatchProposalStatus = "proposed"
 
 
+class PatchPreviewRequest(BaseModel):
+    proposal_id: str = Field(..., min_length=1)
+
+
+class PatchPreviewResponse(BaseModel):
+    proposal_id: str
+    path: str
+    status: PatchProposalStatus
+    unified_diff: str | None = None
+    original_file_sha256: str
+    current_file_sha256: str
+    preview_available: bool
+
+
 class PatchApplyRequest(BaseModel):
     proposal_id: str = Field(..., min_length=1)
     run_pytest: bool = False

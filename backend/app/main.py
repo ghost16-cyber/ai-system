@@ -14,6 +14,7 @@ from backend.app.analyzer.patch_apply import (
     PatchApplyConflictError,
     apply_patch_proposal,
 )
+from backend.app.analyzer.patch_preview import preview_patch_proposal
 from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.database.repository import AnalysisRepository
@@ -34,6 +35,8 @@ from backend.app.schemas.api import (
     MetricsResponse,
     PatchApplyRequest,
     PatchApplyResponse,
+    PatchPreviewRequest,
+    PatchPreviewResponse,
     PatchProposalResponse,
     RulesResponse,
     ToolsResponse,
@@ -407,6 +410,21 @@ def create_app(
 
             raise HTTPException(status_code=409, detail=str(error)) from error
 
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/patch/preview", response_model=PatchPreviewResponse)
+    def patch_preview(request: PatchPreviewRequest) -> PatchPreviewResponse:
+        try:
+            proposal = repository.get_patch_proposal(request.proposal_id)
+            return preview_patch_proposal(
+                workspace_root=configured_workspace_root,
+                proposal=proposal,
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 

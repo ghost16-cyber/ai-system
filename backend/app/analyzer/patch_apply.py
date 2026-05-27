@@ -10,11 +10,11 @@ class PatchApplyConflictError(Exception):
     """Raised when the file changed after the patch proposal was created."""
 
 
-def _sha256_text(value: str) -> str:
+def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _resolve_workspace_file(workspace_root: Path, relative_path: str) -> Path:
+def resolve_workspace_file(workspace_root: Path, relative_path: str) -> Path:
     requested_path = Path(relative_path)
 
     if requested_path.is_absolute():
@@ -55,14 +55,14 @@ def apply_patch_proposal(
     if proposal.end_line < proposal.start_line:
         raise ValueError("Patch end_line must be greater than or equal to start_line.")
 
-    target_path = _resolve_workspace_file(workspace_root, proposal.path)
+    target_path = resolve_workspace_file(workspace_root, proposal.path)
 
     try:
         original_code = target_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise ValueError("Patch target file must be UTF-8 encoded.") from error
 
-    current_sha256 = _sha256_text(original_code)
+    current_sha256 = sha256_text(original_code)
 
     if current_sha256 != proposal.original_file_sha256:
         raise PatchApplyConflictError(
@@ -84,7 +84,7 @@ def apply_patch_proposal(
         + original_lines[proposal.end_line :]
     )
     updated_code = "".join(updated_lines)
-    updated_sha256 = _sha256_text(updated_code)
+    updated_sha256 = sha256_text(updated_code)
 
     target_path.write_text(updated_code, encoding="utf-8")
 
