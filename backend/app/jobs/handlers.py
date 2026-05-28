@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from backend.app.analyzer import analyze_python_code
+from backend.app.orchestrator import JsonlTraceStore, Orchestrator, OrchestratorConfig
 from backend.app.repo_scanner import scan_repository
 
 from .worker import JobHandler
@@ -13,6 +14,7 @@ def build_job_handlers(workspace_root: str | Path) -> dict[str, JobHandler]:
     root = Path(workspace_root).expanduser().resolve()
     return {
         "analyze_project": lambda payload: analyze_project_job(payload, root),
+        "orchestrate_task": lambda payload: orchestrate_task_job(payload, root),
     }
 
 
@@ -92,6 +94,42 @@ def analyze_project_job(
         "read_errors": read_errors,
         "source_stored": False,
     }
+
+
+def orchestrate_task_job(
+    payload: dict[str, object],
+    workspace_root: Path,
+) -> dict[str, object]:
+    goal = str(payload.get("goal", "")).strip()
+    if not goal:
+        raise ValueError("Task goal is required.")
+
+    requested_path = Path(str(payload.get("path", ".")))
+    if requested_path.is_absolute():
+        raise ValueError("Task path must be relative to the configured workspace root.")
+
+    project_root = (workspace_root / requested_path).resolve()
+    try:
+        relative_root = project_root.relative_to(workspace_root)
+    except ValueError as error:
+        raise ValueError("Task path must stay within the configured workspace root.") from error
+    if not project_root.exists() or not project_root.is_dir():
+        raise ValueError("Task directory was not found.")
+
+    orchestrator = Orchestrator(
+        workspace_root=workspace_root,
+        trace_store=JsonlTraceStore(Path("data/app/orchestrator_traces.jsonl")),
+        config=OrchestratorConfig(
+            max_steps=int(payload.get("max_steps", 12)),
+        ),
+    )
+    result = orchestrator.run(
+        goal=goal,
+        project_path=relative_root.as_posix(),
+        allow_edits=bool(payload.get("allow_edits", False)),
+        allow_tests=bool(payload.get("allow_tests", True)),
+    )
+    return result.model_dump(mode="json")
 
 
 def _workspace_path(relative_root: Path, scanned_path: str) -> str:

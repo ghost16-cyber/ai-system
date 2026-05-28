@@ -49,6 +49,14 @@ class AnalyzeProjectRequest(BaseModel):
     path: str = Field(default=".", min_length=1)
 
 
+class OrchestrateRequest(BaseModel):
+    goal: str = Field(..., min_length=1)
+    path: str = Field(default=".", min_length=1)
+    allow_edits: bool = False
+    allow_tests: bool = True
+    max_steps: int = Field(default=12, ge=1, le=50)
+
+
 PatchProposalStatus = Literal["proposed", "applied", "conflict"]
 
 

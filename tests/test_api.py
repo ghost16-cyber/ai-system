@@ -257,10 +257,17 @@ def test_tools_endpoint_lists_only_available_coordinator_tools(client):
         "analyze_project",
         "get_rules",
         "get_metrics",
+        "orchestrate",
     }
     assert tools["analyze_code"]["input_schema"]["language"] == "python"
-    assert all(item["read_only"] is True for item in tools.values())
+    assert all(
+        item["read_only"] is True
+        for name, item in tools.items()
+        if name != "orchestrate"
+    )
+    assert tools["orchestrate"]["read_only"] is False
     assert tools["analyze_project"]["execution"] == "job_backed"
+    assert tools["orchestrate"]["execution"] == "job_backed"
     assert tools["analyze_file"]["execution"] == "synchronous"
 
 

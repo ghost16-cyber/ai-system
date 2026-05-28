@@ -43,6 +43,22 @@ TOOL_METADATA: tuple[ToolMetadataResponse, ...] = (
         read_only=True,
         execution="synchronous",
     ),
+    ToolMetadataResponse(
+        name="orchestrate",
+        description=(
+            "Queue a controlled SLM-ready task loop with advisors, safe tools, "
+            "validators, and redacted trace output."
+        ),
+        input_schema={
+            "goal": "string",
+            "path": "workspace-relative directory path",
+            "allow_edits": "boolean",
+            "allow_tests": "boolean",
+            "max_steps": "integer",
+        },
+        read_only=False,
+        execution="job_backed",
+    ),
 )
 
 

@@ -19,6 +19,7 @@ metrics, and queued project analysis.
 - Conservative deterministic fix suggestions with validation.
 - Compact patch proposals for validated single-file fixes returned by `POST /analyze-file`; no file edits are applied automatically.
 - Local SQLite-backed worker for queued project analysis.
+- SLM-ready orchestrator job loop with structured task state, advisor hooks, safe tool routing, policy-gated edits, validators, and redacted traces.
 - Project analysis summaries that exclude source code and validated replacement text.
 - Finding-linked feedback for helpfulness and validated suggestion acceptance.
 
@@ -30,6 +31,7 @@ not loaded by the active backend:
 - ML classifier hints are inactive.
 - RAG and embeddings are inactive.
 - Local SLM/Ollama coordination is inactive.
+- The orchestrator currently uses a deterministic scripted proposer until a local SLM adapter is connected.
 - Dashboard and VS Code extension layers are inactive.
 - No automatic code rewriting is active.
 
@@ -139,6 +141,7 @@ The live API is then available at:
 - `POST /analyze`
 - `POST /analyze-file`
 - `POST /analyze-project`
+- `POST /orchestrate`
 - `GET /rules`
 - `GET /tools`
 - `POST /feedback`

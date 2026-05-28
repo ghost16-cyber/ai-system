@@ -33,6 +33,7 @@ from backend.app.schemas.api import (
     JobsResponse,
     JobStatus,
     MetricsResponse,
+    OrchestrateRequest,
     PatchApplyRequest,
     PatchApplyResponse,
     PatchPreviewRequest,
@@ -312,6 +313,56 @@ def create_app(
         queued = job_queue.enqueue(
             "analyze_project",
             {"path": relative_path.as_posix()},
+        )
+
+        return JobAcceptedResponse(
+            job_id=queued.job_id,
+            status="queued",
+            status_url=f"/jobs/{queued.job_id}",
+        )
+
+    @application.post(
+        "/orchestrate",
+        response_model=JobAcceptedResponse,
+        status_code=202,
+    )
+    def orchestrate(request: OrchestrateRequest) -> JobAcceptedResponse:
+        requested_path = Path(request.path)
+
+        if requested_path.is_absolute():
+            raise HTTPException(
+                status_code=400,
+                detail="Task paths must be relative to the configured workspace root.",
+            )
+
+        resolved_path = (configured_workspace_root / requested_path).resolve()
+
+        try:
+            relative_path = resolved_path.relative_to(configured_workspace_root)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="Task path must stay within the configured workspace root.",
+            ) from error
+
+        if not resolved_path.exists():
+            raise HTTPException(status_code=404, detail="Task directory was not found.")
+
+        if not resolved_path.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Task path must be a directory.",
+            )
+
+        queued = job_queue.enqueue(
+            "orchestrate_task",
+            {
+                "goal": request.goal,
+                "path": relative_path.as_posix(),
+                "allow_edits": request.allow_edits,
+                "allow_tests": request.allow_tests,
+                "max_steps": request.max_steps,
+            },
         )
 
         return JobAcceptedResponse(
