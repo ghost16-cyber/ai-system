@@ -46,6 +46,63 @@ class PatchProposer:
         )
 
 
+class PatchThenRepeatTestsProposer:
+    def __init__(self):
+        self.calls = 0
+
+    def propose_next_action(self, state):
+        self.calls += 1
+        if self.calls == 1:
+            return ToolAction(
+                action="propose_patch",
+                reason="Replace subtraction with addition.",
+                args={
+                    "path": "calculator.py",
+                    "old": "return a - b",
+                    "new": "return a + b",
+                },
+            )
+        if self.calls == 2:
+            return ToolAction(
+                action="apply_patch",
+                reason="Apply patch.",
+                args={},
+            )
+        return ToolAction(
+            action="run_tests",
+            reason="Keep running tests.",
+            args={"command": "python -m pytest -q"},
+        )
+
+
+class RepeatSearchProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="search_files",
+            reason="Repeat the same search.",
+            args={"query": "calculator"},
+        )
+
+
+class RunTestsThenStopProposer:
+    def __init__(self):
+        self.calls = 0
+
+    def propose_next_action(self, state):
+        self.calls += 1
+        if self.calls == 1:
+            return ToolAction(
+                action="run_tests",
+                reason="Gather failing test evidence.",
+                args={"command": "python -m pytest -q"},
+            )
+        return ToolAction(
+            action="final_response",
+            reason="Stop after advisors update candidates.",
+            args={"message": "done"},
+        )
+
+
 def test_orchestrator_runs_scripted_loop_and_redacts_read_content(tmp_path: Path):
     (tmp_path / "calculator.py").write_text(
         "def add(a, b):\n    return a - b\n",
@@ -110,6 +167,138 @@ def test_apply_patch_requires_explicit_edit_permission(tmp_path: Path):
 
     assert applied.status == "completed"
     assert "return a + b" in target.read_text(encoding="utf-8")
+
+
+def test_orchestrator_finishes_verified_patch_success_before_repeat_guard(tmp_path: Path):
+    (tmp_path / "calculator.py").write_text(
+        "def add(a, b):\n    return a - b\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_calculator.py").write_text(
+        "from calculator import add\n\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=PatchThenRepeatTestsProposer(),
+        config=OrchestratorConfig(max_steps=6, max_repeated_actions=1),
+    ).run(goal="Fix calculator", allow_edits=True)
+
+    assert result.status == "completed"
+    assert result.final_response == "Patch applied and tests passed."
+
+
+def test_orchestrator_stops_repeated_identical_actions(tmp_path: Path):
+    (tmp_path / "calculator.py").write_text("def add():\n    return 1\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RepeatSearchProposer(),
+        config=OrchestratorConfig(max_steps=10, max_repeated_actions=2),
+    ).run(goal="Find calculator")
+
+    assert result.status == "completed"
+    assert "same tool action repeated" in result.final_response
+    assert [item["action"] for item in result.trace["tool_history"]] == [
+        "search_files",
+        "search_files",
+        "read_file",
+        "analyze_ast",
+        "final_response",
+    ]
+
+
+def test_repeat_guard_runs_tests_before_repeating_same_read(tmp_path: Path):
+    (tmp_path / "one.py").write_text("print(1)\n", encoding="utf-8")
+    (tmp_path / "two.py").write_text("print(2)\n", encoding="utf-8")
+
+    class RepeatReadProposer:
+        def propose_next_action(self, state):
+            return ToolAction(
+                action="read_file",
+                reason="Keep reading the same file.",
+                args={"path": "one.py"},
+            )
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RepeatReadProposer(),
+        config=OrchestratorConfig(max_steps=4, max_repeated_actions=1),
+    ).run(goal="Inspect one two")
+
+    assert result.trace["tool_history"][1]["action"] == "run_tests"
+
+
+def test_search_ignores_data_and_venv_prefixes(tmp_path: Path):
+    (tmp_path / "testing").mkdir()
+    (tmp_path / "testing" / "calculator.py").write_text(
+        "def add():\n    return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "test.py").write_text("print('junk')\n", encoding="utf-8")
+    site_packages = tmp_path / "vend_web" / ".venv312" / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+    (site_packages / "test_colorama.py").write_text("print('junk')\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RepeatSearchProposer(),
+        config=OrchestratorConfig(max_steps=1),
+    ).run(goal="Fix testing calculator")
+
+    matches = result.trace["tool_history"][0]["output"]["matches"]
+    paths = [item["path"] for item in matches]
+    assert "testing/calculator.py" in paths
+    assert all(not path.startswith("data/") for path in paths)
+    assert all(".venv312" not in path for path in paths)
+
+
+def test_search_ignores_site_packages_and_binary_suffixes(tmp_path: Path):
+    (tmp_path / "calculator.py").write_text("def add():\n    return 1\n", encoding="utf-8")
+    site_packages = tmp_path / ".venv" / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+    (site_packages / "calculator.py").write_text("junk\n", encoding="utf-8")
+    (tmp_path / "debug.log").write_text("calculator\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RepeatSearchProposer(),
+        config=OrchestratorConfig(max_steps=1),
+    ).run(goal="Find calculator")
+
+    matches = result.trace["tool_history"][0]["output"]["matches"]
+    assert [item["path"] for item in matches] == ["calculator.py"]
+
+
+def test_file_relevance_prioritizes_failing_test_imports(tmp_path: Path):
+    (tmp_path / "sequence_utils.py").write_text(
+        "def count_items(values: list[int]) -> int:\n"
+        "    return len(values) - 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_sequence_utils.py").write_text(
+        "from sequence_utils import count_items\n\n"
+        "def test_count_items():\n"
+        "    assert count_items([1, 2, 3]) == 3\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "unrelated.py").write_text("print('noise')\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RunTestsThenStopProposer(),
+        config=OrchestratorConfig(max_steps=2),
+    ).run(goal="Fix the failing list length test")
+
+    assert result.trace["candidate_files"][:2] == [
+        "test_sequence_utils.py",
+        "sequence_utils.py",
+    ]
+    assert "unrelated.py" not in result.trace["candidate_files"][:3]
 
 
 def test_orchestrate_api_queues_worker_job(tmp_path: Path):

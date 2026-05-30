@@ -17,6 +17,7 @@ from backend.app.analyzer.patch_apply import (
 from backend.app.analyzer.patch_preview import preview_patch_proposal
 from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
+from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.database.repository import AnalysisRepository
 from backend.app.jobs import JobQueue
 from backend.app.schemas.api import (
@@ -362,6 +363,9 @@ def create_app(
                 "allow_edits": request.allow_edits,
                 "allow_tests": request.allow_tests,
                 "max_steps": request.max_steps,
+                "proposer": request.proposer,
+                "slm_model": request.slm_model,
+                "slm_base_url": request.slm_base_url,
             },
         )
 
@@ -400,6 +404,33 @@ def create_app(
             return job_queue.get(job_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @application.get("/jobs/{job_id}/trace/compact")
+    def compact_job_trace(job_id: str) -> dict:
+        try:
+            job_item = job_queue.get(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        if hasattr(job_item, "model_dump"):
+            job_data = job_item.model_dump()
+        elif isinstance(job_item, dict):
+            job_data = job_item
+        else:
+            job_data = dict(job_item)
+
+        result = job_data.get("result") or {}
+        trace = result.get("trace") or []
+
+        compacted = compact_orchestrator_trace(trace)
+
+        return {
+            "job_id": job_id,
+            "status": job_data.get("status"),
+            "orchestrator_status": result.get("status"),
+            "final_response": result.get("final_response"),
+            "trace": compacted,
+        }
 
     @application.post("/jobs/{job_id}/cancel", response_model=JobResponse)
     def cancel_job(job_id: str) -> JobResponse:

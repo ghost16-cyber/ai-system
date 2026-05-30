@@ -135,6 +135,17 @@ analysis:
 python -m backend.app.jobs
 ```
 
+Generate and run the controlled repair benchmark:
+
+```bash
+python tools/generate_repair_benchmark_cases.py
+python tools/run_repair_benchmark.py --allow-edits
+```
+
+For SLM-backed benchmark runs, keep Ollama, the FastAPI server, and the local
+worker running. The benchmark copies cases into `benchmarks/.runs/`, queues
+`POST /orchestrate` jobs, polls job status, and writes a JSON report.
+
 The live API is then available at:
 
 - `GET /health`

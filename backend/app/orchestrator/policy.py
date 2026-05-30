@@ -12,12 +12,22 @@ DEFAULT_IGNORE_DIRS = {
     ".ruff_cache",
     ".tox",
     ".venv",
+    ".continue",
+    "env",
     "__pycache__",
     "build",
+    "data",
     "dist",
+    "legacy_archive",
     "node_modules",
+    "site-packages",
     "venv",
 }
+
+DEFAULT_IGNORE_DIR_PREFIXES = (
+    ".venv",
+    "venv",
+)
 
 READABLE_EXTENSIONS = {
     ".py",
@@ -46,6 +56,9 @@ BLOCKED_FILENAMES = {
 
 BLOCKED_SUFFIXES = {
     ".db",
+    ".log",
+    ".pyc",
+    ".pyo",
     ".sqlite",
     ".sqlite3",
     ".pem",
@@ -124,7 +137,17 @@ class SafetyPolicy:
             parts = path.relative_to(self.project_root).parts
         except ValueError:
             return True
-        return any(part in DEFAULT_IGNORE_DIRS for part in parts)
+        if any(part in DEFAULT_IGNORE_DIRS for part in parts):
+            return True
+        if any(
+            part.startswith(prefix)
+            for part in parts
+            for prefix in DEFAULT_IGNORE_DIR_PREFIXES
+        ):
+            return True
+        if path.is_file() and path.suffix.lower() in BLOCKED_SUFFIXES:
+            return True
+        return False
 
     def public_relative(self, path: Path) -> str:
         return path.resolve().relative_to(self.workspace_root).as_posix()

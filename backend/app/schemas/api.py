@@ -55,6 +55,9 @@ class OrchestrateRequest(BaseModel):
     allow_edits: bool = False
     allow_tests: bool = True
     max_steps: int = Field(default=12, ge=1, le=50)
+    proposer: Literal["scripted", "slm"] = "scripted"
+    slm_model: str = "qwen2.5-coder:1.5b"
+    slm_base_url: str = "http://localhost:11434"
 
 
 PatchProposalStatus = Literal["proposed", "applied", "conflict"]

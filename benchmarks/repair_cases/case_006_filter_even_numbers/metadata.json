@@ -1,0 +1,9 @@
+{
+  "bug_type": "bad_boolean_logic",
+  "case_id": "case_006_filter_even_numbers",
+  "expected_changed_files": [
+    "number_utils.py"
+  ],
+  "expected_patch_hint": "value % 2 == 0",
+  "goal": "Fix the failing even number filter test."
+}

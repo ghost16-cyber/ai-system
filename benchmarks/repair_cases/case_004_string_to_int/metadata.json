@@ -1,0 +1,9 @@
+{
+  "bug_type": "type_conversion",
+  "case_id": "case_004_string_to_int",
+  "expected_changed_files": [
+    "parser.py"
+  ],
+  "expected_patch_hint": "return int(value)",
+  "goal": "Fix the failing string conversion test."
+}

@@ -16,6 +16,7 @@ from .models import (
     ToolResult,
 )
 from .proposers import ActionProposer, ScriptedActionProposer
+from .proposers.slm_action_proposer import SLMActionProposer
 from .trace_store import JsonlTraceStore, TraceStore
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "OrchestratorResult",
     "RiskRulesAdvisor",
     "ScriptedActionProposer",
+    "SLMActionProposer",
     "TaskState",
     "ToolAction",
     "ToolResult",

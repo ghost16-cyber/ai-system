@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from typing import Protocol
 
+from ..benchmark.test_output_parser import parse_pytest_output
 from .models import AdvisorOutput, TaskState
 from .policy import SafetyPolicy
 
@@ -57,9 +59,12 @@ class FileRelevanceAdvisor:
 
     def analyze(self, state: TaskState, policy: SafetyPolicy) -> AdvisorOutput:
         terms = _terms(state.goal)
+        priority_files = _failure_priority_files(state, policy)
         scored: list[tuple[int, str]] = []
         for path in policy.project_root.rglob("*"):
             if policy.is_ignored(path) or not path.is_file():
+                continue
+            if path.suffix.lower() not in {".py", ".md", ".json", ".yaml", ".yml", ".toml"}:
                 continue
             try:
                 relative = policy.task_relative(path)
@@ -69,7 +74,7 @@ class FileRelevanceAdvisor:
             if score > 0:
                 scored.append((score, relative))
         scored.sort(key=lambda item: (-item[0], item[1]))
-        top_files = [path for _, path in scored[:10]]
+        top_files = _unique(priority_files + [path for _, path in scored])[:10]
         return AdvisorOutput(
             name=self.name,
             label="ranked_files" if top_files else "no_candidates",
@@ -189,6 +194,101 @@ def _score_path(path: str, terms: list[str]) -> int:
     if "test" in lowered:
         score += 1
     return score
+
+
+def _failure_priority_files(state: TaskState, policy: SafetyPolicy) -> list[str]:
+    output = _latest_test_output(state)
+    if not output:
+        return []
+    parsed = parse_pytest_output(output)
+    candidates: list[str] = []
+
+    failing_test_file = parsed.get("failing_test_file")
+    if isinstance(failing_test_file, str):
+        test_path = _normalize_existing_path(failing_test_file, policy)
+        if test_path:
+            candidates.append(test_path)
+            candidates.extend(_import_targets_for_test(policy.project_root / test_path, policy))
+
+    for stack_path in parsed.get("stack_source_paths", []):
+        if not isinstance(stack_path, str):
+            continue
+        normalized = _normalize_existing_path(stack_path, policy)
+        if normalized:
+            candidates.append(normalized)
+
+    return _unique(candidates)
+
+
+def _latest_test_output(state: TaskState) -> str | None:
+    for result in reversed(state.tool_history):
+        if result.action != "run_tests" or not result.success:
+            continue
+        output = result.output.get("output")
+        return output if isinstance(output, str) else None
+    return None
+
+
+def _normalize_existing_path(path: str, policy: SafetyPolicy) -> str | None:
+    normalized = path.replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    candidate = (policy.project_root / normalized).resolve()
+    try:
+        candidate.relative_to(policy.project_root)
+    except ValueError:
+        return None
+    if candidate.exists() and candidate.is_file() and not policy.is_ignored(candidate):
+        return candidate.relative_to(policy.project_root).as_posix()
+    name_match = policy.project_root / Path(normalized).name
+    if name_match.exists() and name_match.is_file() and not policy.is_ignored(name_match):
+        return name_match.relative_to(policy.project_root).as_posix()
+    return None
+
+
+def _import_targets_for_test(test_path: Path, policy: SafetyPolicy) -> list[str]:
+    if not test_path.exists() or test_path.suffix != ".py":
+        return []
+    try:
+        tree = ast.parse(test_path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+    candidates: list[str] = []
+    for node in ast.walk(tree):
+        module: str | None = None
+        if isinstance(node, ast.ImportFrom):
+            module = node.module
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                candidates.extend(_module_to_existing_paths(alias.name, policy))
+            continue
+        if module:
+            candidates.extend(_module_to_existing_paths(module, policy))
+    return _unique(candidates)
+
+
+def _module_to_existing_paths(module: str, policy: SafetyPolicy) -> list[str]:
+    module_path = Path(*module.split("."))
+    candidates = [
+        policy.project_root / f"{module_path.as_posix()}.py",
+        policy.project_root / module_path / "__init__.py",
+    ]
+    existing: list[str] = []
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file() and not policy.is_ignored(candidate):
+            existing.append(candidate.relative_to(policy.project_root).as_posix())
+    return existing
+
+
+def _unique(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
 
 
 def _tool_text_outputs(state: TaskState) -> list[str]:

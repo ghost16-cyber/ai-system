@@ -1,0 +1,9 @@
+{
+  "bug_type": "wrong_return_value",
+  "case_id": "case_001_calculator_demo",
+  "expected_changed_files": [
+    "calculator.py"
+  ],
+  "expected_patch_hint": "return a + b",
+  "goal": "Fix the failing calculator test."
+}

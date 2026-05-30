@@ -1,0 +1,9 @@
+{
+  "bug_type": "missing_default",
+  "case_id": "case_005_safe_dict_lookup",
+  "expected_changed_files": [
+    "users.py"
+  ],
+  "expected_patch_hint": "user.get",
+  "goal": "Fix the failing user lookup test."
+}

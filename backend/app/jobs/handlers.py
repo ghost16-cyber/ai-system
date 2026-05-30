@@ -121,6 +121,9 @@ def orchestrate_task_job(
         trace_store=JsonlTraceStore(Path("data/app/orchestrator_traces.jsonl")),
         config=OrchestratorConfig(
             max_steps=int(payload.get("max_steps", 12)),
+            proposer=str(payload.get("proposer", "scripted")),  # type: ignore[arg-type]
+            slm_model=str(payload.get("slm_model", "qwen2.5-coder:1.5b")),
+            slm_base_url=str(payload.get("slm_base_url", "http://localhost:11434")),
         ),
     )
     result = orchestrator.run(

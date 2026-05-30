@@ -110,9 +110,14 @@ class TaskState(BaseModel):
 
 class OrchestratorConfig(BaseModel):
     max_steps: int = Field(default=12, ge=1, le=50)
+    max_repeated_actions: int = Field(default=2, ge=1, le=10)
     max_file_bytes: int = Field(default=50_000, ge=1_000, le=500_000)
     command_timeout_seconds: int = Field(default=60, ge=1, le=300)
     auto_run_advisors_each_step: bool = True
+    proposer: Literal["scripted", "slm"] = "scripted"
+    slm_model: str = "qwen2.5-coder:1.5b"
+    slm_base_url: str = "http://localhost:11434"
+    slm_timeout_seconds: int = Field(default=90, ge=1, le=300)
 
 
 class OrchestratorResult(BaseModel):

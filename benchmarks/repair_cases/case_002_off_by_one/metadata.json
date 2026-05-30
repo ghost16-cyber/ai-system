@@ -1,0 +1,9 @@
+{
+  "bug_type": "off_by_one",
+  "case_id": "case_002_off_by_one",
+  "expected_changed_files": [
+    "sequence_utils.py"
+  ],
+  "expected_patch_hint": "return len(values)",
+  "goal": "Fix the failing list length test."
+}

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -13,6 +15,7 @@ from .policy import SafetyPolicy, PolicyError, validate_patch_scope
 
 
 ToolExecutor = Callable[[ToolAction, TaskState, SafetyPolicy], ToolResult]
+SEARCHABLE_SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".toml"}
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,55 @@ def build_default_tool_registry() -> ToolRegistry:
     )
 
 
+def get_slm_tool_schemas() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "search_files",
+            "description": "Search for files inside the task project.",
+            "args": {"query": "string", "max_results": "integer | optional"},
+        },
+        {
+            "name": "read_file",
+            "description": "Read an allowed file inside the task project.",
+            "args": {"path": "string"},
+        },
+        {
+            "name": "analyze_ast",
+            "description": "Analyze Python AST structure for a file.",
+            "args": {"path": "string"},
+        },
+        {
+            "name": "run_tests",
+            "description": "Run an approved test command.",
+            "args": {"command": "string"},
+        },
+        {
+            "name": "validate_syntax",
+            "description": "Validate Python syntax for a file.",
+            "args": {"path": "string"},
+        },
+        {
+            "name": "propose_patch",
+            "description": "Propose a small old/new text replacement patch.",
+            "args": {
+                "path": "string",
+                "old": "string",
+                "new": "string",
+            },
+        },
+        {
+            "name": "apply_patch",
+            "description": "Apply the currently validated proposed patch.",
+            "args": {},
+        },
+        {
+            "name": "final_response",
+            "description": "Return the final answer to the user.",
+            "args": {"message": "string"},
+        },
+    ]
+
+
 def search_files(
     action: ToolAction,
     state: TaskState,
@@ -94,6 +146,8 @@ def search_files(
 
     for path in policy.project_root.rglob("*"):
         if policy.is_ignored(path) or not path.is_file():
+            continue
+        if path.suffix.lower() not in SEARCHABLE_SUFFIXES:
             continue
         relative = policy.task_relative(path)
         lowered = relative.lower()
@@ -214,10 +268,12 @@ def run_tests(
     args = policy.command_args(command)
     if args and args[0] == "python":
         args = [sys.executable] + args[1:]
+    _clear_pycache(policy.project_root)
     completed = subprocess.run(
         args,
         cwd=policy.project_root,
         capture_output=True,
+        env=_test_env(),
         text=True,
         timeout=int(action.args.get("timeout_seconds", 60)),
         check=False,
@@ -238,6 +294,20 @@ def run_tests(
         success=True,
         output=result,
     )
+
+
+def _clear_pycache(root: Path) -> None:
+    for path in root.rglob("__pycache__"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _test_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["TMP"] = "/tmp"
+    env["TEMP"] = "/tmp"
+    env["TMPDIR"] = "/tmp"
+    return env
 
 
 def validate_syntax(

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from uuid import uuid4
 
 from .advisors import Advisor, build_default_advisors
 from .models import OrchestratorConfig, OrchestratorResult, TaskState, ToolResult
 from .policy import PolicyError, SafetyPolicy
-from .proposers import ActionProposer, ScriptedActionProposer
-from .tools import ToolRegistry, build_default_tool_registry
+from .proposers import ActionProposer, build_action_proposer
+from .tools import ToolRegistry, build_default_tool_registry, get_slm_tool_schemas
 from .trace_store import TraceStore, to_public_trace
 
 
@@ -30,11 +31,14 @@ class Orchestrator:
         config: OrchestratorConfig | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
-        self.proposer = proposer or ScriptedActionProposer()
+        self.config = config or OrchestratorConfig()
+        self.proposer = proposer or build_action_proposer(
+            self.config,
+            get_slm_tool_schemas(),
+        )
         self.advisors = advisors if advisors is not None else build_default_advisors()
         self.tools = tools or build_default_tool_registry()
         self.trace_store = trace_store
-        self.config = config or OrchestratorConfig()
 
     def run(
         self,
@@ -75,7 +79,12 @@ class Orchestrator:
         while state.status == "running" and state.step_count < self.config.max_steps:
             state.step_count += 1
             action = self.proposer.propose_next_action(state)
+            action = self._guard_repeated_action(state, action)
             result = self.tools.execute(action, state, policy)
+            result.output.setdefault(
+                "_requested_action_signature",
+                _action_signature(action),
+            )
             self._apply_result_effects(state, result)
             state.record_tool_result(result)
 
@@ -118,6 +127,51 @@ class Orchestrator:
                 if isinstance(path, str) and path not in state.candidate_files:
                     state.candidate_files.append(path)
 
+    def _guard_repeated_action(
+        self,
+        state: TaskState,
+        action,
+    ):
+        verified_success = _guard_verified_patch_success(state, action)
+        if verified_success is not None:
+            verified_success.args["_requested_action_signature"] = _action_signature(
+                verified_success
+            )
+            return verified_success
+
+        repeated_read = _guard_repeated_read(state, action)
+        if repeated_read is not None:
+            repeated_read.args["_requested_action_signature"] = _action_signature(
+                repeated_read
+            )
+            return repeated_read
+
+        signature = _action_signature(action)
+        previous_count = 0
+        for result in state.tool_history:
+            if result.output.get("_requested_action_signature") == signature:
+                previous_count += 1
+        if previous_count < self.config.max_repeated_actions:
+            action.args["_requested_action_signature"] = signature
+            return action
+        from .models import ToolAction
+
+        alternate = _alternate_action(state, action)
+        if alternate is not None:
+            alternate.args["_requested_action_signature"] = _action_signature(alternate)
+            return alternate
+
+        return ToolAction(
+            action="final_response",
+            reason="Repeated identical action guard stopped the loop.",
+            args={
+                "message": (
+                    "I stopped because the same tool action repeated too many times. "
+                    "The task needs a different next action or more specific context."
+                )
+            },
+        )
+
     def _finish(self, state: TaskState) -> OrchestratorResult:
         if self.trace_store is not None:
             self.trace_store.append(state)
@@ -139,3 +193,188 @@ class Orchestrator:
                 f"(exit code {tests.get('exit_code')})."
             )
         return f"Task stopped with status: {state.status}."
+
+
+def _guard_repeated_read(state: TaskState, action):
+    if action.action != "read_file":
+        return None
+
+    requested_path = str(action.args.get("path", ""))
+    if not requested_path:
+        return None
+
+    same_reads = _read_count(state, requested_path)
+    if same_reads < 1:
+        return None
+
+    return _escalate_after_repeated_read(state, requested_path)
+
+
+def _guard_verified_patch_success(state: TaskState, action):
+    if action.action == "final_response":
+        return None
+    if (state.validation.tests or {}).get("status") != "passed":
+        return None
+    if not any(
+        result.action == "apply_patch"
+        and result.success
+        and result.output.get("applied") is True
+        for result in state.tool_history
+    ):
+        return None
+
+    from .models import ToolAction
+
+    return ToolAction(
+        action="final_response",
+        reason="Patch was applied and tests passed.",
+        args={"message": "Patch applied and tests passed."},
+    )
+
+
+def _read_count(state: TaskState, path: str) -> int:
+    count = 0
+    for result in state.tool_history:
+        if result.action != "read_file":
+            continue
+        if result.output.get("path") == path:
+            count += 1
+    return count
+
+
+def _escalate_after_repeated_read(state: TaskState, requested_path: str):
+    from .models import ToolAction
+
+    if not state.validation.tests:
+        return ToolAction(
+            action="run_tests",
+            reason=(
+                f"Repeated read_file for {requested_path} blocked; "
+                "running tests to gather failure evidence."
+            ),
+            args={"command": "python -m pytest -q"},
+        )
+
+    if requested_path.endswith(".py") and not _was_ast_analyzed(state, requested_path):
+        return ToolAction(
+            action="analyze_ast",
+            reason=(
+                f"Repeated read_file for {requested_path} blocked; "
+                "analyzing its AST instead."
+            ),
+            args={"path": requested_path},
+        )
+
+    for path in state.inspected_files:
+        if path.endswith(".py") and not _was_ast_analyzed(state, path):
+            return ToolAction(
+                action="analyze_ast",
+                reason=(
+                    "Repeated read_file blocked; analyzing another inspected "
+                    "Python file instead."
+                ),
+                args={"path": path},
+            )
+
+    return ToolAction(
+        action="final_response",
+        reason="Repeated read_file guard stopped the loop after available evidence.",
+        args={
+            "message": (
+                "I stopped because the model repeatedly requested a file that was "
+                "already inspected. Tests and AST evidence were already gathered."
+            )
+        },
+    )
+
+
+def _action_signature(action) -> str:
+    args = {
+        key: value
+        for key, value in action.args.items()
+        if key != "_requested_action_signature"
+    }
+    return json.dumps(
+        {"action": action.action, "args": args},
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _alternate_action(state: TaskState, action):
+    from .models import ToolAction
+
+    if action.action in {"search_files", "read_file"}:
+        requested_path = str(action.args.get("path", ""))
+        for candidate in state.candidate_files:
+            if candidate == requested_path:
+                continue
+            if candidate in state.inspected_files:
+                continue
+            return ToolAction(
+                action="read_file",
+                reason="Repeat guard selected the next uninspected candidate file.",
+                args={"path": candidate},
+            )
+        for path in state.inspected_files:
+            if path.endswith(".py") and not _was_ast_analyzed(state, path):
+                return ToolAction(
+                    action="analyze_ast",
+                    reason="Repeat guard switched from repeated file reads to AST analysis.",
+                    args={"path": path},
+                )
+        if _goal_mentions_tests(state.goal) and not state.validation.tests:
+            return ToolAction(
+                action="run_tests",
+                reason="Repeat guard switched from repeated file reads to test execution.",
+                args={"command": "python -m pytest -q"},
+            )
+
+    if action.action == "analyze_ast":
+        requested_path = str(action.args.get("path", ""))
+        for path in state.inspected_files:
+            if path == requested_path or _was_ast_analyzed(state, path) or not path.endswith(".py"):
+                continue
+            return ToolAction(
+                action="analyze_ast",
+                reason="Repeat guard selected the next inspected Python file for AST analysis.",
+                args={"path": path},
+            )
+
+    if action.action == "run_tests":
+        for candidate in state.candidate_files:
+            if candidate not in state.inspected_files:
+                return ToolAction(
+                    action="read_file",
+                    reason="Repeat guard switched from repeated tests to inspecting candidate files.",
+                    args={"path": candidate},
+                )
+        if not state.candidate_files:
+            return ToolAction(
+                action="search_files",
+                reason="Repeat guard switched from repeated tests to file search.",
+                args={"query": state.goal, "max_results": 10},
+            )
+
+    if action.action == "propose_patch" and state.proposed_patch:
+        return ToolAction(
+            action="final_response",
+            reason="Repeat guard stopped after a patch was already proposed.",
+            args={"message": "A patch has already been proposed; I stopped before repeating it."},
+        )
+
+    return None
+
+
+def _was_ast_analyzed(state: TaskState, path: str) -> bool:
+    return any(
+        result.action == "analyze_ast"
+        and result.success
+        and result.output.get("path") == path
+        for result in state.tool_history
+    )
+
+
+def _goal_mentions_tests(goal: str) -> bool:
+    lowered = goal.lower()
+    return any(token in lowered for token in ("test", "pytest", "failing", "failure"))

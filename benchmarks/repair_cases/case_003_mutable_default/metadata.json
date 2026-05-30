@@ -1,0 +1,9 @@
+{
+  "bug_type": "state_leak",
+  "case_id": "case_003_mutable_default",
+  "expected_changed_files": [
+    "collector.py"
+  ],
+  "expected_patch_hint": "values is None",
+  "goal": "Fix the failing accumulator test."
+}

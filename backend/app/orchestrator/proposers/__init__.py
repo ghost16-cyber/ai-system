@@ -2,25 +2,20 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .models import TaskState, ToolAction
+from backend.app.orchestrator.models import TaskState, ToolAction
 
 
 class ActionProposer(Protocol):
     def propose_next_action(self, state: TaskState) -> ToolAction:
         """Return the next requested tool action.
 
-        A future SLM adapter should implement this protocol and return the same
-        structured ToolAction object. The orchestrator remains the execution
-        authority.
+        SLM adapters implement this protocol and return structured ToolAction
+        objects. The orchestrator remains the execution authority.
         """
 
 
 class ScriptedActionProposer:
-    """Deterministic proposer used until a local SLM is connected.
-
-    This keeps the orchestrator executable and testable without pretending that
-    rule code is the final reasoning layer.
-    """
+    """Deterministic proposer used until a local SLM is selected."""
 
     def propose_next_action(self, state: TaskState) -> ToolAction:
         if not state.tool_history:
@@ -87,6 +82,25 @@ class ScriptedActionProposer:
             reason="The scripted proposer has gathered available evidence.",
             args={"message": _summarize(state)},
         )
+
+
+def build_action_proposer(config, available_tools: list[dict]) -> ActionProposer:
+    if config.proposer == "slm":
+        from backend.app.orchestrator.proposers.slm_action_proposer import (
+            SLMActionProposer,
+        )
+        from backend.app.slm.client import OllamaClient
+
+        return SLMActionProposer(
+            client=OllamaClient(
+                model=config.slm_model,
+                base_url=config.slm_base_url,
+                timeout_seconds=config.slm_timeout_seconds,
+            ),
+            available_tools=available_tools,
+        )
+
+    return ScriptedActionProposer()
 
 
 def _mentions_tests(goal: str) -> bool:
