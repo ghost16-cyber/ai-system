@@ -57,6 +57,7 @@ class ValidationState(BaseModel):
     tests: dict[str, Any] | None = None
     patch_scope: dict[str, Any] | None = None
     risk: dict[str, Any] | None = None
+    confidence: dict[str, Any] | None = None
 
 
 class TaskState(BaseModel):

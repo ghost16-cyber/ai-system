@@ -1,9 +1,22 @@
 {
   "bug_type": "type_conversion",
   "case_id": "case_004_string_to_int",
+  "difficulty": "easy",
   "expected_changed_files": [
     "parser.py"
   ],
   "expected_patch_hint": "return int(value)",
-  "goal": "Fix the failing string conversion test."
+  "expected_source_file": "parser.py",
+  "expected_test_file": "test_parser.py",
+  "goal": "Fix the failing string conversion test.",
+  "known_patch": {
+    "new": "return int(value)",
+    "old": "return value",
+    "path": "parser.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "parser.py",
+    "test_parser.py"
+  ]
 }

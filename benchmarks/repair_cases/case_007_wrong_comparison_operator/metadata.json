@@ -1,0 +1,22 @@
+{
+  "bug_type": "wrong_comparison_operator",
+  "case_id": "case_007_wrong_comparison_operator",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "eligibility.py"
+  ],
+  "expected_patch_hint": "age >= 18",
+  "expected_source_file": "eligibility.py",
+  "expected_test_file": "test_eligibility.py",
+  "goal": "Fix the failing adulthood boundary test.",
+  "known_patch": {
+    "new": "return age >= 18",
+    "old": "return age > 18",
+    "path": "eligibility.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "eligibility.py",
+    "test_eligibility.py"
+  ]
+}

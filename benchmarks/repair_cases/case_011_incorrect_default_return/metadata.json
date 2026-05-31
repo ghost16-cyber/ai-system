@@ -1,0 +1,22 @@
+{
+  "bug_type": "incorrect_default_return",
+  "case_id": "case_011_incorrect_default_return",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "searching.py"
+  ],
+  "expected_patch_hint": "return -1",
+  "expected_source_file": "searching.py",
+  "expected_test_file": "test_searching.py",
+  "goal": "Fix the failing missing-index test.",
+  "known_patch": {
+    "new": "return -1",
+    "old": "return 0",
+    "path": "searching.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "searching.py",
+    "test_searching.py"
+  ]
+}

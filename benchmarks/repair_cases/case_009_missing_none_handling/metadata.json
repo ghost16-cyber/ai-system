@@ -1,0 +1,22 @@
+{
+  "bug_type": "none_handling",
+  "case_id": "case_009_missing_none_handling",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "profiles.py"
+  ],
+  "expected_patch_hint": "user is None",
+  "expected_source_file": "profiles.py",
+  "expected_test_file": "test_profiles.py",
+  "goal": "Fix the failing optional display-name test.",
+  "known_patch": {
+    "new": "if user is None:\n        return 'anonymous'\n    return user['name']",
+    "old": "return user['name']",
+    "path": "profiles.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "profiles.py",
+    "test_profiles.py"
+  ]
+}

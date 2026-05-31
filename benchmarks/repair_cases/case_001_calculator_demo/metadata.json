@@ -1,9 +1,22 @@
 {
   "bug_type": "wrong_return_value",
   "case_id": "case_001_calculator_demo",
+  "difficulty": "easy",
   "expected_changed_files": [
     "calculator.py"
   ],
   "expected_patch_hint": "return a + b",
-  "goal": "Fix the failing calculator test."
+  "expected_source_file": "calculator.py",
+  "expected_test_file": "test_calculator.py",
+  "goal": "Fix the failing calculator test.",
+  "known_patch": {
+    "new": "return a + b",
+    "old": "return a - b",
+    "path": "calculator.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "calculator.py",
+    "test_calculator.py"
+  ]
 }

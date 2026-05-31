@@ -357,11 +357,17 @@ def propose_patch(
             f"Patch old text must occur exactly once; found {occurrences} occurrence(s)."
         )
     state.proposed_patch = {**patch, "path": resolved.relative}
+    confidence = score_patch_confidence(state, resolved.relative, scope)
+    state.validation.confidence = confidence
     return ToolResult(
         action=action.action,
         allowed=True,
         success=True,
-        output={"proposed_patch": _redact_patch(state.proposed_patch), "scope": scope},
+        output={
+            "proposed_patch": _redact_patch(state.proposed_patch),
+            "scope": scope,
+            "confidence": confidence,
+        },
     )
 
 
@@ -378,6 +384,10 @@ def apply_patch(
     state.validation.patch_scope = scope
     if not scope["valid"]:
         raise PolicyError(str(scope["reason"]))
+    confidence = score_patch_confidence(state, resolved.relative, scope)
+    state.validation.confidence = confidence
+    if confidence["score"] < 0.55:
+        raise PolicyError(f"Patch confidence too low to apply: {confidence['score']}")
 
     old = str(patch.get("old", ""))
     new = str(patch.get("new", ""))
@@ -393,8 +403,86 @@ def apply_patch(
         action=action.action,
         allowed=True,
         success=True,
-        output={"path": resolved.relative, "applied": True, "scope": scope},
+        output={
+            "path": resolved.relative,
+            "applied": True,
+            "scope": scope,
+            "confidence": confidence,
+        },
     )
+
+
+def score_patch_confidence(
+    state: TaskState,
+    patch_path: str,
+    scope: dict[str, Any],
+) -> dict[str, Any]:
+    score = 0.25
+    reasons: list[str] = ["base exact-text patch confidence"]
+
+    if (state.validation.tests or {}).get("status") == "failed":
+        score += 0.20
+        reasons.append("failing tests were observed")
+    if patch_path in state.inspected_files:
+        score += 0.15
+        reasons.append("target file was inspected")
+    if _was_ast_analyzed(state, patch_path):
+        score += 0.10
+        reasons.append("target AST was analyzed")
+    if scope.get("valid") is True:
+        score += 0.10
+        reasons.append("patch scope is valid")
+    if int(scope.get("changed_line_budget") or 99) <= 5:
+        score += 0.10
+        reasons.append("patch is small")
+    if patch_path.endswith(".py") and not _is_test_path(patch_path):
+        score += 0.10
+        reasons.append("patch targets Python source, not tests")
+    if (state.validation.syntax or {}).get("valid") is True:
+        score += 0.05
+        reasons.append("syntax validation exists")
+
+    if _is_test_path(patch_path):
+        score -= 0.30
+        reasons.append("patch targets a test file")
+
+    score = round(max(0.0, min(score, 1.0)), 3)
+    if score >= 0.80:
+        decision = "apply_allowed"
+    elif score >= 0.55:
+        decision = "apply_with_verification"
+    else:
+        decision = "fallback"
+    return {
+        "score": score,
+        "level": _confidence_level(score),
+        "decision": decision,
+        "reasons": reasons,
+    }
+
+
+def _was_ast_analyzed(state: TaskState, path: str) -> bool:
+    return any(
+        result.action == "analyze_ast"
+        and result.success
+        and result.output.get("path") == path
+        for result in state.tool_history
+    )
+
+
+def _is_test_path(path: str) -> bool:
+    name = Path(path).name
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
+def _confidence_level(score: float) -> str:
+    if score >= 0.80:
+        return "high"
+    if score >= 0.55:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "unsafe"
 
 
 def final_response(

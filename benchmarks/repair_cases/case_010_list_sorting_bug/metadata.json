@@ -1,0 +1,22 @@
+{
+  "bug_type": "sorting",
+  "case_id": "case_010_list_sorting_bug",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "sorting.py"
+  ],
+  "expected_patch_hint": "sorted(values)",
+  "expected_source_file": "sorting.py",
+  "expected_test_file": "test_sorting.py",
+  "goal": "Fix the failing ascending sort test.",
+  "known_patch": {
+    "new": "return sorted(values)",
+    "old": "return sorted(values, reverse=True)",
+    "path": "sorting.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "sorting.py",
+    "test_sorting.py"
+  ]
+}

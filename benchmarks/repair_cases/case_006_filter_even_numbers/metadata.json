@@ -1,9 +1,22 @@
 {
   "bug_type": "bad_boolean_logic",
   "case_id": "case_006_filter_even_numbers",
+  "difficulty": "easy",
   "expected_changed_files": [
     "number_utils.py"
   ],
   "expected_patch_hint": "value % 2 == 0",
-  "goal": "Fix the failing even number filter test."
+  "expected_source_file": "number_utils.py",
+  "expected_test_file": "test_numbers.py",
+  "goal": "Fix the failing even number filter test.",
+  "known_patch": {
+    "new": "return [value for value in values if value % 2 == 0]",
+    "old": "return [value for value in values if value % 2 == 1]",
+    "path": "number_utils.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "number_utils.py",
+    "test_numbers.py"
+  ]
 }

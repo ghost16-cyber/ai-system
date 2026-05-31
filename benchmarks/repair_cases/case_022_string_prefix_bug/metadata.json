@@ -1,0 +1,22 @@
+{
+  "bug_type": "wrong_string_method",
+  "case_id": "case_022_string_prefix_bug",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "prefixes.py"
+  ],
+  "expected_patch_hint": "startswith",
+  "expected_source_file": "prefixes.py",
+  "expected_test_file": "test_prefixes.py",
+  "goal": "Fix the failing prefix check test.",
+  "known_patch": {
+    "new": "return value.startswith(prefix)",
+    "old": "return value.endswith(prefix)",
+    "path": "prefixes.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "prefixes.py",
+    "test_prefixes.py"
+  ]
+}

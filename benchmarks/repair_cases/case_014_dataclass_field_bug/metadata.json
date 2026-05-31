@@ -1,0 +1,22 @@
+{
+  "bug_type": "dataclass_field",
+  "case_id": "case_014_dataclass_field_bug",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "invoice.py"
+  ],
+  "expected_patch_hint": "price * quantity",
+  "expected_source_file": "invoice.py",
+  "expected_test_file": "test_invoice.py",
+  "goal": "Fix the failing invoice line-total test.",
+  "known_patch": {
+    "new": "return item.price * item.quantity",
+    "old": "return item.price + item.quantity",
+    "path": "invoice.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "invoice.py",
+    "test_invoice.py"
+  ]
+}

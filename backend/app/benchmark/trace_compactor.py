@@ -65,6 +65,11 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
         if isinstance(validation.get("patch_scope"), dict)
         else {}
     )
+    confidence = (
+        validation.get("confidence")
+        if isinstance(validation.get("confidence"), dict)
+        else {}
+    )
     return {
         "tests": {
             "status": tests.get("status"),
@@ -82,6 +87,11 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
         "patch_scope": {
             "valid": patch_scope.get("valid"),
             "changed_line_budget": patch_scope.get("changed_line_budget"),
+        },
+        "confidence": {
+            "score": confidence.get("score"),
+            "level": confidence.get("level"),
+            "decision": confidence.get("decision"),
         },
     }
 

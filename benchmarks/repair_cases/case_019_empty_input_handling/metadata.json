@@ -1,0 +1,22 @@
+{
+  "bug_type": "empty_input_handling",
+  "case_id": "case_019_empty_input_handling",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "averages.py"
+  ],
+  "expected_patch_hint": "if not values",
+  "expected_source_file": "averages.py",
+  "expected_test_file": "test_averages.py",
+  "goal": "Fix the failing empty average test.",
+  "known_patch": {
+    "new": "if not values:\n        return 0\n    return sum(values) / len(values)",
+    "old": "return sum(values) / len(values)",
+    "path": "averages.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "averages.py",
+    "test_averages.py"
+  ]
+}

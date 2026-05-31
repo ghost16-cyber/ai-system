@@ -1,0 +1,22 @@
+{
+  "bug_type": "aggregation",
+  "case_id": "case_016_aggregation_bug",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "totals.py"
+  ],
+  "expected_patch_hint": "sum(values)",
+  "expected_source_file": "totals.py",
+  "expected_test_file": "test_totals.py",
+  "goal": "Fix the failing total aggregation test.",
+  "known_patch": {
+    "new": "return sum(values)",
+    "old": "return values[0]",
+    "path": "totals.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "test_totals.py",
+    "totals.py"
+  ]
+}

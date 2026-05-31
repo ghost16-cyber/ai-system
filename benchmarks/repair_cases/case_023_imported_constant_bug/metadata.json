@@ -1,0 +1,23 @@
+{
+  "bug_type": "imported_constant_bug",
+  "case_id": "case_023_imported_constant_bug",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "config.py"
+  ],
+  "expected_patch_hint": "0.10",
+  "expected_source_file": "config.py",
+  "expected_test_file": "test_pricing.py",
+  "goal": "Fix the failing discount price test.",
+  "known_patch": {
+    "new": "DISCOUNT_RATE = 0.10",
+    "old": "DISCOUNT_RATE = 0.05",
+    "path": "config.py"
+  },
+  "multi_file": true,
+  "relevant_files": [
+    "config.py",
+    "pricing.py",
+    "test_pricing.py"
+  ]
+}

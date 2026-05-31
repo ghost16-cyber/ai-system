@@ -6,3 +6,7 @@ pydantic>=2.0.0
 # Development and API verification
 pytest>=7.4.0
 httpx>=0.24.0
+
+# Phase 3 shadow repair advisor
+joblib>=1.3.0
+scikit-learn>=1.3.0

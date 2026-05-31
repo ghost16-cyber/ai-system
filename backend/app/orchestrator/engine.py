@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 import json
 from uuid import uuid4
 
@@ -132,6 +133,13 @@ class Orchestrator:
         state: TaskState,
         action,
     ):
+        patch_verification = _guard_patch_needs_verification(state, action)
+        if patch_verification is not None:
+            patch_verification.args["_requested_action_signature"] = _action_signature(
+                patch_verification
+            )
+            return patch_verification
+
         verified_success = _guard_verified_patch_success(state, action)
         if verified_success is not None:
             verified_success.args["_requested_action_signature"] = _action_signature(
@@ -229,6 +237,28 @@ def _guard_verified_patch_success(state: TaskState, action):
         action="final_response",
         reason="Patch was applied and tests passed.",
         args={"message": "Patch applied and tests passed."},
+    )
+
+
+def _guard_patch_needs_verification(state: TaskState, action):
+    if not any(
+        result.action == "apply_patch"
+        and result.success
+        and result.output.get("applied") is True
+        for result in state.tool_history
+    ):
+        return None
+    if not state.validation.tests:
+        return None
+    if state.validation.tests.get("status") == "passed":
+        return None
+
+    from .models import ToolAction
+
+    return ToolAction(
+        action="run_tests",
+        reason="Patch was applied; running tests to verify it before stopping.",
+        args={"command": "python -m pytest -q"},
     )
 
 
@@ -342,6 +372,16 @@ def _alternate_action(state: TaskState, action):
             )
 
     if action.action == "run_tests":
+        for candidate in _imported_source_candidates_from_read_files(state):
+            if candidate not in state.inspected_files:
+                return ToolAction(
+                    action="read_file",
+                    reason=(
+                        "Repeat guard followed an imported source module after "
+                        "repeated test failures."
+                    ),
+                    args={"path": candidate},
+                )
         for candidate in state.candidate_files:
             if candidate not in state.inspected_files:
                 return ToolAction(
@@ -378,3 +418,45 @@ def _was_ast_analyzed(state: TaskState, path: str) -> bool:
 def _goal_mentions_tests(goal: str) -> bool:
     lowered = goal.lower()
     return any(token in lowered for token in ("test", "pytest", "failing", "failure"))
+
+
+def _imported_source_candidates_from_read_files(state: TaskState) -> list[str]:
+    candidates: list[str] = []
+    for result in state.tool_history:
+        if result.action != "read_file" or not result.success:
+            continue
+        content = result.output.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
+            elif isinstance(node, ast.Import):
+                modules.extend(alias.name for alias in node.names)
+            for module in modules:
+                module_root = module.split(".")[0]
+                if module_root in _STDLIB_OR_EXTERNAL_MODULES:
+                    continue
+                candidate = f"{module_root}.py"
+                if candidate not in candidates:
+                    candidates.append(candidate)
+    return candidates
+
+
+_STDLIB_OR_EXTERNAL_MODULES = {
+    "collections",
+    "dataclasses",
+    "datetime",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "re",
+    "sys",
+    "typing",
+}

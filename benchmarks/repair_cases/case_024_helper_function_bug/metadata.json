@@ -1,0 +1,23 @@
+{
+  "bug_type": "helper_function_bug",
+  "case_id": "case_024_helper_function_bug",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "helpers.py"
+  ],
+  "expected_patch_hint": "lower",
+  "expected_source_file": "helpers.py",
+  "expected_test_file": "test_accounts.py",
+  "goal": "Fix the failing normalized email test.",
+  "known_patch": {
+    "new": "return value.strip().lower()",
+    "old": "return value.strip()",
+    "path": "helpers.py"
+  },
+  "multi_file": true,
+  "relevant_files": [
+    "accounts.py",
+    "helpers.py",
+    "test_accounts.py"
+  ]
+}

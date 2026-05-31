@@ -1,0 +1,22 @@
+{
+  "bug_type": "exception_handling",
+  "case_id": "case_020_wrong_exception_handling",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "safe_parse.py"
+  ],
+  "expected_patch_hint": "except ValueError",
+  "expected_source_file": "safe_parse.py",
+  "expected_test_file": "test_safe_parse.py",
+  "goal": "Fix the failing safe integer parser test.",
+  "known_patch": {
+    "new": "try:\n        return int(value)\n    except ValueError:\n        return 0",
+    "old": "return int(value)",
+    "path": "safe_parse.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "safe_parse.py",
+    "test_safe_parse.py"
+  ]
+}

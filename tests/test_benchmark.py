@@ -2,6 +2,8 @@ from pathlib import Path
 
 from backend.app.benchmark.test_output_parser import parse_pytest_output
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
+from tools.compare_benchmark_runs import compare_reports
+from tools.generate_repair_benchmark_cases import CASES
 
 
 def test_parse_pytest_output_extracts_counts_and_failures():
@@ -93,6 +95,7 @@ def test_compact_orchestrator_trace_keeps_useful_fields_without_raw_content():
             "risk": {"label": "low", "reason": "small patch"},
             "syntax": {"valid": True, "path": "calculator.py"},
             "patch_scope": {"valid": True, "changed_line_budget": 1},
+            "confidence": {"score": 0.9, "level": "high", "decision": "apply_allowed"},
         },
     }
 
@@ -103,3 +106,55 @@ def test_compact_orchestrator_trace_keeps_useful_fields_without_raw_content():
     assert "content" not in str(compact)
     assert compact["proposed_patch"]["old_length"] == 16
     assert compact["validation"]["tests"]["status"] == "passed"
+    assert compact["validation"]["confidence"]["score"] == 0.9
+
+
+def test_phase3_benchmark_case_set_has_expected_size_and_metadata():
+    assert len(CASES) >= 24
+    assert sum(case.multi_file for case in CASES) >= 4
+    for case in CASES:
+        assert case.difficulty in {"easy", "medium", "hard"}
+        assert case.expected_source_file
+        assert case.expected_test_file in case.files
+        assert case.known_patch.path in case.files
+        assert case.known_patch.old in case.files[case.known_patch.path]
+        assert case.expected_source_file in case.relevant_files
+        assert case.expected_test_file in case.relevant_files
+
+
+def test_compare_benchmark_reports_identifies_improvements_and_regressions():
+    before = {
+        "summary": {
+            "fix_rate": 0.5,
+            "fixed": 1,
+            "unsafe_action_block_count": 0,
+            "irrelevant_file_reads": 0,
+        },
+        "cases": [
+            {"case_id": "case_a", "fixed": False},
+            {"case_id": "case_b", "fixed": True},
+            {"case_id": "case_c", "fixed": False},
+        ],
+    }
+    after = {
+        "summary": {
+            "fix_rate": 0.5,
+            "fixed": 1,
+            "unsafe_action_block_count": 1,
+            "irrelevant_file_reads": 0,
+        },
+        "cases": [
+            {"case_id": "case_a", "fixed": True},
+            {"case_id": "case_b", "fixed": False},
+            {"case_id": "case_c", "fixed": False},
+        ],
+    }
+
+    comparison = compare_reports(before, after)
+
+    assert comparison["improved_cases"] == ["case_a"]
+    assert comparison["regressed_cases"] == ["case_b"]
+    assert comparison["unchanged_failures"] == ["case_c"]
+    assert comparison["safety_regressions"] == [
+        {"metric": "unsafe_action_block_count", "before": 0, "after": 1}
+    ]

@@ -167,6 +167,11 @@ def test_apply_patch_requires_explicit_edit_permission(tmp_path: Path):
 
     assert applied.status == "completed"
     assert "return a + b" in target.read_text(encoding="utf-8")
+    assert applied.trace["validation"]["confidence"]["score"] >= 0.55
+    assert applied.trace["validation"]["confidence"]["decision"] in {
+        "apply_allowed",
+        "apply_with_verification",
+    }
 
 
 def test_orchestrator_finishes_verified_patch_success_before_repeat_guard(tmp_path: Path):

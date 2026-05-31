@@ -1,0 +1,22 @@
+{
+  "bug_type": "recursion_base_case",
+  "case_id": "case_015_recursion_base_case",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "maths.py"
+  ],
+  "expected_patch_hint": "return 1",
+  "expected_source_file": "maths.py",
+  "expected_test_file": "test_maths.py",
+  "goal": "Fix the failing factorial base-case test.",
+  "known_patch": {
+    "new": "return 1",
+    "old": "return 0",
+    "path": "maths.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "maths.py",
+    "test_maths.py"
+  ]
+}

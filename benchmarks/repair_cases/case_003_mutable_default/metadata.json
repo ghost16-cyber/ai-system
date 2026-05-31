@@ -1,9 +1,22 @@
 {
   "bug_type": "state_leak",
   "case_id": "case_003_mutable_default",
+  "difficulty": "medium",
   "expected_changed_files": [
     "collector.py"
   ],
   "expected_patch_hint": "values is None",
-  "goal": "Fix the failing accumulator test."
+  "expected_source_file": "collector.py",
+  "expected_test_file": "test_collector.py",
+  "goal": "Fix the failing accumulator test.",
+  "known_patch": {
+    "new": "def append_item(item: str, values: list[str] | None = None) -> list[str]:\n    if values is None:\n        values = []\n    values.append(item)\n    return values",
+    "old": "def append_item(item: str, values: list[str] = []) -> list[str]:\n    values.append(item)\n    return values",
+    "path": "collector.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "collector.py",
+    "test_collector.py"
+  ]
 }
