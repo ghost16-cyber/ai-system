@@ -46,6 +46,19 @@ class PatchProposer:
         )
 
 
+class PatchOtherFileProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="propose_patch",
+            reason="Attempt to patch a disallowed file.",
+            args={
+                "path": "other.py",
+                "old": "return 0",
+                "new": "return 1",
+            },
+        )
+
+
 class PatchThenRepeatTestsProposer:
     def __init__(self):
         self.calls = 0
@@ -172,6 +185,25 @@ def test_apply_patch_requires_explicit_edit_permission(tmp_path: Path):
         "apply_allowed",
         "apply_with_verification",
     }
+
+
+def test_phase5_allowed_patch_files_gate_blocks_wrong_source(tmp_path: Path):
+    (tmp_path / "calculator.py").write_text("def add():\n    return 0\n", encoding="utf-8")
+    (tmp_path / "other.py").write_text("def other():\n    return 0\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=PatchOtherFileProposer(),
+        config=OrchestratorConfig(max_steps=1),
+    ).run(
+        goal="Patch only calculator.",
+        allow_edits=True,
+        allowed_patch_files=["calculator.py"],
+    )
+
+    assert result.trace["tool_history"][0]["allowed"] is False
+    assert "outside the allowed real-repo source files" in result.trace["tool_history"][0]["policy_reason"]
+    assert (tmp_path / "other.py").read_text(encoding="utf-8") == "def other():\n    return 0\n"
 
 
 def test_orchestrator_finishes_verified_patch_success_before_repeat_guard(tmp_path: Path):

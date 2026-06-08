@@ -4,6 +4,8 @@ from backend.app.benchmark.test_output_parser import parse_pytest_output
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from tools.compare_benchmark_runs import compare_reports
 from tools.generate_repair_benchmark_cases import CASES
+from tools.generate_real_repo_benchmark_cases import CASES as REAL_REPO_CASES
+from tools.generate_real_repo_stress_cases import CASES as REAL_REPO_STRESS_CASES
 
 
 def test_parse_pytest_output_extracts_counts_and_failures():
@@ -120,6 +122,26 @@ def test_phase3_benchmark_case_set_has_expected_size_and_metadata():
         assert case.known_patch.old in case.files[case.known_patch.path]
         assert case.expected_source_file in case.relevant_files
         assert case.expected_test_file in case.relevant_files
+
+
+def test_phase4_real_repo_case_set_has_expected_shape():
+    assert len(REAL_REPO_CASES) >= 8
+    assert len({case.repo_family for case in REAL_REPO_CASES}) >= 3
+    for case in REAL_REPO_CASES:
+        assert case.expected_source_file in case.files
+        assert case.expected_test_file in case.files
+        assert case.known_patch.path == case.expected_source_file
+        assert case.known_patch.old in case.files[case.expected_source_file]
+
+
+def test_phase5_real_repo_stress_cases_have_failure_expectations():
+    assert len(REAL_REPO_STRESS_CASES) >= 5
+    expected_categories = {case.expected_failure_category for case in REAL_REPO_STRESS_CASES}
+    assert {"no_patch_proposed", "wrong_file_selected", "patch_invalid"} <= expected_categories
+    for case in REAL_REPO_STRESS_CASES:
+        assert case.expected_source_file in case.files
+        assert case.expected_test_file in case.files
+        assert case.expected_changed_files
 
 
 def test_compare_benchmark_reports_identifies_improvements_and_regressions():

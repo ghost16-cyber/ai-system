@@ -1,0 +1,20 @@
+{
+  "bug_type": "syntax_trap",
+  "case_id": "stress_004_syntax_trap_patch",
+  "difficulty": "hard",
+  "expected_changed_files": [
+    "app/parser.py"
+  ],
+  "expected_failure_category": "patch_invalid",
+  "expected_source_file": "app/parser.py",
+  "expected_test_file": "tests/test_parser.py",
+  "goal": "Fix the failing parser test; avoid introducing syntax errors.",
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/parser.py",
+    "tests/test_parser.py"
+  ],
+  "stress_case": true
+}

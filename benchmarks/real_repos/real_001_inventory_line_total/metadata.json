@@ -1,0 +1,25 @@
+{
+  "bug_type": "aggregation_bug",
+  "case_id": "real_001_inventory_line_total",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "app/services/pricing.py"
+  ],
+  "expected_source_file": "app/services/pricing.py",
+  "expected_test_file": "tests/test_pricing.py",
+  "goal": "Fix the failing inventory line-total calculation.",
+  "known_patch": {
+    "new": "return item.price * item.quantity",
+    "old": "return item.price + item.quantity",
+    "path": "app/services/pricing.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/services/__init__.py",
+    "app/services/pricing.py",
+    "tests/test_pricing.py"
+  ],
+  "repo_family": "fastapi_inventory_app"
+}

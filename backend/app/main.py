@@ -20,6 +20,8 @@ from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.database.repository import AnalysisRepository
 from backend.app.jobs import JobQueue
+from backend.app.orchestrator.approvals import approve_pending_patch
+from backend.app.orchestrator.policy import PolicyError
 from backend.app.schemas.api import (
     AnalyzeFileRequest,
     AnalyzeProjectRequest,
@@ -362,6 +364,13 @@ def create_app(
                 "path": relative_path.as_posix(),
                 "allow_edits": request.allow_edits,
                 "allow_tests": request.allow_tests,
+                "approval_mode": "never"
+                if not request.allow_edits
+                else request.approval_mode,
+                "allow_dirty_worktree": request.allow_dirty_worktree,
+                "rollback_on_test_failure": request.rollback_on_test_failure,
+                "max_patch_changed_lines": request.max_patch_changed_lines,
+                "allowed_patch_files": request.allowed_patch_files,
                 "max_steps": request.max_steps,
                 "proposer": request.proposer,
                 "slm_model": request.slm_model,
@@ -430,6 +439,42 @@ def create_app(
             "orchestrator_status": result.get("status"),
             "final_response": result.get("final_response"),
             "trace": compacted,
+        }
+
+    @application.post("/jobs/{job_id}/approve-patch")
+    def approve_patch(job_id: str) -> dict:
+        try:
+            job_item = job_queue.get(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        result = job_item.result or {}
+        task_id = str(result.get("task_id") or "")
+        if not task_id and isinstance(result.get("trace"), dict):
+            task_id = str(result["trace"].get("task_id") or "")
+        if not task_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Job does not contain a pending orchestrator task id.",
+            )
+
+        try:
+            approval_result = approve_pending_patch(
+                approval_root="data/app/pending_approvals",
+                approval_id=task_id,
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except PolicyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        return {
+            "job_id": job_id,
+            "approval_id": task_id,
+            "status": "applied" if approval_result.get("applied") else "rolled_back",
+            "result": approval_result,
         }
 
     @application.post("/jobs/{job_id}/cancel", response_model=JobResponse)

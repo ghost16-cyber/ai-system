@@ -1,0 +1,14 @@
+{
+  "average_bug_type_confidence": 0.72,
+  "average_difficulty_confidence": 0.7,
+  "average_overall_confidence": 0.8175,
+  "average_patch_risk_confidence": 1.0,
+  "average_source_file_confidence": 0.85,
+  "bug_type_accuracy": 1.0,
+  "cases": 26,
+  "difficulty_accuracy": 1.0,
+  "model_available": true,
+  "patch_risk_accuracy": 1.0,
+  "source_file_accuracy": 1.0
+}
+Saved report: /home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260608-144233/advisor_evaluation.json

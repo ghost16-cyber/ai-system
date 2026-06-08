@@ -6,7 +6,14 @@ import json
 from uuid import uuid4
 
 from .advisors import Advisor, build_default_advisors
-from .models import OrchestratorConfig, OrchestratorResult, TaskState, ToolResult
+from .checkpoints import rollback_checkpoint
+from .models import (
+    ApprovalMode,
+    OrchestratorConfig,
+    OrchestratorResult,
+    TaskState,
+    ToolResult,
+)
 from .policy import PolicyError, SafetyPolicy
 from .proposers import ActionProposer, build_action_proposer
 from .tools import ToolRegistry, build_default_tool_registry, get_slm_tool_schemas
@@ -48,8 +55,14 @@ class Orchestrator:
         project_path: str = ".",
         allow_edits: bool = False,
         allow_tests: bool = True,
+        approval_mode: ApprovalMode | None = None,
+        allow_dirty_worktree: bool = False,
+        rollback_on_test_failure: bool = True,
+        max_patch_changed_lines: int = 20,
+        allowed_patch_files: list[str] | None = None,
         task_id: str | None = None,
     ) -> OrchestratorResult:
+        resolved_approval_mode = approval_mode or ("auto" if allow_edits else "never")
         try:
             policy = SafetyPolicy(self.workspace_root, project_path)
         except PolicyError as error:
@@ -63,6 +76,13 @@ class Orchestrator:
                 final_response=f"Task stopped by policy: {error}",
                 allow_edits=allow_edits,
                 allow_tests=allow_tests,
+                approval_mode=resolved_approval_mode,
+                allow_dirty_worktree=allow_dirty_worktree,
+                rollback_on_test_failure=rollback_on_test_failure,
+                max_patch_changed_lines=max_patch_changed_lines,
+                allowed_patch_files=allowed_patch_files or [],
+                checkpoint_root=self.config.checkpoint_root,
+                approval_root=self.config.approval_root,
             )
             return self._finish(state)
 
@@ -73,6 +93,13 @@ class Orchestrator:
             project_path=project_path,
             allow_edits=allow_edits,
             allow_tests=allow_tests,
+            approval_mode=resolved_approval_mode,
+            allow_dirty_worktree=allow_dirty_worktree,
+            rollback_on_test_failure=rollback_on_test_failure,
+            max_patch_changed_lines=max_patch_changed_lines,
+            allowed_patch_files=allowed_patch_files or [],
+            checkpoint_root=self.config.checkpoint_root,
+            approval_root=self.config.approval_root,
         )
 
         self._run_advisors(state, policy)
@@ -88,6 +115,7 @@ class Orchestrator:
             )
             self._apply_result_effects(state, result)
             state.record_tool_result(result)
+            self._rollback_failed_patch_if_needed(state, result)
 
             if action.action == "final_response":
                 break
@@ -128,6 +156,35 @@ class Orchestrator:
                 if isinstance(path, str) and path not in state.candidate_files:
                     state.candidate_files.append(path)
 
+    def _rollback_failed_patch_if_needed(
+        self,
+        state: TaskState,
+        result: ToolResult,
+    ) -> None:
+        if not state.rollback_on_test_failure:
+            return
+        if result.action != "run_tests" or result.output.get("status") != "failed":
+            return
+        if not _patch_applied(state):
+            return
+        checkpoint = state.validation.checkpoint or {}
+        checkpoint_path = checkpoint.get("checkpoint_path")
+        if not isinstance(checkpoint_path, str):
+            return
+        rollback = rollback_checkpoint(checkpoint_path)
+        state.validation.rollback = rollback
+        state.record_tool_result(
+            ToolResult(
+                action="rollback_patch",
+                allowed=True,
+                success=bool(rollback.get("restored")),
+                output=rollback,
+            )
+        )
+        state.status = "failed"
+        state.stop_reason = "Tests failed after patch; rollback restored the checkpoint."
+        state.final_response = state.stop_reason
+
     def _guard_repeated_action(
         self,
         state: TaskState,
@@ -146,6 +203,13 @@ class Orchestrator:
                 verified_success
             )
             return verified_success
+
+        unknown_path = _guard_unknown_path_action(state, action)
+        if unknown_path is not None:
+            unknown_path.args["_requested_action_signature"] = _action_signature(
+                unknown_path
+            )
+            return unknown_path
 
         repeated_read = _guard_repeated_read(state, action)
         if repeated_read is not None:
@@ -240,13 +304,17 @@ def _guard_verified_patch_success(state: TaskState, action):
     )
 
 
-def _guard_patch_needs_verification(state: TaskState, action):
-    if not any(
+def _patch_applied(state: TaskState) -> bool:
+    return any(
         result.action == "apply_patch"
         and result.success
         and result.output.get("applied") is True
         for result in state.tool_history
-    ):
+    )
+
+
+def _guard_patch_needs_verification(state: TaskState, action):
+    if not _patch_applied(state):
         return None
     if not state.validation.tests:
         return None
@@ -260,6 +328,41 @@ def _guard_patch_needs_verification(state: TaskState, action):
         reason="Patch was applied; running tests to verify it before stopping.",
         args={"command": "python -m pytest -q"},
     )
+
+
+def _guard_unknown_path_action(state: TaskState, action):
+    if action.action not in {"read_file", "analyze_ast"}:
+        return None
+    requested_path = str(action.args.get("path", ""))
+    if not requested_path:
+        return _infer_patch_action(state)
+    known_paths = set(state.candidate_files) | set(state.inspected_files)
+    imported = _imported_source_candidates_from_read_files(state)
+    known_paths.update(imported)
+    if requested_path in known_paths:
+        return None
+
+    from .models import ToolAction
+
+    for candidate in imported:
+        if candidate not in state.inspected_files:
+            return ToolAction(
+                action="read_file",
+                reason="Unknown path replaced with an imported source module.",
+                args={"path": candidate},
+            )
+    inferred_patch = _infer_patch_action(state)
+    if inferred_patch is not None:
+        return inferred_patch
+    if action.action == "analyze_ast":
+        for path in state.inspected_files:
+            if path.endswith(".py") and not _was_ast_analyzed(state, path):
+                return ToolAction(
+                    action="analyze_ast",
+                    reason="Unknown AST path replaced with an inspected Python file.",
+                    args={"path": path},
+                )
+    return None
 
 
 def _read_count(state: TaskState, path: str) -> int:
@@ -306,6 +409,10 @@ def _escalate_after_repeated_read(state: TaskState, requested_path: str):
                 args={"path": path},
             )
 
+    inferred_patch = _infer_patch_action(state)
+    if inferred_patch is not None:
+        return inferred_patch
+
     return ToolAction(
         action="final_response",
         reason="Repeated read_file guard stopped the loop after available evidence.",
@@ -336,6 +443,16 @@ def _alternate_action(state: TaskState, action):
 
     if action.action in {"search_files", "read_file"}:
         requested_path = str(action.args.get("path", ""))
+        for candidate in _imported_source_candidates_from_read_files(state):
+            if candidate not in state.inspected_files:
+                return ToolAction(
+                    action="read_file",
+                    reason=(
+                        "Repeat guard followed an imported source module before "
+                        "stopping."
+                    ),
+                    args={"path": candidate},
+                )
         for candidate in state.candidate_files:
             if candidate == requested_path:
                 continue
@@ -359,9 +476,26 @@ def _alternate_action(state: TaskState, action):
                 reason="Repeat guard switched from repeated file reads to test execution.",
                 args={"command": "python -m pytest -q"},
             )
+        inferred_patch = _infer_patch_action(state)
+        if inferred_patch is not None:
+            return inferred_patch
 
     if action.action == "analyze_ast":
         requested_path = str(action.args.get("path", ""))
+        if requested_path not in state.inspected_files:
+            inferred_patch = _infer_patch_action(state)
+            if inferred_patch is not None:
+                return inferred_patch
+            for path in state.inspected_files:
+                if path.endswith(".py") and not _was_ast_analyzed(state, path):
+                    return ToolAction(
+                        action="analyze_ast",
+                        reason=(
+                            "Repeat guard replaced an unknown AST path with an "
+                            "inspected Python file."
+                        ),
+                        args={"path": path},
+                    )
         for path in state.inspected_files:
             if path == requested_path or _was_ast_analyzed(state, path) or not path.endswith(".py"):
                 continue
@@ -395,6 +529,9 @@ def _alternate_action(state: TaskState, action):
                 reason="Repeat guard switched from repeated tests to file search.",
                 args={"query": state.goal, "max_results": 10},
             )
+        inferred_patch = _infer_patch_action(state)
+        if inferred_patch is not None:
+            return inferred_patch
 
     if action.action == "propose_patch" and state.proposed_patch:
         return ToolAction(
@@ -439,13 +576,30 @@ def _imported_source_candidates_from_read_files(state: TaskState) -> list[str]:
             elif isinstance(node, ast.Import):
                 modules.extend(alias.name for alias in node.names)
             for module in modules:
-                module_root = module.split(".")[0]
-                if module_root in _STDLIB_OR_EXTERNAL_MODULES:
+                if module.split(".")[0] in _STDLIB_OR_EXTERNAL_MODULES:
                     continue
-                candidate = f"{module_root}.py"
-                if candidate not in candidates:
-                    candidates.append(candidate)
+                for candidate in _module_path_candidates(module):
+                    if candidate not in candidates:
+                        candidates.append(candidate)
     return candidates
+
+
+def _module_path_candidates(module: str) -> list[str]:
+    parts = [part for part in module.split(".") if part]
+    if not parts:
+        return []
+    return ["/".join(parts) + ".py"]
+
+
+def _infer_patch_action(state: TaskState):
+    if (state.validation.tests or {}).get("status") != "failed":
+        return None
+    try:
+        from .proposers.slm_action_proposer import _infer_simple_patch_from_evidence
+
+        return _infer_simple_patch_from_evidence(state)
+    except Exception:
+        return None
 
 
 _STDLIB_OR_EXTERNAL_MODULES = {

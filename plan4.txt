@@ -1,0 +1,1224 @@
+Project Vision
+
+We are not building a simple chatbot.
+
+We are building a:
+
+Tool-augmented SLM coding assistant
+strengthened by specialized DL advisors,
+controlled by a Python orchestrator,
+protected by rules,
+verified by tests,
+and improved through trace memory.
+
+The main principle:
+
+The SLM thinks.
+The DL advisors guide.
+The orchestrator governs.
+The tools act.
+The validators prove.
+The traces teach.
+1. High-level Architecture
+User
+ ↓
+Frontend / CLI / VS Code Interface
+ ↓
+FastAPI Backend
+ ↓
+Orchestrator
+ ↓
+TaskState
+ ↓
+Advisor Layer
+   ├── Intent advisor
+   ├── File relevance advisor
+   ├── Bug-type advisor
+   ├── Risk advisor
+   ├── Patch-quality advisor
+   └── Memory retrieval advisor
+ ↓
+SLM Core
+ ↓
+Tool Router
+ ↓
+Tool Layer
+   ├── search_files
+   ├── read_file
+   ├── analyze_ast
+   ├── run_tests
+   ├── propose_patch
+   ├── apply_patch
+   ├── validate_syntax
+   └── browser_search
+ ↓
+Validators
+ ↓
+Trace Store
+ ↓
+Final Response
+
+But the real control flow should be:
+
+1. User gives request.
+2. Orchestrator creates TaskState.
+3. Advisors analyze the request.
+4. SLM receives structured context.
+5. SLM proposes next action.
+6. Tool router validates the action.
+7. Tool executes.
+8. Validator checks result.
+9. TaskState updates.
+10. Loop continues until solved or stopped.
+11. Final answer is generated only from verified evidence.
+2. Core Roles
+A. User Interface Layer
+
+This is how the user talks to the assistant.
+
+First version
+
+Use:
+
+CLI
+
+Example:
+
+python -m assistant "Fix the failing tests"
+
+Why CLI first?
+
+Because it is simple, fast, and easy to debug.
+
+Later version
+
+Add:
+
+FastAPI backend
+React frontend
+VS Code extension
+
+The final user experience could be:
+
+User opens VS Code
+asks assistant to fix/test/explain code
+assistant inspects project
+assistant proposes patch
+user approves
+assistant applies and verifies
+B. FastAPI Backend
+
+The backend exposes the assistant as an API.
+
+Technology
+
+Use:
+
+Python
+FastAPI
+Pydantic
+Uvicorn
+Responsibilities
+Receive user requests
+Start assistant task
+Return task status
+Stream progress updates
+Expose traces/history
+Expose patch previews
+Connect later to frontend or VS Code
+Example endpoints
+POST /tasks
+GET /tasks/{task_id}
+GET /tasks/{task_id}/trace
+POST /tasks/{task_id}/approve-patch
+POST /tasks/{task_id}/cancel
+
+Do not start with many endpoints. Start simple.
+
+C. Orchestrator
+
+This is the most important part.
+
+The orchestrator is the governor of the whole system.
+
+It does not “think like an LLM.” It coordinates.
+
+Responsibilities
+Create TaskState
+Call advisors
+Call the SLM
+Validate SLM tool requests
+Execute tools through router
+Update state
+Stop infinite loops
+Trigger validators
+Save traces
+Decide when task is complete
+Technology
+
+Use:
+
+Python
+Pydantic models or dataclasses
+asyncio later if needed
+Important rule
+
+The SLM must not directly execute anything.
+
+The SLM only says:
+
+{
+  "action": "read_file",
+  "args": {
+    "path": "app/main.py"
+  },
+  "reason": "Need to inspect the FastAPI route."
+}
+
+Then the orchestrator decides whether this is allowed.
+
+D. TaskState
+
+TaskState is the shared memory of the current task.
+
+It prevents the system from becoming random.
+
+Example
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class TaskState:
+    task_id: str
+    goal: str
+    workspace: str
+
+    intent: str | None = None
+    status: str = "running"
+
+    advisor_outputs: dict[str, Any] = field(default_factory=dict)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    candidate_files: list[str] = field(default_factory=list)
+    tool_history: list[dict[str, Any]] = field(default_factory=list)
+
+    proposed_patch: dict[str, Any] | None = None
+
+    validation: dict[str, Any] = field(default_factory=lambda: {
+        "syntax": None,
+        "tests": None,
+        "patch_scope": None,
+        "risk": None,
+    })
+
+    final_response: str | None = None
+Responsibilities
+Store goal
+Store evidence
+Store files inspected
+Store advisor results
+Store tool history
+Store proposed patch
+Store validation results
+Store final answer
+
+This will also become training data later.
+
+3. SLM Core
+
+The SLM is the central reasoning component.
+
+It is not the boss. It is the main thinker.
+
+Role of the SLM
+
+The SLM should handle:
+
+Planning
+Reasoning
+Choosing next suggested action
+Explaining errors
+Proposing small patches
+Summarizing verified results
+Converting technical evidence into clear answers
+What the SLM should not control
+
+The SLM should not directly:
+
+Edit files
+Run arbitrary commands
+Delete files
+Claim tests passed
+Access files outside workspace
+Bypass validators
+Technology options
+
+Since you already tested a fast SLM before, the likely setup is:
+
+Ollama
+local SLM
+Python HTTP client
+structured JSON prompting
+
+Possible local SLM types:
+
+Qwen2.5-Coder 1.5B
+Qwen2.5-Coder 3B if your laptop handles it
+Phi small models
+Tiny code-focused models
+
+For your RTX 3050 4GB VRAM, we stay realistic:
+
+small quantized model
+local inference
+short structured prompts
+tool-based context instead of huge context
+Output format
+
+The SLM must output structured JSON actions.
+
+Example:
+
+{
+  "action": "run_tests",
+  "reason": "The task asks to fix a failure, so tests must be run first.",
+  "args": {
+    "command": "python -m pytest"
+  }
+}
+
+This makes the system controllable.
+
+4. Specialized DL Advisor Layer
+
+This is where your idea becomes strong.
+
+The SLM is weak alone, so we surround it with specialized advisors.
+
+Important:
+
+Advisors guide.
+They do not control.
+
+Each advisor produces structured signals.
+
+Advisor 1: Intent Classifier
+Purpose
+
+Understand what the user wants.
+
+Input
+User request
+Output
+{
+  "label": "debug_error",
+  "confidence": 0.94
+}
+Possible labels
+debug_error
+explain_code
+generate_code
+refactor_code
+write_tests
+setup_project
+run_command_help
+project_question
+optimize_code
+Technology
+
+Start simple:
+
+Rule-based keywords
+then scikit-learn classifier
+then small PyTorch model
+
+Good MVP path:
+
+Version 1: keyword/rule classifier
+Version 2: TF-IDF + Logistic Regression
+Version 3: small neural network
+
+Do not train deep learning here on day one.
+
+Advisor 2: File Relevance Ranker
+Purpose
+
+Find which files are probably important.
+
+Input
+User request
+test output
+project file list
+known imports
+past traces
+Output
+{
+  "top_files": [
+    "app/api/routes.py",
+    "app/schemas/chat.py",
+    "tests/test_api.py"
+  ]
+}
+Technology
+
+Start with:
+
+keyword search
+file name matching
+ripgrep-style search
+
+Then add:
+
+TF-IDF ranking
+BM25
+embeddings
+FAISS
+
+Later:
+
+small DL embedding model
+
+Recommended stack:
+
+scikit-learn TfidfVectorizer
+rank-bm25 optional
+FAISS later
+sentence-transformers later
+Advisor 3: Bug-Type Classifier
+Purpose
+
+Classify the likely type of bug.
+
+Input
+test failure
+traceback
+source snippet
+AST summary
+Output
+{
+  "label": "schema_validation_error",
+  "confidence": 0.81
+}
+Possible labels
+wrong_return_value
+missing_import
+type_error
+none_error
+index_error
+schema_validation_error
+async_misuse
+bad_test_expectation
+syntax_error
+dependency_error
+Technology
+
+Start with rules:
+
+Traceback contains ImportError → missing_import
+Traceback contains TypeError → type_error
+FastAPI 422 → schema_validation_error
+
+Later:
+
+TF-IDF + classifier
+small PyTorch classifier
+
+This advisor is useful because it helps the SLM avoid guessing.
+
+Advisor 4: Risk Scorer
+Purpose
+
+Estimate how dangerous a proposed patch is.
+
+Input
+patch diff
+file path
+number of lines changed
+file type
+test coverage
+affected functions
+Output
+{
+  "risk": "medium",
+  "confidence": 0.76,
+  "reason": "Patch changes API response schema."
+}
+Risk levels
+low
+medium
+high
+blocked
+MVP rules
+1–5 lines changed in normal source file → low
+changes test + source → medium
+changes config/auth/database → high
+deletes files → blocked
+touches secrets → blocked
+Technology
+
+Start with:
+
+Python rules
+
+Later:
+
+RandomForest/XGBoost
+small neural classifier
+Advisor 5: Patch-Quality Scorer
+Purpose
+
+Score whether a patch is likely to solve the problem.
+
+Input
+test failure
+code before
+patch diff
+bug type
+similar past traces
+Output
+{
+  "quality_score": 0.82,
+  "recommendation": "try_patch"
+}
+Important
+
+This does not replace tests.
+
+It only helps decide which patch to try first.
+
+Truth still comes from validators.
+
+Technology
+
+Later only.
+
+Do not build this in MVP.
+
+Use trace data first.
+
+Advisor 6: Memory / Retrieval Advisor
+Purpose
+
+Find similar past tasks.
+
+Input
+Current request
+error message
+file names
+bug type
+Output
+{
+  "similar_cases": [
+    {
+      "summary": "FastAPI 422 caused by Pydantic field mismatch",
+      "fix": "renamed request field to match schema",
+      "outcome": "tests_passed"
+    }
+  ]
+}
+Technology
+
+Start with:
+
+JSONL trace search
+keyword matching
+
+Later:
+
+SQLite
+FAISS
+embeddings
+5. Tool Layer
+
+Tools are the assistant’s hands.
+
+They must be safe and controlled.
+
+Tool Registry
+
+Every tool needs:
+
+name
+description
+input schema
+risk level
+permission policy
+executor function
+
+Example:
+
+@dataclass
+class ToolSpec:
+    name: str
+    description: str
+    risk: str
+    executor: Callable
+Tool 1: plan
+Purpose
+
+Create structured steps.
+
+Risk
+low
+Policy
+allow
+Tool 2: search_files
+Purpose
+
+Find relevant files inside the workspace.
+
+Technology
+Python pathlib
+keyword search
+later ripgrep-like search
+later TF-IDF/BM25
+Policy
+allowed only inside workspace
+ignore secret files
+ignore virtualenvs
+ignore node_modules
+ignore .git
+Tool 3: read_file
+Purpose
+
+Read file content.
+
+Policy
+
+Allow:
+
+.py
+.js
+.ts
+tsx
+json
+yaml
+md
+txt
+
+Block:
+
+.env
+.pem
+.key
+.sqlite
+.db
+password files
+outside workspace
+Tool 4: analyze_ast
+Purpose
+
+Understand Python code structure.
+
+Technology
+Python ast module
+
+Extract:
+
+functions
+classes
+imports
+decorators
+FastAPI routes
+test functions
+function arguments
+return statements
+
+Later:
+
+tree-sitter for multiple languages
+Tool 5: run_tests
+Purpose
+
+Run approved test commands.
+
+Technology
+subprocess
+pytest
+
+Allowed commands:
+
+python -m pytest
+pytest
+python -m compileall .
+
+Later:
+
+npm test
+ruff check .
+mypy .
+
+Never allow open shell execution in MVP.
+
+Tool 6: propose_patch
+Purpose
+
+Ask the SLM to propose a small patch.
+
+MVP patch format:
+
+{
+  "path": "demo_project/calculator.py",
+  "old": "return a - b",
+  "new": "return a + b",
+  "reason": "The add function subtracts instead of adding."
+}
+
+Avoid full-file rewriting at first.
+
+Tool 7: apply_patch
+Purpose
+
+Modify files.
+
+Rules
+
+Only apply if:
+
+path is allowed
+old text exists exactly once
+patch is small
+syntax remains valid
+backup exists
+risk is not blocked
+Tool 8: validate_syntax
+Purpose
+
+Check that Python code is valid.
+
+Technology
+ast.parse
+py_compile
+python -m compileall
+Tool 9: browser_search
+Purpose
+
+Look up documentation/errors.
+
+Use later, not MVP.
+
+When added, prefer:
+
+official docs
+GitHub issues
+package docs
+reliable technical references
+6. Rules and Safety Policy
+
+This is non-negotiable.
+
+The assistant must be safe before it is smart.
+
+File safety
+
+Block:
+
+.env
+*.pem
+*.key
+secrets.*
+credentials.*
+password*
+node_modules
+.venv
+.git
+system folders
+outside workspace
+Command safety
+
+Allow only whitelisted commands.
+
+Start with:
+
+python -m pytest
+pytest
+python -m compileall .
+
+Block:
+
+rm -rf
+del /s
+format
+curl | bash
+wget scripts
+powershell destructive commands
+registry edits
+system package installs
+Patch safety
+
+Block or require approval for:
+
+large diffs
+file deletion
+changes outside workspace
+secret files
+database migrations
+auth/security code
+package lock changes
+7. Validator Layer
+
+Validators establish truth.
+
+Syntax validator
+
+Checks:
+
+Can Python parse the edited file?
+Patch validator
+
+Checks:
+
+patch size
+target path
+old text match
+risk level
+forbidden files
+Test validator
+
+Checks:
+
+Did tests pass?
+Which tests failed?
+Was exit code 0?
+Result validator
+
+Prevents false claims.
+
+The assistant can only say:
+
+Tests passed
+
+if the test tool returned:
+
+exit_code = 0
+8. Trace Memory
+
+This is what makes the future DL possible.
+
+Every task should be saved.
+
+Store
+user request
+advisor outputs
+SLM actions
+tool calls
+files inspected
+patches proposed
+patch applied or rejected
+test results
+final outcome
+user feedback
+Technology
+
+MVP:
+
+JSONL
+
+Later:
+
+SQLite with WAL mode
+
+Even later:
+
+PostgreSQL
+FAISS vector index
+
+Trace example:
+
+{
+  "task_id": "task_001",
+  "goal": "Fix failing calculator test",
+  "intent": "debug_error",
+  "tools_used": ["run_tests", "read_file", "analyze_ast", "apply_patch", "run_tests"],
+  "patch_applied": true,
+  "tests_passed": true,
+  "outcome": "success"
+}
+9. Recommended Software Stack
+Core language
+Python 3.12
+
+Why?
+
+Best for AI/ML
+FastAPI support
+PyTorch support
+AST support
+Testing tools
+Easy local automation
+Backend
+FastAPI
+Pydantic
+Uvicorn
+
+Use this for:
+
+API endpoints
+structured request/response
+task execution
+future frontend connection
+Testing
+pytest
+
+Later:
+
+coverage.py
+ruff
+mypy
+SLM Runtime
+
+Use:
+
+Ollama
+
+or direct local model runtime later.
+
+Likely model:
+
+Qwen2.5-Coder 1.5B
+
+or another small fast code model.
+
+Use it through:
+
+Python requests/httpx client
+ML
+
+Use:
+
+scikit-learn
+numpy
+pandas
+
+For:
+
+intent classifier
+file ranker
+bug classifier baseline
+risk scorer baseline
+Deep Learning
+
+Use later:
+
+PyTorch
+
+Optional later:
+
+transformers
+sentence-transformers
+peft
+bitsandbytes
+
+But for the first version, avoid heavy DL training.
+
+Retrieval
+
+Start:
+
+keyword search
+TF-IDF
+
+Later:
+
+FAISS
+sentence-transformers
+Chroma optional
+
+I recommend FAISS over Chroma for your project because it is lighter and more direct.
+
+Storage
+
+Start:
+
+JSONL traces
+
+Then:
+
+SQLite
+
+Later if needed:
+
+PostgreSQL
+Frontend
+
+Not first.
+
+Later use:
+
+React
+Vite
+Tailwind CSS
+
+Possible UI features:
+
+chat interface
+task trace view
+patch preview
+approve/reject patch
+test result panel
+project file view
+IDE integration
+
+Later:
+
+VS Code extension
+TypeScript
+Node.js
+
+But not in MVP.
+
+Build the backend first.
+
+Dev environment
+
+Use your current preferred setup:
+
+Windows
+WSL2 Ubuntu
+VS Code
+Python virtual environment
+Git/GitHub
+Docker later
+
+Docker is useful later, but not required for the first local MVP.
+
+10. Build Phases
+Version 0.1 — Tool Loop Without Real SLM
+
+Goal:
+
+Prove tools and orchestration work.
+
+Build:
+
+TaskState
+orchestrator
+tool registry
+safety policy
+search_files
+read_file
+analyze_ast
+run_tests
+apply_patch
+trace logger
+demo project
+
+Use a fake scripted action proposer.
+
+Why?
+
+Because we should debug the system before debugging the model.
+
+Version 0.2 — Add Real SLM
+
+Goal:
+
+SLM proposes structured actions.
+
+Build:
+
+SLM client
+prompt templates
+JSON action parser
+invalid-output recovery
+loop limit
+final response generation
+
+Success demo:
+
+Assistant fixes broken calculator test.
+Version 0.3 — Strong Validation
+
+Goal:
+
+Prevent unsafe or fake success.
+
+Add:
+
+syntax validation
+patch scope validation
+test result parser
+rollback backup
+risk policy
+max read/test/patch limits
+Version 0.4 — FastAPI API
+
+Goal:
+
+Expose assistant as a service.
+
+Add:
+
+POST /tasks
+GET /tasks/{id}
+GET /tasks/{id}/trace
+
+Optional:
+
+SSE progress streaming
+Version 0.5 — Trace Memory
+
+Goal:
+
+Collect learning data.
+
+Add:
+
+trace JSONL
+SQLite trace DB
+task history
+outcome labels
+user accept/reject feedback
+Version 0.6 — First Advisor: Intent Classifier
+
+Goal:
+
+Help route requests.
+
+Start with:
+
+rules
+
+Then:
+
+TF-IDF + Logistic Regression
+
+Later:
+
+small PyTorch classifier
+Version 0.7 — File Relevance Advisor
+
+Goal:
+
+Find better files faster.
+
+Start with:
+
+keyword + file path matching
+
+Then:
+
+TF-IDF/BM25
+
+Later:
+
+embeddings + FAISS
+Version 0.8 — Bug-Type Advisor
+
+Goal:
+
+Classify common failures.
+
+Start with traceback rules.
+
+Later train from traces.
+
+Version 0.9 — Risk and Patch-Quality Advisors
+
+Goal:
+
+Make patch decisions safer.
+
+Risk advisor can start rule-based.
+
+Patch-quality advisor needs real data, so add it late.
+
+Version 1.0 — Capstone-Ready System
+
+By this point, the system should have:
+
+SLM reasoning core
+tool registry
+safe file reading
+AST analysis
+test execution
+patch proposal/application
+validators
+trace memory
+intent advisor
+file relevance advisor
+bug-type advisor
+risk advisor
+FastAPI backend
+simple UI or CLI
+clear documentation
+11. First Demo We Should Build
+
+Use a tiny broken Python project.
+
+calculator.py
+def add(a: int, b: int) -> int:
+    return a - b
+test_calculator.py
+from calculator import add
+
+
+def test_add():
+    assert add(2, 3) == 5
+
+User says:
+
+Fix the failing test.
+
+Assistant does:
+
+run_tests → failure
+read_file → calculator.py
+analyze_ast → add function
+propose_patch → return a + b
+apply_patch → edit file
+run_tests → pass
+final response → verified fix
+
+That is the first real proof.
+
+12. Final Recommended Stack Summary
+Layer	Technology
+Language	Python 3.12
+Backend	FastAPI, Pydantic, Uvicorn
+Orchestration	Python dataclasses/Pydantic
+SLM runtime	Ollama/local model
+SLM model	Small code SLM, likely Qwen2.5-Coder 1.5B
+Tools	Python pathlib, subprocess, ast, difflib
+Testing	pytest
+Validation	ast.parse, py_compile, pytest exit codes
+Trace storage	JSONL first, SQLite later
+ML baseline	scikit-learn
+DL later	PyTorch
+Retrieval	keyword → TF-IDF/BM25 → FAISS
+Frontend later	React, Vite, Tailwind
+IDE later	VS Code extension, TypeScript
+Dev environment	Windows + WSL2 + VS Code + GitHub
+Deployment later	Docker
+13. The Most Important Rule
+
+Do not start by training models.
+
+Start by building the system that produces useful data.
+
+The correct order is:
+
+Tools first.
+Validation second.
+SLM loop third.
+Trace memory fourth.
+Specialized ML/DL advisors fifth.
+
+Because without traces, the specialized DL models will be weak guesses.
+
+With traces, they become trained from real assistant behavior.
+
+Final Direction
+
+The project should be built as:
+
+A small SLM strengthened by:
+- structured planning
+- specialized advisors
+- safe tools
+- AST code understanding
+- test verification
+- memory traces
+- Python rules
+
+This is strong, realistic, explainable, and much more impressive than a simple LLM wrapper.

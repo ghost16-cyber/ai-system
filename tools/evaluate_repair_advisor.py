@@ -108,6 +108,24 @@ def main() -> None:
 
     rows: List[Dict[str, Any]] = []
 
+    def _field_prediction(prediction: Any, field: str) -> Any:
+        return getattr(prediction, field, None)
+
+    def _prediction_value(prediction: Any, field: str) -> str:
+        field_prediction = _field_prediction(prediction, field)
+        if field_prediction is None:
+            return ""
+        if hasattr(field_prediction, "value"):
+            return field_prediction.value or ""
+        return str(field_prediction)
+
+    def _prediction_confidence(prediction: Any, field: str) -> float | None:
+        field_prediction = _field_prediction(prediction, field)
+        if field_prediction is None or not hasattr(field_prediction, "confidence"):
+            return None
+        value = field_prediction.confidence
+        return float(value) if isinstance(value, (float, int)) else None
+
     for case_dir in sorted(p for p in cases_dir.iterdir() if p.is_dir()):
         metadata_path = case_dir / "metadata.json"
         if not metadata_path.is_file():
@@ -124,14 +142,33 @@ def main() -> None:
         # --------------------------------------------------------------
         try:
             prediction = advisor.predict(build_input(metadata, case_dir))
-            pred_bug_type = getattr(prediction, "bug_type", "")
-            pred_source = getattr(prediction, "source_file", "")
-            confidence = getattr(prediction, "confidence", None)
+            pred_bug_type = _prediction_value(prediction, "bug_type")
+            pred_source = _prediction_value(prediction, "source_file")
+            pred_difficulty = _prediction_value(prediction, "difficulty")
+            pred_patch_risk = _prediction_value(prediction, "patch_risk")
+            confidence = (
+                getattr(prediction, "confidence", None)
+                or getattr(prediction, "overall_confidence", None)
+            )
+            head_confidences = {
+                "bug_type": _prediction_confidence(prediction, "bug_type"),
+                "source_file": _prediction_confidence(prediction, "source_file"),
+                "difficulty": _prediction_confidence(prediction, "difficulty"),
+                "patch_risk": _prediction_confidence(prediction, "patch_risk"),
+            }
             reasons = getattr(prediction, "reasons", [])
         except Exception as exc:  # defensive programming
             pred_bug_type = ""
             pred_source = ""
+            pred_difficulty = ""
+            pred_patch_risk = ""
             confidence = None
+            head_confidences = {
+                "bug_type": None,
+                "source_file": None,
+                "difficulty": None,
+                "patch_risk": None,
+            }
             reasons = [f"Prediction failed: {exc}"]
             prediction = None
 
@@ -144,7 +181,14 @@ def main() -> None:
                 "expected_source_file": expected_source,
                 "predicted_source_file": pred_source,
                 "source_file_correct": pred_source == expected_source,
+                "expected_difficulty": str(metadata.get("difficulty", "unknown")),
+                "predicted_difficulty": pred_difficulty,
+                "difficulty_correct": pred_difficulty == str(metadata.get("difficulty", "unknown")),
+                "expected_patch_risk": str(metadata.get("patch_risk", "low")),
+                "predicted_patch_risk": pred_patch_risk,
+                "patch_risk_correct": pred_patch_risk == str(metadata.get("patch_risk", "low")),
                 "confidence": confidence,
+                "head_confidences": head_confidences,
                 "available": getattr(advisor, "available", None),
                 "reasons": reasons,
             }
@@ -153,12 +197,33 @@ def main() -> None:
     total = len(rows)
     bug_type_correct = sum(r["bug_type_correct"] for r in rows)
     source_file_correct = sum(r["source_file_correct"] for r in rows)
+    difficulty_correct = sum(r["difficulty_correct"] for r in rows)
+    patch_risk_correct = sum(r["patch_risk_correct"] for r in rows)
+    confidences = [r["confidence"] for r in rows if isinstance(r.get("confidence"), (float, int))]
+
+    def _average_head_confidence(head: str) -> float:
+        values = [
+            row["head_confidences"][head]
+            for row in rows
+            if isinstance(row.get("head_confidences"), dict)
+            and isinstance(row["head_confidences"].get(head), (float, int))
+        ]
+        return round(sum(values) / len(values), 4) if values else 0.0
 
     summary = {
         "cases": total,
         "model_available": getattr(advisor, "available", None),
         "bug_type_accuracy": round(bug_type_correct / total, 4) if total else 0.0,
         "source_file_accuracy": round(source_file_correct / total, 4) if total else 0.0,
+        "difficulty_accuracy": round(difficulty_correct / total, 4) if total else 0.0,
+        "patch_risk_accuracy": round(patch_risk_correct / total, 4) if total else 0.0,
+        "average_overall_confidence": round(sum(confidences) / len(confidences), 4)
+        if confidences
+        else 0.0,
+        "average_bug_type_confidence": _average_head_confidence("bug_type"),
+        "average_source_file_confidence": _average_head_confidence("source_file"),
+        "average_difficulty_confidence": _average_head_confidence("difficulty"),
+        "average_patch_risk_confidence": _average_head_confidence("patch_risk"),
     }
 
     # --------------------------------------------------------------

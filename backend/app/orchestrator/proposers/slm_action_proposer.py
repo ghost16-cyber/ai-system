@@ -395,13 +395,19 @@ def _imported_source_candidates_from_read_tests(state: TaskState) -> list[str]:
             elif isinstance(node, ast.Import):
                 modules.extend(alias.name for alias in node.names)
             for module in modules:
-                module_root = module.split(".")[0]
-                if module_root in _STDLIB_OR_EXTERNAL_MODULES:
+                if module.split(".")[0] in _STDLIB_OR_EXTERNAL_MODULES:
                     continue
-                candidate = f"{module_root}.py"
-                if candidate not in candidates:
-                    candidates.append(candidate)
+                for candidate in _module_path_candidates(module):
+                    if candidate not in candidates:
+                        candidates.append(candidate)
     return candidates
+
+
+def _module_path_candidates(module: str) -> list[str]:
+    parts = [part for part in module.split(".") if part]
+    if not parts:
+        return []
+    return ["/".join(parts) + ".py"]
 
 
 def _infer_simple_patch_from_evidence(state: TaskState) -> ToolAction | None:

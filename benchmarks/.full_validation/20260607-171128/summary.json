@@ -1,0 +1,150 @@
+{
+  "commands": [
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "-m",
+        "pytest"
+      ],
+      "duration_seconds": 6.817,
+      "exit_code": 0,
+      "name": "pytest",
+      "parsed_summary": null,
+      "passed": true,
+      "report_path": null,
+      "stderr_tail": "",
+      "stdout_tail": "============================= test session starts ==============================\nplatform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0\nrootdir: /home/palla/projects/ai-system-1\nconfigfile: pytest.ini\ntestpaths: tests\nplugins: anyio-4.13.0\ncollected 108 items\n\ntests/test_api.py .....................                                  [ 19%]\ntests/test_benchmark.py ........                                         [ 26%]\ntests/test_checkpoint_rollback.py ..                                     [ 28%]\ntests/test_dirty_tree.py ...                                             [ 31%]\ntests/test_failure_taxonomy.py ....                                      [ 35%]\ntests/test_file_patch_proposals.py .                                     [ 36%]\ntests/test_jobs.py ..........                                            [ 45%]\ntests/test_orchestrator.py ...........                                   [ 55%]\ntests/test_patch_apply.py .....                                          [ 60%]\ntests/test_patch_preview.py ...                                          [ 62%]\ntests/test_planner.py ....                                               [ 66%]\ntests/test_repo_scanner.py .                                             [ 67%]\ntests/test_rule_registry.py ...                                          [ 70%]\ntests/test_slm_proposer.py ............                                  [ 81%]\ntests/test_static_analyzer.py .............                              [ 93%]\ntests/test_target_resolver.py .......                                    [100%]\n\n============================= 108 passed in 6.42s =============================="
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/run_phase4_validation.py",
+        "--proposer",
+        "slm",
+        "--skip-real-repo",
+        "--max-steps",
+        "24",
+        "--poll-timeout",
+        "300"
+      ],
+      "duration_seconds": 490.901,
+      "exit_code": 0,
+      "name": "controlled_benchmark",
+      "parsed_summary": {
+        "advisor_evaluation_passed": true,
+        "advisor_training_passed": true,
+        "controlled_edit_passed": true,
+        "controlled_no_edit_passed": true,
+        "edit_had_verified_fixes": true,
+        "no_edit_applied_no_patches": true,
+        "overall_passed": true,
+        "pytest_passed": true,
+        "real_repo_passed_or_skipped": true,
+        "unsafe_actions_zero": true
+      },
+      "passed": true,
+      "report_path": "/home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-171135",
+      "stderr_tail": "",
+      "stdout_tail": "{\n  \"advisor_evaluation_passed\": true,\n  \"advisor_training_passed\": true,\n  \"controlled_edit_passed\": true,\n  \"controlled_no_edit_passed\": true,\n  \"edit_had_verified_fixes\": true,\n  \"no_edit_applied_no_patches\": true,\n  \"overall_passed\": true,\n  \"pytest_passed\": true,\n  \"real_repo_passed_or_skipped\": true,\n  \"unsafe_actions_zero\": true\n}\nPhase 4 validation: /home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-171135"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/run_phase4_validation.py",
+        "--proposer",
+        "slm",
+        "--real-repo",
+        "--max-steps",
+        "24",
+        "--poll-timeout",
+        "300"
+      ],
+      "duration_seconds": 74.048,
+      "exit_code": 0,
+      "name": "real_repo_dry_run",
+      "parsed_summary": {
+        "advisor_evaluation_passed": true,
+        "advisor_training_passed": true,
+        "overall_passed": true,
+        "pytest_passed": true,
+        "real_repo_edit_passed_or_skipped": true,
+        "real_repo_no_edit_applied_no_patches": true,
+        "real_repo_no_edit_generated_report": true,
+        "real_repo_no_edit_passed": true,
+        "unsafe_actions_zero": true
+      },
+      "passed": true,
+      "report_path": "/home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-171946",
+      "stderr_tail": "",
+      "stdout_tail": "{\n  \"advisor_evaluation_passed\": true,\n  \"advisor_training_passed\": true,\n  \"overall_passed\": true,\n  \"pytest_passed\": true,\n  \"real_repo_edit_passed_or_skipped\": true,\n  \"real_repo_no_edit_applied_no_patches\": true,\n  \"real_repo_no_edit_generated_report\": true,\n  \"real_repo_no_edit_passed\": true,\n  \"unsafe_actions_zero\": true\n}\nPhase 4 validation: /home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-171946"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/run_phase4_validation.py",
+        "--proposer",
+        "slm",
+        "--real-repo",
+        "--real-repo-edits",
+        "--max-steps",
+        "24",
+        "--poll-timeout",
+        "300"
+      ],
+      "duration_seconds": 159.475,
+      "exit_code": 0,
+      "name": "real_repo_edit",
+      "parsed_summary": {
+        "advisor_evaluation_passed": true,
+        "advisor_training_passed": true,
+        "overall_passed": true,
+        "pytest_passed": true,
+        "real_repo_edit_passed_or_skipped": true,
+        "real_repo_no_edit_applied_no_patches": true,
+        "real_repo_no_edit_generated_report": true,
+        "real_repo_no_edit_passed": true,
+        "unsafe_actions_zero": true
+      },
+      "passed": true,
+      "report_path": "/home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-172100",
+      "stderr_tail": "",
+      "stdout_tail": "{\n  \"advisor_evaluation_passed\": true,\n  \"advisor_training_passed\": true,\n  \"overall_passed\": true,\n  \"pytest_passed\": true,\n  \"real_repo_edit_passed_or_skipped\": true,\n  \"real_repo_no_edit_applied_no_patches\": true,\n  \"real_repo_no_edit_generated_report\": true,\n  \"real_repo_no_edit_passed\": true,\n  \"unsafe_actions_zero\": true\n}\nPhase 4 validation: /home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260607-172100"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/run_real_repo_stress_benchmark.py",
+        "--proposer",
+        "slm",
+        "--max-steps",
+        "24",
+        "--poll-timeout",
+        "300"
+      ],
+      "duration_seconds": 50.632,
+      "exit_code": 0,
+      "name": "stress_taxonomy",
+      "parsed_summary": {
+        "ambiguous_source_file": 1,
+        "missing_dependency": 1,
+        "no_obvious_assertion": 1,
+        "syntax_trap_or_invalid_patch_blocked": 1,
+        "wrong_file_blocked": 1
+      },
+      "passed": false,
+      "report_path": "/home/palla/projects/ai-system-1/benchmarks/.runs/20260607-172339/report.json",
+      "stderr_tail": "",
+      "stdout_tail": "[FAIL] stress_001_missing_dependency: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file\n[FAIL] stress_002_ambiguous_source_file: not_fixed actions=read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,run_tests,final_response\n[FAIL] stress_003_no_obvious_assertion: not_fixed actions=read_file,analyze_ast,run_tests,run_tests,read_file,analyze_ast,run_tests,run_tests,final_response\n[FAIL] stress_004_syntax_trap_patch: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,final_response\n[FAIL] stress_005_wrong_file_temptation: not_fixed actions=read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,run_tests,run_tests,run_tests,final_response\n{\n  \"advisor_available_count\": 5,\n  \"advisor_average_bug_type_confidence\": 0.72,\n  \"advisor_average_confidence\": 0.617,\n  \"advisor_average_difficulty_confidence\": 0.7,\n  \"advisor_average_patch_risk_confidence\": 1.0,\n  \"advisor_average_source_file_confidence\": 0.047,\n  \"advisor_bug_type_accuracy\": 0.0,\n  \"advisor_source_file_accuracy\": 0.0,\n  \"average_changed_lines\": 0.0,\n  \"average_confidence_after_patch\": 0.0,\n  \"average_confidence_before_patch\": 0.0,\n  \"average_steps\": 11.8,\n  \"cases_run\": 5,\n  \"errors\": 0,\n  \"failed\": 5,\n  \"failure_categories\": {\n    \"ambiguous_source_file\": 1,\n    \"missing_dependency\": 1,\n    \"no_obvious_assertion\": 1,\n    \"syntax_trap_or_invalid_patch_blocked\": 1,\n    \"wrong_file_blocked\": 1\n  },\n  \"fix_rate\": 0.0,\n  \"fixed\": 0,\n  \"irrelevant_file_reads\": 0,\n  \"loop_prevention_count\": 2,\n  \"max_changed_lines\": 0,\n  \"multi_file_cases\": 0,\n  \"multi_file_fixed\": 0,\n  \"patch_quality_clean_count\": 0,\n  \"patch_quality_invalid_count\": 5,\n  \"patch_quality_irrelevant_count\": 0,\n  \"patch_quality_probably_ok_count\": 0,\n  \"patch_quality_risky_count\": 0,\n  \"patch_quality_too_large_count\": 0,\n  \"patch_touched_expected_file_count\": 0,\n  \"patch_touched_unexpected_file_count\": 0,\n  \"patches_applied\": 0,\n  \"patches_proposed\": 0,\n  \"rollbacks_performed\": 0,\n  \"snapshots_created\": 0,\n  \"syntax_valid_after_patch\": 0,\n  \"tests_passed_after_patch\": 0,\n  \"tests_rerun_after_patch\": 0,\n  \"tests_verified\": 0,\n  \"unsafe_action_block_count\": 0\n}\nReport: /home/palla/projects/ai-system-1/benchmarks/.runs/20260607-172339/report.json"
+    }
+  ],
+  "controlled_benchmark_passed": true,
+  "duration_seconds": 781.877,
+  "output_dir": "/home/palla/projects/ai-system-1/benchmarks/.full_validation/20260607-171128",
+  "overall_passed": false,
+  "pytest_passed": true,
+  "real_repo_dry_run_passed": true,
+  "real_repo_edit_passed": true,
+  "regression_detected": true,
+  "stress_taxonomy_passed": false,
+  "unsafe_actions_zero": true
+}

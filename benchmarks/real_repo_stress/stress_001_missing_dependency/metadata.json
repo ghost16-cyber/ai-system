@@ -1,0 +1,20 @@
+{
+  "bug_type": "dependency_error",
+  "case_id": "stress_001_missing_dependency",
+  "difficulty": "hard",
+  "expected_changed_files": [
+    "app/reporting.py"
+  ],
+  "expected_failure_category": "no_patch_proposed",
+  "expected_source_file": "app/reporting.py",
+  "expected_test_file": "tests/test_reporting.py",
+  "goal": "Fix the failing missing dependency test without installing packages.",
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/reporting.py",
+    "tests/test_reporting.py"
+  ],
+  "stress_case": true
+}

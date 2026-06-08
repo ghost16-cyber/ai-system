@@ -6,140 +6,214 @@ from typing import Any
 
 import joblib
 
+from .advisor_heads import (
+    HEAD_FIELDS,
+    average_confidence,
+    calibrated_head_prediction,
+    predict_head,
+    prediction_tuple_to_dict,
+)
 from .repair_features import build_repair_feature_text
 from .repair_labels import (
+    AdvisorFieldPrediction,
     RepairAdvisorInput,
     RepairAdvisorPrediction,
 )
-
 
 DEFAULT_MODEL_PATH = Path("models/repair_advisor/repair_advisor.joblib")
 
 
 class RepairAdvisor:
-    """
-    Lightweight shadow advisor for repair tasks.
-
-    Phase 3C behavior:
-    - predicts useful metadata
-    - does not control orchestration
-    - safe fallback if model is missing
-    """
+    """Shadow advisor that predicts a separate value & confidence for each head."""
 
     def __init__(self, model_path: str | Path = DEFAULT_MODEL_PATH):
         self.model_path = Path(model_path)
         self.model: Any | None = None
-
         if self.model_path.exists():
             self.model = joblib.load(self.model_path)
+
+        self.version = 1
+        self.heads: dict[str, Any] = {}
+        if isinstance(self.model, dict) and isinstance(self.model.get("heads"), dict):
+            self.version = int(self.model.get("version", 2) or 2)
+            self.heads = {
+                head: self.model["heads"][head]
+                for head in HEAD_FIELDS
+                if head in self.model["heads"]
+            }
 
     @property
     def available(self) -> bool:
         return self.model is not None
 
+    # ------------------------------------------------------------------
     def predict(self, input_data: RepairAdvisorInput) -> RepairAdvisorPrediction:
+        """Return a multi-head prediction with per-head confidences."""
         if self.model is None:
             return self._fallback_prediction(input_data)
 
         text = build_repair_feature_text(input_data)
 
         try:
-            prediction = self.model.predict([text])[0]
+            if self.heads:
+                predictions = {
+                    head: calibrated_head_prediction(
+                        head=head,
+                        prediction=predict_head(self.heads[head], text),
+                        input_data=input_data,
+                    )
+                    for head in HEAD_FIELDS
+                    if head in self.heads
+                }
+                if len(predictions) != len(HEAD_FIELDS):
+                    missing = sorted(set(HEAD_FIELDS) - set(predictions))
+                    raise ValueError(f"Advisor bundle missing heads: {missing}")
 
-            confidence = 0.5
-            if hasattr(self.model, "predict_proba"):
-                probabilities = self.model.predict_proba([text])[0]
-                confidence = float(max(probabilities))
+                overall = average_confidence(list(predictions.values()))
 
-            parsed = self._parse_prediction_label(str(prediction))
+                return RepairAdvisorPrediction(
+                    bug_type=AdvisorFieldPrediction(
+                        value=predictions["bug_type"].value or "unknown",
+                        confidence=predictions["bug_type"].confidence,
+                    ),
+                    source_file=AdvisorFieldPrediction(
+                        value=predictions["source_file"].value,
+                        confidence=predictions["source_file"].confidence,
+                    ),
+                    difficulty=AdvisorFieldPrediction(
+                        value=predictions["difficulty"].value or "unknown",
+                        confidence=predictions["difficulty"].confidence,
+                    ),
+                    patch_risk=AdvisorFieldPrediction(
+                        value=predictions["patch_risk"].value or "unknown",
+                        confidence=predictions["patch_risk"].confidence,
+                    ),
+                    should_use_slm=True,
+                    overall_confidence=overall,
+                    reasons=[
+                        "multi_head_advisor_prediction",
+                        f"version={self.version}",
+                        f"model_path={self.model_path.as_posix()}",
+                    ],
+                )
 
+            parsed, confidence = self._predict_legacy_model(text)
             return RepairAdvisorPrediction(
-                bug_type=parsed.get("bug_type", "unknown"),
-                source_file=parsed.get("source_file"),
-                difficulty=parsed.get("difficulty", "unknown"),
-                patch_risk=parsed.get("patch_risk", "unknown"),
+                bug_type=AdvisorFieldPrediction(
+                    value=parsed.get("bug_type", "unknown"),
+                    confidence=confidence,
+                ),
+                source_file=AdvisorFieldPrediction(
+                    value=parsed.get("source_file"),
+                    confidence=confidence,
+                ),
+                difficulty=AdvisorFieldPrediction(
+                    value=parsed.get("difficulty", "unknown"),
+                    confidence=confidence,
+                ),
+                patch_risk=AdvisorFieldPrediction(
+                    value=parsed.get("patch_risk", "unknown"),
+                    confidence=confidence,
+                ),
                 should_use_slm=True,
-                confidence=round(confidence, 4),
+                overall_confidence=confidence,
                 reasons=[
-                    "advisor_model_prediction",
+                    "legacy_advisor_model_prediction",
                     f"model_path={self.model_path.as_posix()}",
                 ],
             )
+        except Exception as exc:  # defensive fallback
+            return self._fallback_prediction(input_data, str(exc))
 
-        except Exception as exc:
-            fallback = self._fallback_prediction(input_data)
-            return RepairAdvisorPrediction(
-                bug_type=fallback.bug_type,
-                source_file=fallback.source_file,
-                difficulty=fallback.difficulty,
-                patch_risk=fallback.patch_risk,
-                should_use_slm=fallback.should_use_slm,
-                confidence=0.0,
-                reasons=[
-                    "advisor_model_error",
-                    f"{type(exc).__name__}: {exc}",
-                ],
-            )
-
+    # ------------------------------------------------------------------
     def _fallback_prediction(
         self,
         input_data: RepairAdvisorInput,
+        error_message: str | None = None,
     ) -> RepairAdvisorPrediction:
-        candidate_files = input_data.candidate_files or []
-        source_file = self._guess_source_file(candidate_files, input_data.imported_modules)
+        source_file = self._guess_source_file(
+            input_data.candidate_files or [], input_data.imported_modules
+        )
+        reasons = ["fallback_no_model_available"]
+        if error_message:
+            reasons = ["advisor_model_error", error_message]
 
         return RepairAdvisorPrediction(
-            bug_type="unknown",
-            source_file=source_file,
-            difficulty="unknown",
-            patch_risk="unknown",
+            bug_type=AdvisorFieldPrediction(value="unknown", confidence=0.0),
+            source_file=AdvisorFieldPrediction(value=source_file, confidence=0.0),
+            difficulty=AdvisorFieldPrediction(value="unknown", confidence=0.0),
+            patch_risk=AdvisorFieldPrediction(value="unknown", confidence=0.0),
             should_use_slm=True,
-            confidence=0.0,
-            reasons=["fallback_no_model_available"],
+            overall_confidence=0.0,
+            reasons=reasons,
         )
 
-    def _guess_source_file(
-        self,
-        candidate_files: list[str],
-        imported_modules: list[str] | None,
-    ) -> str | None:
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _guess_source_file(candidate_files: list[str], imported_modules: list[str] | None) -> str | None:
         modules = imported_modules or []
-
         for module in modules:
             module_path = module.replace(".", "/") + ".py"
             for candidate in candidate_files:
                 if candidate.endswith(module_path):
                     return candidate
-
         for candidate in candidate_files:
             if candidate.startswith("src/") and candidate.endswith(".py"):
                 return candidate
-
         for candidate in candidate_files:
             if candidate.endswith(".py") and not candidate.startswith("tests/"):
                 return candidate
-
         return None
 
-    def _parse_prediction_label(self, label: str) -> dict[str, str | None]:
-        """
-        Labels are stored as compact JSON strings by the training script.
-        """
-        try:
-            parsed = json.loads(label)
-            if isinstance(parsed, dict):
-                return {
-                    "bug_type": str(parsed.get("bug_type", "unknown")),
-                    "source_file": parsed.get("source_file"),
-                    "difficulty": str(parsed.get("difficulty", "unknown")),
-                    "patch_risk": str(parsed.get("patch_risk", "unknown")),
-                }
-        except json.JSONDecodeError:
-            pass
+    # ------------------------------------------------------------------
+    def _predict_legacy_model(self, text: str) -> tuple[dict[str, str | None], float]:
+        raw_prediction = self.model.predict([text])[0]
+        confidence = 0.5
+        if hasattr(self.model, "predict_proba"):
+            try:
+                probabilities = self.model.predict_proba([text])
+                if probabilities and isinstance(probabilities, list):
+                    confidence = round(
+                        sum(float(max(proba[0])) for proba in probabilities) / len(probabilities),
+                        4,
+                    )
+            except Exception:
+                confidence = 0.5
+        return self._parse_prediction_label(raw_prediction), confidence
 
-        return {
-            "bug_type": label,
-            "source_file": None,
-            "difficulty": "unknown",
-            "patch_risk": "unknown",
-        }
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_prediction_label(
+        label: str | dict[str, str | None] | tuple[str | None, ...] | list[str | None],
+    ) -> dict[str, str | None]:
+        """
+        Normalise whatever the model returns into a dict with the four keys.
+        Supports dict, tuple/list in HEAD_FIELDS order, JSON string, or plain string.
+        """
+        if isinstance(label, dict):
+            return {
+                "bug_type": str(label.get("bug_type", "unknown")),
+                "source_file": label.get("source_file"),
+                "difficulty": str(label.get("difficulty", "unknown")),
+                "patch_risk": str(label.get("patch_risk", "unknown")),
+            }
+
+        if isinstance(label, (list, tuple)):
+            if len(label) == len(HEAD_FIELDS):
+                return prediction_tuple_to_dict(list(label))
+
+        if isinstance(label, str):
+            try:
+                parsed = json.loads(label)
+                if isinstance(parsed, dict):
+                    return {
+                        "bug_type": str(parsed.get("bug_type", "unknown")),
+                        "source_file": parsed.get("source_file"),
+                        "difficulty": str(parsed.get("difficulty", "unknown")),
+                        "patch_risk": str(parsed.get("patch_risk", "unknown")),
+                    }
+            except json.JSONDecodeError:
+                pass
+            return {"bug_type": str(label), "source_file": None, "difficulty": "unknown", "patch_risk": "unknown"}
+
+        return {"bug_type": str(label), "source_file": None, "difficulty": "unknown", "patch_risk": "unknown"}

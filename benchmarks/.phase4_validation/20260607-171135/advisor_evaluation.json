@@ -1,0 +1,745 @@
+{
+  "cases": [
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_001_calculator_demo",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "wrong_return_value",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "calculator.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "wrong_return_value",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "calculator.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_002_off_by_one",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "off_by_one",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "sequence_utils.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "off_by_one",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "sequence_utils.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_003_mutable_default",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "state_leak",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "collector.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "state_leak",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "collector.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_004_string_to_int",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "type_conversion",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "parser.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "type_conversion",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "parser.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_005_safe_dict_lookup",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "missing_default",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "users.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "missing_default",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "users.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_006_filter_even_numbers",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "bad_boolean_logic",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "number_utils.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "bad_boolean_logic",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "number_utils.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_007_wrong_comparison_operator",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "wrong_comparison_operator",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "eligibility.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "wrong_comparison_operator",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "eligibility.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_008_boolean_logic_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "boolean_logic",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "access.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "boolean_logic",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "access.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_009_missing_none_handling",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "none_handling",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "profiles.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "none_handling",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "profiles.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_010_list_sorting_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "sorting",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "sorting.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "sorting",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "sorting.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_011_incorrect_default_return",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "incorrect_default_return",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "searching.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "incorrect_default_return",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "searching.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_012_path_string_normalization",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "string_normalization",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "slugs.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "string_normalization",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "slugs.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_013_datetime_formatting",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "date_formatting",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "dates.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "date_formatting",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "dates.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_014_dataclass_field_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "dataclass_field",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "invoice.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "dataclass_field",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "invoice.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_015_recursion_base_case",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "recursion_base_case",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "maths.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "recursion_base_case",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "maths.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_016_aggregation_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "aggregation",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "totals.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "aggregation",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "totals.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_017_duplicate_handling",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "duplicate_handling",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "dedupe.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "duplicate_handling",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "dedupe.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_018_case_insensitive_matching",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "case_insensitive_matching",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "matching.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "case_insensitive_matching",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "matching.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_019_empty_input_handling",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "empty_input_handling",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "averages.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "empty_input_handling",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "averages.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_020_wrong_exception_handling",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "exception_handling",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "safe_parse.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "exception_handling",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "safe_parse.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_021_clamp_bounds_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "bounds_logic",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "bounds.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "bounds_logic",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "bounds.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_022_string_prefix_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "wrong_string_method",
+      "expected_difficulty": "easy",
+      "expected_patch_risk": "low",
+      "expected_source_file": "prefixes.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "wrong_string_method",
+      "predicted_difficulty": "easy",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "prefixes.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_023_imported_constant_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "imported_constant_bug",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "config.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "imported_constant_bug",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "config.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_024_helper_function_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "helper_function_bug",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "helpers.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "helper_function_bug",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "helpers.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_025_dataclass_validation_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "dataclass_validation_bug",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "models.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "dataclass_validation_bug",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "models.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    },
+    {
+      "available": true,
+      "bug_type_correct": true,
+      "case_id": "case_026_imported_tax_rate_bug",
+      "confidence": 0.8175,
+      "difficulty_correct": true,
+      "expected_bug_type": "imported_constant_bug",
+      "expected_difficulty": "medium",
+      "expected_patch_risk": "low",
+      "expected_source_file": "tax_config.py",
+      "head_confidences": {
+        "bug_type": 0.72,
+        "difficulty": 0.7,
+        "patch_risk": 1.0,
+        "source_file": 0.85
+      },
+      "patch_risk_correct": true,
+      "predicted_bug_type": "imported_constant_bug",
+      "predicted_difficulty": "medium",
+      "predicted_patch_risk": "low",
+      "predicted_source_file": "tax_config.py",
+      "reasons": [
+        "multi_head_advisor_prediction",
+        "version=2",
+        "model_path=/home/palla/projects/ai-system-1/models/repair_advisor/repair_advisor.joblib"
+      ],
+      "source_file_correct": true
+    }
+  ],
+  "summary": {
+    "average_bug_type_confidence": 0.72,
+    "average_difficulty_confidence": 0.7,
+    "average_overall_confidence": 0.8175,
+    "average_patch_risk_confidence": 1.0,
+    "average_source_file_confidence": 0.85,
+    "bug_type_accuracy": 1.0,
+    "cases": 26,
+    "difficulty_accuracy": 1.0,
+    "model_available": true,
+    "patch_risk_accuracy": 1.0,
+    "source_file_accuracy": 1.0
+  }
+}

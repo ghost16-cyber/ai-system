@@ -1,0 +1,24 @@
+{
+  "bug_type": "case_insensitive_matching",
+  "case_id": "real_005_data_contains_case_insensitive",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "data_utils/matching.py"
+  ],
+  "expected_source_file": "data_utils/matching.py",
+  "expected_test_file": "tests/test_matching.py",
+  "goal": "Fix the failing data matching case-insensitive test.",
+  "known_patch": {
+    "new": "return needle.lower() in haystack.lower()",
+    "old": "return needle in haystack",
+    "path": "data_utils/matching.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "data_utils/__init__.py",
+    "data_utils/matching.py",
+    "tests/test_matching.py"
+  ],
+  "repo_family": "data_utils_package"
+}

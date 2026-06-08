@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/home/palla/projects/ai-system-1/.venv/bin/python",
+    "-m",
+    "pytest"
+  ],
+  "duration_seconds": 6.532,
+  "exit_code": 0,
+  "name": "pytest",
+  "parsed_summary": null,
+  "passed": true,
+  "report_path": null,
+  "stderr_tail": "",
+  "stdout_tail": "============================= test session starts ==============================\nplatform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0\nrootdir: /home/palla/projects/ai-system-1\nconfigfile: pytest.ini\ntestpaths: tests\nplugins: anyio-4.13.0\ncollected 108 items\n\ntests/test_api.py .....................                                  [ 19%]\ntests/test_benchmark.py ........                                         [ 26%]\ntests/test_checkpoint_rollback.py ..                                     [ 28%]\ntests/test_dirty_tree.py ...                                             [ 31%]\ntests/test_failure_taxonomy.py ....                                      [ 35%]\ntests/test_file_patch_proposals.py .                                     [ 36%]\ntests/test_jobs.py ..........                                            [ 45%]\ntests/test_orchestrator.py ...........                                   [ 55%]\ntests/test_patch_apply.py .....                                          [ 60%]\ntests/test_patch_preview.py ...                                          [ 62%]\ntests/test_planner.py ....                                               [ 66%]\ntests/test_repo_scanner.py .                                             [ 67%]\ntests/test_rule_registry.py ...                                          [ 70%]\ntests/test_slm_proposer.py ............                                  [ 81%]\ntests/test_static_analyzer.py .............                              [ 93%]\ntests/test_target_resolver.py .......                                    [100%]\n\n============================= 108 passed in 6.16s =============================="
+}

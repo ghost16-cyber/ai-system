@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,9 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from app.advisors.repair_labels import RepairAdvisorTrainingExample
+from app.advisors.advisor_heads import ConstantHead, HEAD_FIELDS
+from app.advisors.repair_features import build_repair_feature_text
+from app.advisors.repair_labels import RepairAdvisorInput, RepairAdvisorTrainingExample
 
 
 DEFAULT_CASES_DIR = ROOT / "benchmarks" / "repair_cases"
@@ -69,40 +72,47 @@ def infer_expected_source_file(metadata: dict[str, Any], case_dir: Path | None =
     )
 
 
+def _candidate_files(metadata: dict[str, Any], source_file: str) -> list[str]:
+    candidates = metadata.get("candidate_files")
+    if isinstance(candidates, list):
+        values = [str(value) for value in candidates if isinstance(value, str) and value.strip()]
+    else:
+        values = []
+
+    for value in (
+        source_file,
+        metadata.get("expected_test_file"),
+        *(metadata.get("relevant_files") or []),
+    ):
+        if isinstance(value, str) and value.strip() and value not in values:
+            values.append(value)
+    return values
+
+
 def build_training_example(metadata: dict[str, Any]) -> RepairAdvisorTrainingExample:
     goal = str(metadata.get("goal", "Fix the failing tests."))
-    case_id = str(metadata.get("case_id", "unknown"))
     bug_type = str(metadata.get("bug_type", "unknown"))
     difficulty = str(metadata.get("difficulty", "easy"))
     patch_risk = str(metadata.get("patch_risk", "low"))
     source_file = infer_expected_source_file(metadata, metadata.get("_case_dir"))
     failing_test_file = str(metadata.get("expected_test_file", ""))
     imports = metadata.get("imported_modules") or metadata.get("imports") or []
-
-    text = "\n".join(
-        [
-            f"case_id: {case_id}",
-            f"goal: {goal}",
-            f"bug_type_hint: {bug_type}",
-            f"failing_test_file: {failing_test_file}",
-            "imports: " + " ".join(map(str, imports)),
-            f"expected_source_file_hint: {source_file}",
-        ]
-    )
-
-    label = json.dumps(
-        {
-            "bug_type": bug_type,
-            "source_file": source_file,
-            "difficulty": difficulty,
-            "patch_risk": patch_risk,
-        },
-        sort_keys=True,
+    text = build_repair_feature_text(
+        RepairAdvisorInput(
+            goal=goal,
+            failing_test_file=failing_test_file,
+            failing_test_name=None,
+            assertion_summary=str(metadata.get("expected_assertion", "")) or None,
+            imported_modules=list(map(str, imports)),
+            candidate_files=_candidate_files(metadata, source_file),
+            inspected_files=[],
+            tool_actions=[],
+        )
     )
 
     return RepairAdvisorTrainingExample(
         text=text,
-        bug_type=label,
+        bug_type=bug_type,
         source_file=source_file,
         difficulty=difficulty,
         patch_risk=patch_risk,
@@ -124,12 +134,10 @@ def load_examples(cases_dir: Path) -> list[RepairAdvisorTrainingExample]:
     return examples
 
 
-def train_model(examples: list[RepairAdvisorTrainingExample]) -> Pipeline:
-    if len(examples) < 2:
-        raise ValueError("Need at least 2 examples to train repair advisor.")
-
-    texts = [example.text for example in examples]
-    labels = [example.bug_type for example in examples]
+def train_head(texts: list[str], labels: list[str]) -> Any:
+    unique = sorted(set(labels))
+    if len(unique) == 1:
+        return ConstantHead(unique[0])
 
     model = Pipeline(
         steps=[
@@ -146,13 +154,37 @@ def train_model(examples: list[RepairAdvisorTrainingExample]) -> Pipeline:
                 LogisticRegression(
                     max_iter=1000,
                     class_weight="balanced",
+                    random_state=42,
                 ),
             ),
         ]
     )
-
     model.fit(texts, labels)
     return model
+
+
+def train_model(examples: list[RepairAdvisorTrainingExample]) -> dict[str, Any]:
+    if len(examples) < 2:
+        raise ValueError("Need at least 2 examples to train repair advisor.")
+
+    texts = [example.text for example in examples]
+    label_map = {
+        "bug_type": [example.bug_type for example in examples],
+        "source_file": [example.source_file for example in examples],
+        "difficulty": [example.difficulty for example in examples],
+        "patch_risk": [example.patch_risk for example in examples],
+    }
+    heads = {head: train_head(texts, label_map[head]) for head in HEAD_FIELDS}
+    return {
+        "version": 2,
+        "heads": heads,
+        "metadata": {
+            "trained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "num_examples": len(examples),
+            "heads": list(HEAD_FIELDS),
+            "cases_dir": str(DEFAULT_CASES_DIR),
+        },
+    }
 
 
 def main() -> None:
@@ -176,4 +208,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

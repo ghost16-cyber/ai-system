@@ -124,6 +124,8 @@ def orchestrate_task_job(
             proposer=str(payload.get("proposer", "scripted")),  # type: ignore[arg-type]
             slm_model=str(payload.get("slm_model", "qwen2.5-coder:1.5b")),
             slm_base_url=str(payload.get("slm_base_url", "http://localhost:11434")),
+            checkpoint_root=str(payload.get("checkpoint_root", "data/app/checkpoints")),
+            approval_root=str(payload.get("approval_root", "data/app/pending_approvals")),
         ),
     )
     result = orchestrator.run(
@@ -131,6 +133,15 @@ def orchestrate_task_job(
         project_path=relative_root.as_posix(),
         allow_edits=bool(payload.get("allow_edits", False)),
         allow_tests=bool(payload.get("allow_tests", True)),
+        approval_mode=str(payload.get("approval_mode", "auto")),  # type: ignore[arg-type]
+        allow_dirty_worktree=bool(payload.get("allow_dirty_worktree", False)),
+        rollback_on_test_failure=bool(payload.get("rollback_on_test_failure", True)),
+        max_patch_changed_lines=int(payload.get("max_patch_changed_lines", 20)),
+        allowed_patch_files=[
+            str(path)
+            for path in payload.get("allowed_patch_files", [])
+            if isinstance(path, str) and path.strip()
+        ],
     )
     return result.model_dump(mode="json")
 

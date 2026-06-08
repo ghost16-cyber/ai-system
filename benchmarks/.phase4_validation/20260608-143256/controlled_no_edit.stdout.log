@@ -1,0 +1,71 @@
+[FAIL] case_001_calculator_demo: not_fixed actions=read_file,read_file,analyze_ast,run_tests,analyze_ast,propose_patch,final_response
+[FAIL] case_002_off_by_one: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_003_mutable_default: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_004_string_to_int: not_fixed actions=read_file,analyze_ast,run_tests,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_005_safe_dict_lookup: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_006_filter_even_numbers: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_007_wrong_comparison_operator: not_fixed actions=read_file,analyze_ast,run_tests,run_tests,read_file,propose_patch,final_response
+[FAIL] case_008_boolean_logic_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_009_missing_none_handling: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_010_list_sorting_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_011_incorrect_default_return: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_012_path_string_normalization: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_013_datetime_formatting: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_014_dataclass_field_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_015_recursion_base_case: not_fixed actions=read_file,analyze_ast,run_tests,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_016_aggregation_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_017_duplicate_handling: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_018_case_insensitive_matching: not_fixed actions=read_file,analyze_ast,run_tests,run_tests,read_file,propose_patch,final_response
+[FAIL] case_019_empty_input_handling: not_fixed actions=read_file,read_file,analyze_ast,run_tests,analyze_ast,propose_patch,final_response
+[FAIL] case_020_wrong_exception_handling: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_021_clamp_bounds_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_022_string_prefix_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,propose_patch,final_response
+[FAIL] case_023_imported_constant_bug: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,run_tests,run_tests,read_file,analyze_ast,propose_patch,final_response
+[FAIL] case_024_helper_function_bug: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,read_file,propose_patch,final_response
+[FAIL] case_025_dataclass_validation_bug: not_fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,read_file,propose_patch,final_response
+[FAIL] case_026_imported_tax_rate_bug: not_fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,final_response
+{
+  "advisor_available_count": 26,
+  "advisor_average_bug_type_confidence": 0.72,
+  "advisor_average_confidence": 0.818,
+  "advisor_average_difficulty_confidence": 0.7,
+  "advisor_average_patch_risk_confidence": 1.0,
+  "advisor_average_source_file_confidence": 0.85,
+  "advisor_bug_type_accuracy": 1.0,
+  "advisor_source_file_accuracy": 1.0,
+  "average_changed_lines": 1.42,
+  "average_confidence_after_patch": 0.0,
+  "average_confidence_before_patch": 0.985,
+  "average_steps": 7.38,
+  "cases_run": 26,
+  "errors": 0,
+  "failed": 26,
+  "failure_categories": {
+    "patch_failed_to_apply": 26
+  },
+  "fix_rate": 0.0,
+  "fixed": 0,
+  "irrelevant_file_reads": 0,
+  "loop_prevention_count": 0,
+  "max_changed_lines": 5,
+  "multi_file_cases": 4,
+  "multi_file_fixed": 0,
+  "patch_quality_clean_count": 0,
+  "patch_quality_invalid_count": 0,
+  "patch_quality_irrelevant_count": 0,
+  "patch_quality_probably_ok_count": 26,
+  "patch_quality_risky_count": 0,
+  "patch_quality_too_large_count": 0,
+  "patch_touched_expected_file_count": 26,
+  "patch_touched_unexpected_file_count": 0,
+  "patches_applied": 0,
+  "patches_proposed": 26,
+  "rollbacks_performed": 0,
+  "snapshots_created": 0,
+  "syntax_valid_after_patch": 0,
+  "tests_passed_after_patch": 0,
+  "tests_rerun_after_patch": 0,
+  "tests_verified": 0,
+  "unsafe_action_block_count": 0
+}
+Report: /home/palla/projects/ai-system-1/benchmarks/.runs/20260608-143306/report.json

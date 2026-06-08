@@ -54,6 +54,11 @@ class OrchestrateRequest(BaseModel):
     path: str = Field(default=".", min_length=1)
     allow_edits: bool = False
     allow_tests: bool = True
+    approval_mode: Literal["auto", "review", "never"] = "auto"
+    allow_dirty_worktree: bool = False
+    rollback_on_test_failure: bool = True
+    max_patch_changed_lines: int = Field(default=20, ge=1, le=50)
+    allowed_patch_files: list[str] = Field(default_factory=list)
     max_steps: int = Field(default=12, ge=1, le=50)
     proposer: Literal["scripted", "slm"] = "scripted"
     slm_model: str = "qwen2.5-coder:1.5b"

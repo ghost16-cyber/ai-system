@@ -1,0 +1,32 @@
+{
+  "command": [
+    "/home/palla/projects/ai-system-1/.venv/bin/python",
+    "tools/run_phase4_validation.py",
+    "--proposer",
+    "slm",
+    "--skip-real-repo",
+    "--max-steps",
+    "24",
+    "--poll-timeout",
+    "300"
+  ],
+  "duration_seconds": 501.436,
+  "exit_code": 0,
+  "name": "controlled_benchmark",
+  "parsed_summary": {
+    "advisor_evaluation_passed": true,
+    "advisor_training_passed": true,
+    "controlled_edit_passed": true,
+    "controlled_no_edit_passed": true,
+    "edit_had_verified_fixes": true,
+    "no_edit_applied_no_patches": true,
+    "overall_passed": true,
+    "pytest_passed": true,
+    "real_repo_passed_or_skipped": true,
+    "unsafe_actions_zero": true
+  },
+  "passed": true,
+  "report_path": "/home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260608-143256",
+  "stderr_tail": "",
+  "stdout_tail": "{\n  \"advisor_evaluation_passed\": true,\n  \"advisor_training_passed\": true,\n  \"controlled_edit_passed\": true,\n  \"controlled_no_edit_passed\": true,\n  \"edit_had_verified_fixes\": true,\n  \"no_edit_applied_no_patches\": true,\n  \"overall_passed\": true,\n  \"pytest_passed\": true,\n  \"real_repo_passed_or_skipped\": true,\n  \"unsafe_actions_zero\": true\n}\nPhase 4 validation: /home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260608-143256"
+}

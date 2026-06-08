@@ -1,0 +1,3974 @@
+{
+  "advisor": {
+    "available_count": 26,
+    "average_bug_type_confidence": 0.72,
+    "average_confidence": 0.818,
+    "average_difficulty_confidence": 0.7,
+    "average_patch_risk_confidence": 1.0,
+    "average_source_file_confidence": 0.85,
+    "bug_type_accuracy": 1.0,
+    "cases": 26,
+    "rows": [
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_001_calculator_demo",
+        "confidence": 0.8175,
+        "expected_bug_type": "wrong_return_value",
+        "expected_source_file": "calculator.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "wrong_return_value",
+        "predicted_source_file": "calculator.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_002_off_by_one",
+        "confidence": 0.8175,
+        "expected_bug_type": "off_by_one",
+        "expected_source_file": "sequence_utils.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "off_by_one",
+        "predicted_source_file": "sequence_utils.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_003_mutable_default",
+        "confidence": 0.8175,
+        "expected_bug_type": "state_leak",
+        "expected_source_file": "collector.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "state_leak",
+        "predicted_source_file": "collector.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_004_string_to_int",
+        "confidence": 0.8175,
+        "expected_bug_type": "type_conversion",
+        "expected_source_file": "parser.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "type_conversion",
+        "predicted_source_file": "parser.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_005_safe_dict_lookup",
+        "confidence": 0.8175,
+        "expected_bug_type": "missing_default",
+        "expected_source_file": "users.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "missing_default",
+        "predicted_source_file": "users.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_006_filter_even_numbers",
+        "confidence": 0.8175,
+        "expected_bug_type": "bad_boolean_logic",
+        "expected_source_file": "number_utils.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "bad_boolean_logic",
+        "predicted_source_file": "number_utils.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_007_wrong_comparison_operator",
+        "confidence": 0.8175,
+        "expected_bug_type": "wrong_comparison_operator",
+        "expected_source_file": "eligibility.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "wrong_comparison_operator",
+        "predicted_source_file": "eligibility.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_008_boolean_logic_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "boolean_logic",
+        "expected_source_file": "access.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "boolean_logic",
+        "predicted_source_file": "access.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_009_missing_none_handling",
+        "confidence": 0.8175,
+        "expected_bug_type": "none_handling",
+        "expected_source_file": "profiles.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "none_handling",
+        "predicted_source_file": "profiles.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_010_list_sorting_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "sorting",
+        "expected_source_file": "sorting.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "sorting",
+        "predicted_source_file": "sorting.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_011_incorrect_default_return",
+        "confidence": 0.8175,
+        "expected_bug_type": "incorrect_default_return",
+        "expected_source_file": "searching.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "incorrect_default_return",
+        "predicted_source_file": "searching.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_012_path_string_normalization",
+        "confidence": 0.8175,
+        "expected_bug_type": "string_normalization",
+        "expected_source_file": "slugs.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "string_normalization",
+        "predicted_source_file": "slugs.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_013_datetime_formatting",
+        "confidence": 0.8175,
+        "expected_bug_type": "date_formatting",
+        "expected_source_file": "dates.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "date_formatting",
+        "predicted_source_file": "dates.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_014_dataclass_field_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "dataclass_field",
+        "expected_source_file": "invoice.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "dataclass_field",
+        "predicted_source_file": "invoice.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_015_recursion_base_case",
+        "confidence": 0.8175,
+        "expected_bug_type": "recursion_base_case",
+        "expected_source_file": "maths.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "recursion_base_case",
+        "predicted_source_file": "maths.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_016_aggregation_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "aggregation",
+        "expected_source_file": "totals.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "aggregation",
+        "predicted_source_file": "totals.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_017_duplicate_handling",
+        "confidence": 0.8175,
+        "expected_bug_type": "duplicate_handling",
+        "expected_source_file": "dedupe.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "duplicate_handling",
+        "predicted_source_file": "dedupe.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_018_case_insensitive_matching",
+        "confidence": 0.8175,
+        "expected_bug_type": "case_insensitive_matching",
+        "expected_source_file": "matching.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "case_insensitive_matching",
+        "predicted_source_file": "matching.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_019_empty_input_handling",
+        "confidence": 0.8175,
+        "expected_bug_type": "empty_input_handling",
+        "expected_source_file": "averages.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "empty_input_handling",
+        "predicted_source_file": "averages.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_020_wrong_exception_handling",
+        "confidence": 0.8175,
+        "expected_bug_type": "exception_handling",
+        "expected_source_file": "safe_parse.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "exception_handling",
+        "predicted_source_file": "safe_parse.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_021_clamp_bounds_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "bounds_logic",
+        "expected_source_file": "bounds.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "bounds_logic",
+        "predicted_source_file": "bounds.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_022_string_prefix_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "wrong_string_method",
+        "expected_source_file": "prefixes.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "wrong_string_method",
+        "predicted_source_file": "prefixes.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_023_imported_constant_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "imported_constant_bug",
+        "expected_source_file": "config.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "imported_constant_bug",
+        "predicted_source_file": "config.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_024_helper_function_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "helper_function_bug",
+        "expected_source_file": "helpers.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "helper_function_bug",
+        "predicted_source_file": "helpers.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_025_dataclass_validation_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "dataclass_validation_bug",
+        "expected_source_file": "models.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "dataclass_validation_bug",
+        "predicted_source_file": "models.py",
+        "source_file_correct": true
+      },
+      {
+        "available": true,
+        "bug_type_correct": true,
+        "case_id": "case_026_imported_tax_rate_bug",
+        "confidence": 0.8175,
+        "expected_bug_type": "imported_constant_bug",
+        "expected_source_file": "tax_config.py",
+        "head_confidences": {
+          "bug_type": 0.72,
+          "difficulty": 0.7,
+          "patch_risk": 1.0,
+          "source_file": 0.85
+        },
+        "predicted_bug_type": "imported_constant_bug",
+        "predicted_source_file": "tax_config.py",
+        "source_file_correct": true
+      }
+    ],
+    "source_file_accuracy": 1.0
+  },
+  "cases": [
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "wrong_return_value"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "calculator.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "wrong_return_value",
+      "case_id": "case_001_calculator_demo",
+      "compact_trace_path": "case_001_calculator_demo/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 10.283,
+      "error": null,
+      "expected_source_file": "calculator.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "add(2, 3)",
+            "assertion": "assert add(2, 3) == 5",
+            "expected_hint": "5"
+          },
+          {
+            "actual_hint": "-1",
+            "assertion": "assert -1 == 5",
+            "expected_hint": "5"
+          },
+          {
+            "actual_hint": "-1",
+            "assertion": "assert -1 == 5",
+            "expected_hint": "5"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_calculator.py",
+        "failing_test_name": "test_add",
+        "failing_tests": [
+          "test_calculator.py::test_add",
+          "test_add"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n___________________________________ test_add ___________________________________\n\n    def test_add():\n>       assert add(2, 3) == 5\nE       assert -1 == 5\nE        +  where -1 = add(2, 3)\n\ntest_calculator.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_calculator.py::test_add - assert -1 == 5\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_calculator.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 12,
+        "old_length": 12,
+        "path": "calculator.py",
+        "reason": "Evidence shows add subtracts while the test expects addition."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "off_by_one"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "sequence_utils.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "off_by_one",
+      "case_id": "case_002_off_by_one",
+      "compact_trace_path": "case_002_off_by_one/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.533,
+      "error": null,
+      "expected_source_file": "sequence_utils.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "count_items([1, 2, 3])",
+            "assertion": "assert count_items([1, 2, 3]) == 3",
+            "expected_hint": "3"
+          },
+          {
+            "actual_hint": "2",
+            "assertion": "assert 2 == 3",
+            "expected_hint": "3"
+          },
+          {
+            "actual_hint": "2",
+            "assertion": "assert 2 == 3",
+            "expected_hint": "3"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_sequence_utils.py",
+        "failing_test_name": "test_count_items",
+        "failing_tests": [
+          "test_sequence_utils.py::test_count_items",
+          "test_count_items"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________________________ test_count_items _______________________________\n\n    def test_count_items():\n>       assert count_items([1, 2, 3]) == 3\nE       assert 2 == 3\nE        +  where 2 = count_items([1, 2, 3])\n\ntest_sequence_utils.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_sequence_utils.py::test_count_items - assert 2 == 3\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_sequence_utils.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 18,
+        "old_length": 22,
+        "path": "sequence_utils.py",
+        "reason": "Evidence shows count_items has an off-by-one subtraction."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "state_leak"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "collector.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "state_leak",
+      "case_id": "case_003_mutable_default",
+      "compact_trace_path": "case_003_mutable_default/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 11.533,
+      "error": null,
+      "expected_source_file": "collector.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "append_item('a')",
+            "assertion": "assert append_item('a') == ['a']",
+            "expected_hint": "['a']"
+          },
+          {
+            "actual_hint": "append_item('b')",
+            "assertion": "assert append_item('b') == ['b']",
+            "expected_hint": "['b']"
+          },
+          {
+            "actual_hint": "['a', 'b']",
+            "assertion": "assert ['a', 'b'] == ['b']",
+            "expected_hint": "['b']"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_collector.py",
+        "failing_test_name": "test_append_item_does_not_share_state",
+        "failing_tests": [
+          "test_collector.py::test_append_item_does_not_share_state",
+          "test_append_item_does_not_share_state"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n____________________ test_append_item_does_not_share_state _____________________\n\n    def test_append_item_does_not_share_state():\n        assert append_item('a') == ['a']\n>       assert append_item('b') == ['b']\nE       AssertionError: assert ['a', 'b'] == ['b']\nE         \nE         At index 0 diff: 'a' != 'b'\nE         Left contains one more item: 'b'\nE         Use -v to get more diff\n\ntest_collector.py:6: AssertionError\n=========================== short test summary info ============================\nFAILED test_collector.py::test_append_item_does_not_share_state - AssertionEr...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_collector.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 5,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 158,
+        "old_length": 106,
+        "path": "collector.py",
+        "reason": "Evidence shows append_item shares mutable default state."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "type_conversion"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "parser.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "type_conversion",
+      "case_id": "case_004_string_to_int",
+      "compact_trace_path": "case_004_string_to_int/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.068,
+      "error": null,
+      "expected_source_file": "parser.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "parse_age('42')",
+            "assertion": "assert parse_age('42') == 42",
+            "expected_hint": "42"
+          },
+          {
+            "actual_hint": "'42'",
+            "assertion": "assert '42' == 42",
+            "expected_hint": "42"
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert '4...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_parser.py",
+        "failing_test_name": "test_parse_age_returns_int",
+        "failing_tests": [
+          "test_parser.py::test_parse_age_returns_int",
+          "test_parse_age_returns_int"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_parse_age_returns_int __________________________\n\n    def test_parse_age_returns_int():\n>       assert parse_age('42') == 42\nE       AssertionError: assert '42' == 42\nE        +  where '42' = parse_age('42')\n\ntest_parser.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_parser.py::test_parse_age_returns_int - AssertionError: assert '4...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_parser.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 17,
+        "old_length": 12,
+        "path": "parser.py",
+        "reason": "Evidence shows parse_age should return an integer value."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "missing_default"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "users.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "missing_default",
+      "case_id": "case_005_safe_dict_lookup",
+      "compact_trace_path": "case_005_safe_dict_lookup/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 10.09,
+      "error": null,
+      "expected_source_file": "users.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "get_role({})",
+            "assertion": "assert get_role({}) == 'guest'",
+            "expected_hint": "'guest'"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "KeyError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_users.py",
+        "failing_test_name": "test_get_role_defaults_to_guest",
+        "failing_tests": [
+          "test_users.py::test_get_role_defaults_to_guest",
+          "test_get_role_defaults_to_guest"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________________ test_get_role_defaults_to_guest ________________________\n\n    def test_get_role_defaults_to_guest():\n>       assert get_role({}) == 'guest'\n               ^^^^^^^^^^^^\n\ntest_users.py:5: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nuser = {}\n\n    def get_role(user: dict[str, str]) -> str:\n>       return user['role']\n               ^^^^^^^^^^^^\nE       KeyError: 'role'\n\nusers.py:2: KeyError\n=========================== short test summary info ============================\nFAILED test_users.py::test_get_role_defaults_to_guest - KeyError: 'role'\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_users.py",
+          "users.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 32,
+        "old_length": 19,
+        "path": "users.py",
+        "reason": "Evidence shows get_role should default missing roles to guest."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "bad_boolean_logic"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "number_utils.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "bad_boolean_logic",
+      "case_id": "case_006_filter_even_numbers",
+      "compact_trace_path": "case_006_filter_even_numbers/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.615,
+      "error": null,
+      "expected_source_file": "number_utils.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "only_even([1, 2, 3, 4])",
+            "assertion": "assert only_even([1, 2, 3, 4]) == [2, 4]",
+            "expected_hint": "[2, 4]"
+          },
+          {
+            "actual_hint": "[1, 3]",
+            "assertion": "assert [1, 3] == [2, 4]",
+            "expected_hint": "[2, 4]"
+          },
+          {
+            "actual_hint": "[1, 3]",
+            "assertion": "assert [1, 3] == [2, 4]",
+            "expected_hint": "[2, 4]"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_numbers.py",
+        "failing_test_name": "test_only_even",
+        "failing_tests": [
+          "test_numbers.py::test_only_even",
+          "test_only_even"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________________ test_only_even ________________________________\n\n    def test_only_even():\n>       assert only_even([1, 2, 3, 4]) == [2, 4]\nE       assert [1, 3] == [2, 4]\nE         \nE         At index 0 diff: 1 != 2\nE         Use -v to get more diff\n\ntest_numbers.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_numbers.py::test_only_even - assert [1, 3] == [2, 4]\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_numbers.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 52,
+        "old_length": 52,
+        "path": "number_utils.py",
+        "reason": "Evidence shows only_even currently keeps odd values."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "wrong_comparison_operator"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "eligibility.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "wrong_comparison_operator",
+      "case_id": "case_007_wrong_comparison_operator",
+      "compact_trace_path": "case_007_wrong_comparison_operator/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.069,
+      "error": null,
+      "expected_source_file": "eligibility.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": null,
+            "assertion": "assert is_adult(18) is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_eligibility.py",
+        "failing_test_name": "test_eighteen_is_adult",
+        "failing_tests": [
+          "test_eligibility.py::test_eighteen_is_adult",
+          "test_eighteen_is_adult"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n____________________________ test_eighteen_is_adult ____________________________\n\n    def test_eighteen_is_adult():\n>       assert is_adult(18) is True\nE       assert False is True\nE        +  where False = is_adult(18)\n\ntest_eligibility.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_eligibility.py::test_eighteen_is_adult - assert False is True\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_eligibility.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 16,
+        "old_length": 15,
+        "path": "eligibility.py",
+        "reason": "Evidence shows age 18 should satisfy the adult boundary."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "boolean_logic"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "access.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "boolean_logic",
+      "case_id": "case_008_boolean_logic_bug",
+      "compact_trace_path": "case_008_boolean_logic_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 10.555,
+      "error": null,
+      "expected_source_file": "access.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": null,
+            "assertion": "assert can_edit(True, False) is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_access.py",
+        "failing_test_name": "test_owner_or_admin_can_edit",
+        "failing_tests": [
+          "test_access.py::test_owner_or_admin_can_edit",
+          "test_owner_or_admin_can_edit"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________________ test_owner_or_admin_can_edit _________________________\n\n    def test_owner_or_admin_can_edit():\n>       assert can_edit(True, False) is True\nE       assert False is True\nE        +  where False = can_edit(True, False)\n\ntest_access.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_access.py::test_owner_or_admin_can_edit - assert False is True\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_access.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 27,
+        "old_length": 28,
+        "path": "access.py",
+        "reason": "Evidence shows either owner or admin should be allowed to edit."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "none_handling"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "profiles.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "none_handling",
+      "case_id": "case_009_missing_none_handling",
+      "compact_trace_path": "case_009_missing_none_handling/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 10.068,
+      "error": null,
+      "expected_source_file": "profiles.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "display_name(None)",
+            "assertion": "assert display_name(None) == 'anonymous'",
+            "expected_hint": "'anonymous'"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "TypeError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_profiles.py",
+        "failing_test_name": "test_missing_user_is_anonymous",
+        "failing_tests": [
+          "test_profiles.py::test_missing_user_is_anonymous",
+          "test_missing_user_is_anonymous"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________ test_missing_user_is_anonymous ________________________\n\n    def test_missing_user_is_anonymous():\n>       assert display_name(None) == 'anonymous'\n               ^^^^^^^^^^^^^^^^^^\n\ntest_profiles.py:5: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nuser = None\n\n    def display_name(user: dict[str, str] | None) -> str:\n>       return user['name']\n               ^^^^^^^^^^^^\nE       TypeError: 'NoneType' object is not subscriptable\n\nprofiles.py:2: TypeError\n=========================== short test summary info ============================\nFAILED test_profiles.py::test_missing_user_is_anonymous - TypeError: 'NoneTyp...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_profiles.py",
+          "profiles.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 3,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 67,
+        "old_length": 19,
+        "path": "profiles.py",
+        "reason": "Evidence shows display_name should handle a missing user."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "sorting"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "sorting.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "sorting",
+      "case_id": "case_010_list_sorting_bug",
+      "compact_trace_path": "case_010_list_sorting_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.564,
+      "error": null,
+      "expected_source_file": "sorting.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "sort_scores([3, 1, 2])",
+            "assertion": "assert sort_scores([3, 1, 2]) == [1, 2, 3]",
+            "expected_hint": "[1, 2, 3]"
+          },
+          {
+            "actual_hint": "[3, 2, 1]",
+            "assertion": "assert [3, 2, 1] == [1, 2, 3]",
+            "expected_hint": "[1, 2, 3]"
+          },
+          {
+            "actual_hint": "[3, 2, 1]",
+            "assertion": "assert [3, 2, 1] == [1, ...",
+            "expected_hint": "[1, ..."
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_sorting.py",
+        "failing_test_name": "test_sort_scores_ascending",
+        "failing_tests": [
+          "test_sorting.py::test_sort_scores_ascending",
+          "test_sort_scores_ascending"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_sort_scores_ascending __________________________\n\n    def test_sort_scores_ascending():\n>       assert sort_scores([3, 1, 2]) == [1, 2, 3]\nE       assert [3, 2, 1] == [1, 2, 3]\nE         \nE         At index 0 diff: 3 != 1\nE         Use -v to get more diff\n\ntest_sorting.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_sorting.py::test_sort_scores_ascending - assert [3, 2, 1] == [1, ...\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_sorting.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 21,
+        "old_length": 35,
+        "path": "sorting.py",
+        "reason": "Evidence shows scores should be sorted ascending."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "incorrect_default_return"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "searching.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "incorrect_default_return",
+      "case_id": "case_011_incorrect_default_return",
+      "compact_trace_path": "case_011_incorrect_default_return/compact_trace.json",
+      "confidence_after_patch": 0.9,
+      "confidence_before_patch": 0.9,
+      "difficulty": "easy",
+      "duration_seconds": 13.05,
+      "error": null,
+      "expected_source_file": "searching.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "find_index(['a', 'b'], 'z')",
+            "assertion": "assert find_index(['a', 'b'], 'z') == -1",
+            "expected_hint": "-1"
+          },
+          {
+            "actual_hint": "0",
+            "assertion": "assert 0 == -1",
+            "expected_hint": "-1"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_searching.py",
+        "failing_test_name": "test_missing_value_returns_negative_one",
+        "failing_tests": [
+          "test_searching.py::test_missing_value_returns_negative_one",
+          "test_missing_value_returns_negative_one"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n___________________ test_missing_value_returns_negative_one ____________________\n\n    def test_missing_value_returns_negative_one():\n>       assert find_index(['a', 'b'], 'z') == -1\nE       AssertionError: assert 0 == -1\nE        +  where 0 = find_index(['a', 'b'], 'z')\n\ntest_searching.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_searching.py::test_missing_value_returns_negative_one - Assertion...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_searching.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 9,
+        "old_length": 8,
+        "path": "searching.py",
+        "reason": "Evidence shows missing values should return -1."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "run_tests",
+        "read_file",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "string_normalization"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "slugs.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "string_normalization",
+      "case_id": "case_012_path_string_normalization",
+      "compact_trace_path": "case_012_path_string_normalization/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.541,
+      "error": null,
+      "expected_source_file": "slugs.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.01,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "make_slug('Hello World')",
+            "assertion": "assert make_slug('Hello World') == 'hello-world'",
+            "expected_hint": "'hello-world'"
+          },
+          {
+            "actual_hint": "'helloworld'",
+            "assertion": "assert 'helloworld' == 'hello-world'",
+            "expected_hint": "'hello-world'"
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert 'h...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_slugs.py",
+        "failing_test_name": "test_make_slug_uses_hyphens",
+        "failing_tests": [
+          "test_slugs.py::test_make_slug_uses_hyphens",
+          "test_make_slug_uses_hyphens"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________________ test_make_slug_uses_hyphens __________________________\n\n    def test_make_slug_uses_hyphens():\n>       assert make_slug('Hello World') == 'hello-world'\nE       AssertionError: assert 'helloworld' == 'hello-world'\nE         \nE         - hello-world\nE         ?      -\nE         + helloworld\n\ntest_slugs.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_slugs.py::test_make_slug_uses_hyphens - AssertionError: assert 'h...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_slugs.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 38,
+        "old_length": 37,
+        "path": "slugs.py",
+        "reason": "Evidence shows slugs should use hyphens for spaces."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "date_formatting"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "dates.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "date_formatting",
+      "case_id": "case_013_datetime_formatting",
+      "compact_trace_path": "case_013_datetime_formatting/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 12.058,
+      "error": null,
+      "expected_source_file": "dates.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "format_date(date(2026, 5, 30))",
+            "assertion": "assert format_date(date(2026, 5, 30)) == '2026-05-30'",
+            "expected_hint": "'2026-05-30'"
+          },
+          {
+            "actual_hint": "'05/30/2026'",
+            "assertion": "assert '05/30/2026' == '2026-05-30'",
+            "expected_hint": "'2026-05-30'"
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert '05/30/20...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_dates.py",
+        "failing_test_name": "test_format_date_iso",
+        "failing_tests": [
+          "test_dates.py::test_format_date_iso",
+          "test_format_date_iso"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_____________________________ test_format_date_iso _____________________________\n\n    def test_format_date_iso():\n>       assert format_date(date(2026, 5, 30)) == '2026-05-30'\nE       AssertionError: assert '05/30/2026' == '2026-05-30'\nE         \nE         - 2026-05-30\nE         + 05/30/2026\n\ntest_dates.py:7: AssertionError\n=========================== short test summary info ============================\nFAILED test_dates.py::test_format_date_iso - AssertionError: assert '05/30/20...\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_dates.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 33,
+        "old_length": 33,
+        "path": "dates.py",
+        "reason": "Evidence shows dates should use ISO format."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "dataclass_field"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "invoice.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "dataclass_field",
+      "case_id": "case_014_dataclass_field_bug",
+      "compact_trace_path": "case_014_dataclass_field_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 11.057,
+      "error": null,
+      "expected_source_file": "invoice.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "line_total(LineItem(price=5, quantity=3))",
+            "assertion": "assert line_total(LineItem(price=5, quantity=3)) == 15",
+            "expected_hint": "15"
+          },
+          {
+            "actual_hint": "8",
+            "assertion": "assert 8 == 15",
+            "expected_hint": "15"
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_invoice.py",
+        "failing_test_name": "test_line_total_multiplies_price_by_quantity",
+        "failing_tests": [
+          "test_invoice.py::test_line_total_multiplies_price_by_quantity",
+          "test_line_total_multiplies_price_by_quantity"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________ test_line_total_multiplies_price_by_quantity _________________\n\n    def test_line_total_multiplies_price_by_quantity():\n>       assert line_total(LineItem(price=5, quantity=3)) == 15\nE       assert 8 == 15\nE        +  where 8 = line_total(LineItem(price=5, quantity=3))\nE        +    where LineItem(price=5, quantity=3) = LineItem(price=5, quantity=3)\n\ntest_invoice.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_invoice.py::test_line_total_multiplies_price_by_quantity - assert...\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_invoice.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 33,
+        "old_length": 33,
+        "path": "invoice.py",
+        "reason": "Evidence shows line totals should multiply price by quantity."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "recursion_base_case"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "maths.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "recursion_base_case",
+      "case_id": "case_015_recursion_base_case",
+      "compact_trace_path": "case_015_recursion_base_case/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 10.052,
+      "error": null,
+      "expected_source_file": "maths.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": "..                                                                       [100%]\n2 passed in 0.02s",
+        "passed": 2,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "factorial(0)",
+            "assertion": "assert factorial(0) == 1",
+            "expected_hint": "1"
+          },
+          {
+            "actual_hint": "0",
+            "assertion": "assert 0 == 1",
+            "expected_hint": "1"
+          },
+          {
+            "actual_hint": "factorial(3)",
+            "assertion": "assert factorial(3) == 6",
+            "expected_hint": "6"
+          },
+          {
+            "actual_hint": "0",
+            "assertion": "assert 0 == 6",
+            "expected_hint": "6"
+          },
+          {
+            "actual_hint": "0",
+            "assertion": "assert 0 == 1",
+            "expected_hint": "1"
+          },
+          {
+            "actual_hint": "0",
+            "assertion": "assert 0 == 6",
+            "expected_hint": "6"
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 2,
+        "failing_test_file": "test_maths.py",
+        "failing_test_name": "test_factorial_zero",
+        "failing_tests": [
+          "test_maths.py::test_factorial_zero",
+          "test_maths.py::test_factorial_three",
+          "test_factorial_zero",
+          "test_factorial_three"
+        ],
+        "output_tail": "FF                                                                       [100%]\n=================================== FAILURES ===================================\n_____________________________ test_factorial_zero ______________________________\n\n    def test_factorial_zero():\n>       assert factorial(0) == 1\nE       assert 0 == 1\nE        +  where 0 = factorial(0)\n\ntest_maths.py:5: AssertionError\n_____________________________ test_factorial_three _____________________________\n\n    def test_factorial_three():\n>       assert factorial(3) == 6\nE       assert 0 == 6\nE        +  where 0 = factorial(3)\n\ntest_maths.py:9: AssertionError\n=========================== short test summary info ============================\nFAILED test_maths.py::test_factorial_zero - assert 0 == 1\nFAILED test_maths.py::test_factorial_three - assert 0 == 6\n2 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_maths.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 8,
+        "old_length": 8,
+        "path": "maths.py",
+        "reason": "Evidence shows factorial(0) should use base value 1."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "aggregation"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "totals.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "aggregation",
+      "case_id": "case_016_aggregation_bug",
+      "compact_trace_path": "case_016_aggregation_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 9.524,
+      "error": null,
+      "expected_source_file": "totals.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "total([2, 3, 4])",
+            "assertion": "assert total([2, 3, 4]) == 9",
+            "expected_hint": "9"
+          },
+          {
+            "actual_hint": "2",
+            "assertion": "assert 2 == 9",
+            "expected_hint": "9"
+          },
+          {
+            "actual_hint": "2",
+            "assertion": "assert 2 == 9",
+            "expected_hint": "9"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_totals.py",
+        "failing_test_name": "test_total_sums_all_values",
+        "failing_tests": [
+          "test_totals.py::test_total_sums_all_values",
+          "test_total_sums_all_values"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_total_sums_all_values __________________________\n\n    def test_total_sums_all_values():\n>       assert total([2, 3, 4]) == 9\nE       assert 2 == 9\nE        +  where 2 = total([2, 3, 4])\n\ntest_totals.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_totals.py::test_total_sums_all_values - assert 2 == 9\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_totals.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 18,
+        "old_length": 16,
+        "path": "totals.py",
+        "reason": "Evidence shows total should aggregate all values."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "duplicate_handling"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "dedupe.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "duplicate_handling",
+      "case_id": "case_017_duplicate_handling",
+      "compact_trace_path": "case_017_duplicate_handling/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.543,
+      "error": null,
+      "expected_source_file": "dedupe.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "unique(['a', 'b', 'a'])",
+            "assertion": "assert unique(['a', 'b', 'a']) == ['a', 'b']",
+            "expected_hint": "['a', 'b']"
+          },
+          {
+            "actual_hint": "['a', 'b', 'a']",
+            "assertion": "assert ['a', 'b', 'a'] == ['a', 'b']",
+            "expected_hint": "['a', 'b']"
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert [...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_dedupe.py",
+        "failing_test_name": "test_unique_preserves_order",
+        "failing_tests": [
+          "test_dedupe.py::test_unique_preserves_order",
+          "test_unique_preserves_order"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________________ test_unique_preserves_order __________________________\n\n    def test_unique_preserves_order():\n>       assert unique(['a', 'b', 'a']) == ['a', 'b']\nE       AssertionError: assert ['a', 'b', 'a'] == ['a', 'b']\nE         \nE         Left contains one more item: 'a'\nE         Use -v to get more diff\n\ntest_dedupe.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_dedupe.py::test_unique_preserves_order - AssertionError: assert [...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_dedupe.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 34,
+        "old_length": 13,
+        "path": "dedupe.py",
+        "reason": "Evidence shows unique should remove duplicates while preserving order."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "case_insensitive_matching"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "matching.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "case_insensitive_matching",
+      "case_id": "case_018_case_insensitive_matching",
+      "compact_trace_path": "case_018_case_insensitive_matching/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.044,
+      "error": null,
+      "expected_source_file": "matching.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": null,
+            "assertion": "assert contains('Hello World', 'hello') is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert ...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_matching.py",
+        "failing_test_name": "test_contains_ignores_case",
+        "failing_tests": [
+          "test_matching.py::test_contains_ignores_case",
+          "test_contains_ignores_case"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_contains_ignores_case __________________________\n\n    def test_contains_ignores_case():\n>       assert contains('Hello World', 'hello') is True\nE       AssertionError: assert False is True\nE        +  where False = contains('Hello World', 'hello')\n\ntest_matching.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_matching.py::test_contains_ignores_case - AssertionError: assert ...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_matching.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 41,
+        "old_length": 25,
+        "path": "matching.py",
+        "reason": "Evidence shows contains should compare case-insensitively."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "empty_input_handling"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "averages.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "empty_input_handling",
+      "case_id": "case_019_empty_input_handling",
+      "compact_trace_path": "case_019_empty_input_handling/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 10.545,
+      "error": null,
+      "expected_source_file": "averages.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "average([])",
+            "assertion": "assert average([]) == 0",
+            "expected_hint": "0"
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "ZeroDivisionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_averages.py",
+        "failing_test_name": "test_average_empty_is_zero",
+        "failing_tests": [
+          "test_averages.py::test_average_empty_is_zero",
+          "test_average_empty_is_zero"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_average_empty_is_zero __________________________\n\n    def test_average_empty_is_zero():\n>       assert average([]) == 0\n               ^^^^^^^^^^^\n\ntest_averages.py:5: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nvalues = []\n\n    def average(values: list[int]) -> float:\n>       return sum(values) / len(values)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^\nE       ZeroDivisionError: division by zero\n\naverages.py:2: ZeroDivisionError\n=========================== short test summary info ============================\nFAILED test_averages.py::test_average_empty_is_zero - ZeroDivisionError: divi...\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_averages.py",
+          "averages.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 3,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 68,
+        "old_length": 32,
+        "path": "averages.py",
+        "reason": "Evidence shows average should handle empty input."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "exception_handling"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "safe_parse.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "exception_handling",
+      "case_id": "case_020_wrong_exception_handling",
+      "compact_trace_path": "case_020_wrong_exception_handling/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 9.052,
+      "error": null,
+      "expected_source_file": "safe_parse.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "safe_int('bad')",
+            "assertion": "assert safe_int('bad') == 0",
+            "expected_hint": "0"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "ValueError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_safe_parse.py",
+        "failing_test_name": "test_safe_int_returns_zero_for_bad_input",
+        "failing_tests": [
+          "test_safe_parse.py::test_safe_int_returns_zero_for_bad_input",
+          "test_safe_int_returns_zero_for_bad_input"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n___________________ test_safe_int_returns_zero_for_bad_input ___________________\n\n    def test_safe_int_returns_zero_for_bad_input():\n>       assert safe_int('bad') == 0\n               ^^^^^^^^^^^^^^^\n\ntest_safe_parse.py:5: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nvalue = 'bad'\n\n    def safe_int(value: str) -> int:\n>       return int(value)\n               ^^^^^^^^^^\nE       ValueError: invalid literal for int() with base 10: 'bad'\n\nsafe_parse.py:2: ValueError\n=========================== short test summary info ============================\nFAILED test_safe_parse.py::test_safe_int_returns_zero_for_bad_input - ValueEr...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_safe_parse.py",
+          "safe_parse.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 4,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 70,
+        "old_length": 17,
+        "path": "safe_parse.py",
+        "reason": "Evidence shows safe_int should catch invalid integer input."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "run_tests",
+        "analyze_ast",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "bounds_logic"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "bounds.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "bounds_logic",
+      "case_id": "case_021_clamp_bounds_bug",
+      "compact_trace_path": "case_021_clamp_bounds_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 9.555,
+      "error": null,
+      "expected_source_file": "bounds.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "clamp(10, 0, 5)",
+            "assertion": "assert clamp(10, 0, 5) == 5",
+            "expected_hint": "5"
+          },
+          {
+            "actual_hint": "10",
+            "assertion": "assert 10 == 5",
+            "expected_hint": "5"
+          },
+          {
+            "actual_hint": "10",
+            "assertion": "assert 10 == 5",
+            "expected_hint": "5"
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_bounds.py",
+        "failing_test_name": "test_clamp_caps_high_value",
+        "failing_tests": [
+          "test_bounds.py::test_clamp_caps_high_value",
+          "test_clamp_caps_high_value"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_clamp_caps_high_value __________________________\n\n    def test_clamp_caps_high_value():\n>       assert clamp(10, 0, 5) == 5\nE       assert 10 == 5\nE        +  where 10 = clamp(10, 0, 5)\n\ntest_bounds.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_bounds.py::test_clamp_caps_high_value - assert 10 == 5\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_bounds.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 33,
+        "old_length": 22,
+        "path": "bounds.py",
+        "reason": "Evidence shows clamp should respect both low and high bounds."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "wrong_string_method"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "easy"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "prefixes.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "wrong_string_method",
+      "case_id": "case_022_string_prefix_bug",
+      "compact_trace_path": "case_022_string_prefix_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "easy",
+      "duration_seconds": 11.045,
+      "error": null,
+      "expected_source_file": "prefixes.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": null,
+            "assertion": "assert has_prefix('report-2026', 'report') is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert ...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_prefixes.py",
+        "failing_test_name": "test_has_prefix_uses_start",
+        "failing_tests": [
+          "test_prefixes.py::test_has_prefix_uses_start",
+          "test_has_prefix_uses_start"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_has_prefix_uses_start __________________________\n\n    def test_has_prefix_uses_start():\n>       assert has_prefix('report-2026', 'report') is True\nE       AssertionError: assert False is True\nE        +  where False = has_prefix('report-2026', 'report')\n\ntest_prefixes.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_prefixes.py::test_has_prefix_uses_start - AssertionError: assert ...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_prefixes.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": false,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 31,
+        "old_length": 29,
+        "path": "prefixes.py",
+        "reason": "Evidence shows has_prefix should check the start of the string."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "run_tests",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "imported_constant_bug"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "config.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "imported_constant_bug",
+      "case_id": "case_023_imported_constant_bug",
+      "compact_trace_path": "case_023_imported_constant_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 15.062,
+      "error": null,
+      "expected_source_file": "config.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "discounted_price(100)",
+            "assertion": "assert discounted_price(100) == 90",
+            "expected_hint": "90"
+          },
+          {
+            "actual_hint": "95.0",
+            "assertion": "assert 95.0 == 90",
+            "expected_hint": "90"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_pricing.py",
+        "failing_test_name": "test_discounted_price_uses_ten_percent_discount",
+        "failing_tests": [
+          "test_pricing.py::test_discounted_price_uses_ten_percent_discount",
+          "test_discounted_price_uses_ten_percent_discount"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________ test_discounted_price_uses_ten_percent_discount ________________\n\n    def test_discounted_price_uses_ten_percent_discount():\n>       assert discounted_price(100) == 90\nE       assert 95.0 == 90\nE        +  where 95.0 = discounted_price(100)\n\ntest_pricing.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_pricing.py::test_discounted_price_uses_ten_percent_discount - ass...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_pricing.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": true,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 20,
+        "old_length": 20,
+        "path": "config.py",
+        "reason": "Evidence shows the discount rate should be ten percent."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "run_tests",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "helper_function_bug"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "helpers.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "helper_function_bug",
+      "case_id": "case_024_helper_function_bug",
+      "compact_trace_path": "case_024_helper_function_bug/compact_trace.json",
+      "confidence_after_patch": 0.9,
+      "confidence_before_patch": 0.9,
+      "difficulty": "medium",
+      "duration_seconds": 12.07,
+      "error": null,
+      "expected_source_file": "helpers.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "canonical_email(' USER@Example.COM ')",
+            "assertion": "assert canonical_email(' USER@Example.COM ') == 'user@example.com'",
+            "expected_hint": "'user@example.com'"
+          },
+          {
+            "actual_hint": "'USER@Example.COM'",
+            "assertion": "assert 'USER@Example.COM' == 'user@example.com'",
+            "expected_hint": "'user@example.com'"
+          }
+        ],
+        "duration_seconds": 0.02,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_accounts.py",
+        "failing_test_name": "test_canonical_email_lowercases",
+        "failing_tests": [
+          "test_accounts.py::test_canonical_email_lowercases",
+          "test_canonical_email_lowercases"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________________ test_canonical_email_lowercases ________________________\n\n    def test_canonical_email_lowercases():\n>       assert canonical_email(' USER@Example.COM ') == 'user@example.com'\nE       AssertionError: assert 'USER@Example.COM' == 'user@example.com'\nE         \nE         - user@example.com\nE         + USER@Example.COM\n\ntest_accounts.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_accounts.py::test_canonical_email_lowercases - AssertionError: as...\n1 failed in 0.02s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_accounts.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": true,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 28,
+        "old_length": 20,
+        "path": "helpers.py",
+        "reason": "Evidence shows normalized emails should be lowercased."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "read_file",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "dataclass_validation_bug"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "models.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "dataclass_validation_bug",
+      "case_id": "case_025_dataclass_validation_bug",
+      "compact_trace_path": "case_025_dataclass_validation_bug/compact_trace.json",
+      "confidence_after_patch": 0.9,
+      "confidence_before_patch": 0.9,
+      "difficulty": "medium",
+      "duration_seconds": 19.585,
+      "error": null,
+      "expected_source_file": "models.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": null,
+            "assertion": "assert can_signup(18) is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False is True",
+            "expected_hint": null
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert False i...",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_validators.py",
+        "failing_test_name": "test_eighteen_year_old_can_signup",
+        "failing_tests": [
+          "test_validators.py::test_eighteen_year_old_can_signup",
+          "test_eighteen_year_old_can_signup"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n______________________ test_eighteen_year_old_can_signup _______________________\n\n    def test_eighteen_year_old_can_signup():\n>       assert can_signup(18) is True\nE       assert False is True\nE        +  where False = can_signup(18)\n\ntest_validators.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_validators.py::test_eighteen_year_old_can_signup - assert False i...\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_validators.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": true,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 17,
+        "old_length": 17,
+        "path": "models.py",
+        "reason": "Evidence shows the default signup minimum age should be 18."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "run_tests",
+        "read_file",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    },
+    {
+      "advisor_shadow": {
+        "available": true,
+        "enabled": true,
+        "prediction": {
+          "bug_type": {
+            "confidence": 0.72,
+            "value": "imported_constant_bug"
+          },
+          "difficulty": {
+            "confidence": 0.7,
+            "value": "medium"
+          },
+          "overall_confidence": 0.8175,
+          "patch_risk": {
+            "confidence": 1.0,
+            "value": "low"
+          },
+          "reasons": [
+            "multi_head_advisor_prediction",
+            "version=2",
+            "model_path=models/repair_advisor/repair_advisor.joblib"
+          ],
+          "should_use_slm": true,
+          "source_file": {
+            "confidence": 0.85,
+            "value": "tax_config.py"
+          }
+        }
+      },
+      "apply_decision": "apply_allowed",
+      "bug_type": "imported_constant_bug",
+      "case_id": "case_026_imported_tax_rate_bug",
+      "compact_trace_path": "case_026_imported_tax_rate_bug/compact_trace.json",
+      "confidence_after_patch": 1.0,
+      "confidence_before_patch": 1.0,
+      "difficulty": "medium",
+      "duration_seconds": 11.067,
+      "error": null,
+      "expected_source_file": "tax_config.py",
+      "failure_category": null,
+      "fallback_reason": null,
+      "final_pytest": {
+        "assertions": [],
+        "duration_seconds": 0.02,
+        "error_types": [],
+        "errors": 0,
+        "exit_code": 0,
+        "failed": 0,
+        "failing_test_file": null,
+        "failing_test_name": null,
+        "failing_tests": [],
+        "output_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+        "passed": 1,
+        "skipped": 0,
+        "stack_source_paths": [],
+        "status": "passed"
+      },
+      "final_response": "Patch applied and tests passed.",
+      "fixed": true,
+      "initial_pytest": {
+        "assertions": [
+          {
+            "actual_hint": "total_with_tax(100)",
+            "assertion": "assert total_with_tax(100) == 108",
+            "expected_hint": "108"
+          },
+          {
+            "actual_hint": "105.0",
+            "assertion": "assert 105.0 == 108",
+            "expected_hint": "108"
+          },
+          {
+            "actual_hint": null,
+            "assertion": "assert 105....",
+            "expected_hint": null
+          }
+        ],
+        "duration_seconds": 0.03,
+        "error_types": [
+          "AssertionError"
+        ],
+        "errors": 0,
+        "exit_code": 1,
+        "failed": 1,
+        "failing_test_file": "test_checkout.py",
+        "failing_test_name": "test_total_with_tax_uses_eight_percent",
+        "failing_tests": [
+          "test_checkout.py::test_total_with_tax_uses_eight_percent",
+          "test_total_with_tax_uses_eight_percent"
+        ],
+        "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n____________________ test_total_with_tax_uses_eight_percent ____________________\n\n    def test_total_with_tax_uses_eight_percent():\n>       assert total_with_tax(100) == 108\nE       assert 105.0 == 108\nE        +  where 105.0 = total_with_tax(100)\n\ntest_checkout.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED test_checkout.py::test_total_with_tax_uses_eight_percent - assert 105....\n1 failed in 0.03s",
+        "passed": 0,
+        "skipped": 0,
+        "stack_source_paths": [
+          "test_checkout.py"
+        ],
+        "status": "failed"
+      },
+      "irrelevant_file_reads": 0,
+      "loop_prevention_count": 0,
+      "multi_file": true,
+      "orchestrator_status": "completed",
+      "patch_applied": true,
+      "patch_changed_lines": 1,
+      "patch_quality": "clean",
+      "patch_touched_expected_file": true,
+      "patch_touched_unexpected_file": false,
+      "proposed_patch": {
+        "new_length": 15,
+        "old_length": 15,
+        "path": "tax_config.py",
+        "reason": "Evidence shows the tax rate should be eight percent."
+      },
+      "rollback_performed": false,
+      "rollback_reason": "rollback_failed",
+      "snapshot_created": true,
+      "status": "fixed",
+      "syntax_valid_after_patch": true,
+      "tests_passed_after_patch": true,
+      "tests_rerun_after_patch": true,
+      "tool_actions": [
+        "read_file",
+        "read_file",
+        "analyze_ast",
+        "run_tests",
+        "read_file",
+        "analyze_ast",
+        "analyze_ast",
+        "propose_patch",
+        "apply_patch",
+        "run_tests",
+        "final_response"
+      ],
+      "unsafe_action_blocks": 0
+    }
+  ],
+  "failure_taxonomy": {},
+  "patch_quality": {
+    "clean": 26,
+    "invalid": 0,
+    "irrelevant": 0,
+    "probably_ok": 0,
+    "risky": 0,
+    "too_large": 0
+  },
+  "patch_scope": {
+    "average_changed_lines": 1.42,
+    "expected_file_touched": 26,
+    "max_changed_lines": 5,
+    "unexpected_file_touched": 0
+  },
+  "summary": {
+    "advisor_available_count": 26,
+    "advisor_average_bug_type_confidence": 0.72,
+    "advisor_average_confidence": 0.818,
+    "advisor_average_difficulty_confidence": 0.7,
+    "advisor_average_patch_risk_confidence": 1.0,
+    "advisor_average_source_file_confidence": 0.85,
+    "advisor_bug_type_accuracy": 1.0,
+    "advisor_source_file_accuracy": 1.0,
+    "average_changed_lines": 1.42,
+    "average_confidence_after_patch": 0.988,
+    "average_confidence_before_patch": 0.988,
+    "average_steps": 9.5,
+    "cases_run": 26,
+    "errors": 0,
+    "failed": 0,
+    "failure_categories": {},
+    "fix_rate": 1.0,
+    "fixed": 26,
+    "irrelevant_file_reads": 0,
+    "loop_prevention_count": 0,
+    "max_changed_lines": 5,
+    "multi_file_cases": 4,
+    "multi_file_fixed": 4,
+    "patch_quality_clean_count": 26,
+    "patch_quality_invalid_count": 0,
+    "patch_quality_irrelevant_count": 0,
+    "patch_quality_probably_ok_count": 0,
+    "patch_quality_risky_count": 0,
+    "patch_quality_too_large_count": 0,
+    "patch_touched_expected_file_count": 26,
+    "patch_touched_unexpected_file_count": 0,
+    "patches_applied": 26,
+    "patches_proposed": 26,
+    "rollbacks_performed": 0,
+    "snapshots_created": 26,
+    "syntax_valid_after_patch": 26,
+    "tests_passed_after_patch": 26,
+    "tests_rerun_after_patch": 26,
+    "tests_verified": 26,
+    "unsafe_action_block_count": 0
+  }
+}

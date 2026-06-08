@@ -40,6 +40,7 @@ def _compact_tool(item: dict[str, Any]) -> dict[str, Any]:
         "exit_code": output.get("exit_code"),
         "applied": output.get("applied"),
         "message": output.get("message"),
+        "requested_path": output.get("requested_path"),
     }
 
 
@@ -70,6 +71,26 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
         if isinstance(validation.get("confidence"), dict)
         else {}
     )
+    dirty = (
+        validation.get("dirty_worktree")
+        if isinstance(validation.get("dirty_worktree"), dict)
+        else {}
+    )
+    checkpoint = (
+        validation.get("checkpoint")
+        if isinstance(validation.get("checkpoint"), dict)
+        else {}
+    )
+    rollback = (
+        validation.get("rollback")
+        if isinstance(validation.get("rollback"), dict)
+        else {}
+    )
+    approval = (
+        validation.get("approval")
+        if isinstance(validation.get("approval"), dict)
+        else {}
+    )
     return {
         "tests": {
             "status": tests.get("status"),
@@ -92,6 +113,25 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
             "score": confidence.get("score"),
             "level": confidence.get("level"),
             "decision": confidence.get("decision"),
+        },
+        "dirty_worktree": {
+            "is_git_repo": dirty.get("is_git_repo"),
+            "dirty": dirty.get("dirty"),
+            "target_dirty": dirty.get("target_dirty"),
+            "dirty_file_count": len(dirty.get("dirty_files") or []),
+        },
+        "checkpoint": {
+            "checkpoint_id": checkpoint.get("checkpoint_id"),
+            "relative_path": checkpoint.get("relative_path"),
+            "original_sha256": checkpoint.get("original_sha256"),
+        },
+        "rollback": {
+            "restored": rollback.get("restored"),
+            "relative_path": rollback.get("relative_path"),
+        },
+        "approval": {
+            "approval_id": approval.get("approval_id"),
+            "status": approval.get("status"),
         },
     }
 

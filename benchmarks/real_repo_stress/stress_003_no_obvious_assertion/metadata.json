@@ -1,0 +1,20 @@
+{
+  "bug_type": "opaque_failure",
+  "case_id": "stress_003_no_obvious_assertion",
+  "difficulty": "hard",
+  "expected_changed_files": [
+    "app/state.py"
+  ],
+  "expected_failure_category": "no_patch_proposed",
+  "expected_source_file": "app/state.py",
+  "expected_test_file": "tests/test_state.py",
+  "goal": "Fix the failing smoke test with a vague failure message.",
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/state.py",
+    "tests/test_state.py"
+  ],
+  "stress_case": true
+}

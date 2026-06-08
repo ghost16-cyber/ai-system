@@ -1,0 +1,21 @@
+{
+  "bug_type": "wrong_file_selected",
+  "case_id": "stress_005_wrong_file_temptation",
+  "difficulty": "hard",
+  "expected_changed_files": [
+    "app/greeting.py"
+  ],
+  "expected_failure_category": "wrong_file_selected",
+  "expected_source_file": "app/greeting.py",
+  "expected_test_file": "tests/test_greeting.py",
+  "goal": "Fix the failing greeting test; do not edit the test helper.",
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/greeting.py",
+    "tests/helper.py",
+    "tests/test_greeting.py"
+  ],
+  "stress_case": true
+}

@@ -156,7 +156,7 @@ class SafetyPolicy:
         return path.resolve().relative_to(self.project_root).as_posix()
 
     def _resolve(self, path: str) -> ResolvedPath:
-        requested = Path(path)
+        requested = Path(path.strip())
         if requested.is_absolute():
             raise PolicyError("Tool paths must be relative to the task project path.")
         resolved = (self.project_root / requested).resolve()
@@ -189,7 +189,7 @@ class SafetyPolicy:
             raise PolicyError("File extension is not readable by the orchestrator.")
 
 
-def validate_patch_scope(args: dict[str, Any]) -> dict[str, Any]:
+def validate_patch_scope(args: dict[str, Any], max_changed_lines: int = 20) -> dict[str, Any]:
     old = str(args.get("old", ""))
     new = str(args.get("new", ""))
     if not old:
@@ -197,11 +197,17 @@ def validate_patch_scope(args: dict[str, Any]) -> dict[str, Any]:
     old_lines = old.splitlines()
     new_lines = new.splitlines()
     changed_line_budget = max(len(old_lines), len(new_lines))
-    if changed_line_budget > 20:
-        return {"valid": False, "reason": "Patch exceeds the 20-line MVP limit."}
+    if changed_line_budget > max_changed_lines:
+        return {
+            "valid": False,
+            "reason": f"Patch exceeds the {max_changed_lines}-line limit.",
+            "changed_line_budget": changed_line_budget,
+            "max_changed_lines": max_changed_lines,
+        }
     return {
         "valid": True,
         "changed_line_budget": changed_line_budget,
+        "max_changed_lines": max_changed_lines,
         "old_length": len(old),
         "new_length": len(new),
     }

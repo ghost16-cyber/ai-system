@@ -1,0 +1,24 @@
+{
+  "bug_type": "string_prefix_bug",
+  "case_id": "real_007_cli_prefix_check",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "cli_tools/args.py"
+  ],
+  "expected_source_file": "cli_tools/args.py",
+  "expected_test_file": "tests/test_args.py",
+  "goal": "Fix the failing CLI prefix flag test.",
+  "known_patch": {
+    "new": "return value.startswith(prefix)",
+    "old": "return value.endswith(prefix)",
+    "path": "cli_tools/args.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "cli_tools/__init__.py",
+    "cli_tools/args.py",
+    "tests/test_args.py"
+  ],
+  "repo_family": "cli_tools_package"
+}

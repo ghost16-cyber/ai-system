@@ -22,6 +22,7 @@ if str(BACKEND) not in sys.path:
 
 from app.benchmark.test_output_parser import parse_pytest_output
 from app.benchmark.trace_compactor import compact_orchestrator_trace
+from app.benchmark.failure_taxonomy import classify_failure, count_failure_categories
 from app.advisors.shadow import run_shadow_repair_advisor
 
 
@@ -56,6 +57,9 @@ class CaseResult:
     patch_changed_lines: int | None
     syntax_valid_after_patch: bool | None
     tests_passed_after_patch: bool
+    snapshot_created: bool
+    rollback_performed: bool
+    rollback_reason: str | None
     confidence_before_patch: float | None
     confidence_after_patch: float | None
     apply_decision: str | None
@@ -104,6 +108,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slm-model", default="qwen2.5-coder:1.5b")
     parser.add_argument("--slm-base-url", default="http://localhost:11434")
     parser.add_argument("--max-steps", type=int, default=18)
+    parser.add_argument("--max-patch-changed-lines", type=int, default=20)
+    parser.add_argument("--rollback-on-test-failure", action="store_true")
+    parser.add_argument("--strict-expected-files", action="store_true")
     parser.add_argument("--poll-timeout", type=float, default=90.0)
     parser.add_argument("--poll-interval", type=float, default=0.5)
     return parser.parse_args()
@@ -169,6 +176,9 @@ def run_case(case_dir: Path, run_root: Path, args: argparse.Namespace) -> CaseRe
             patch_changed_lines=_optional_int(metrics["patch_changed_lines"]),
             syntax_valid_after_patch=_optional_bool(metrics["syntax_valid_after_patch"]),
             tests_passed_after_patch=bool(metrics["tests_passed_after_patch"]),
+            snapshot_created=bool(metrics["snapshot_created"]),
+            rollback_performed=bool(metrics["rollback_performed"]),
+            rollback_reason=_optional_str(metrics["rollback_reason"]),
             confidence_before_patch=_optional_float(metrics["confidence_before_patch"]),
             confidence_after_patch=_optional_float(metrics["confidence_after_patch"]),
             apply_decision=_optional_str(metrics["apply_decision"]),
@@ -211,6 +221,9 @@ def run_case(case_dir: Path, run_root: Path, args: argparse.Namespace) -> CaseRe
             patch_changed_lines=None,
             syntax_valid_after_patch=None,
             tests_passed_after_patch=False,
+            snapshot_created=False,
+            rollback_performed=False,
+            rollback_reason=None,
             confidence_before_patch=None,
             confidence_after_patch=None,
             apply_decision=None,
@@ -267,6 +280,13 @@ def post_orchestrate(
         "path": work_dir.relative_to(ROOT).as_posix(),
         "allow_edits": args.allow_edits,
         "allow_tests": True,
+        "approval_mode": "auto" if args.allow_edits else "never",
+        "allow_dirty_worktree": True,
+        "rollback_on_test_failure": args.rollback_on_test_failure,
+        "max_patch_changed_lines": args.max_patch_changed_lines,
+        "allowed_patch_files": _expected_changed_files(metadata)
+        if args.strict_expected_files
+        else [],
         "max_steps": args.max_steps,
         "proposer": args.proposer,
         "slm_model": args.slm_model,
@@ -344,6 +364,8 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
         if result.tool_actions
     ]
     advisor = _advisor_metrics(results)
+    cases = [_case_dict(result) for result in results]
+    failure_categories = count_failure_categories(cases)
     return {
         "summary": {
             "cases_run": len(results),
@@ -386,14 +408,22 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
                 result.syntax_valid_after_patch is True for result in results
             ),
             "tests_passed_after_patch": sum(result.tests_passed_after_patch for result in results),
+            "snapshots_created": sum(result.snapshot_created for result in results),
+            "rollbacks_performed": sum(result.rollback_performed for result in results),
             "average_confidence_before_patch": _average_confidence(results, "before"),
             "average_confidence_after_patch": _average_confidence(results, "after"),
             "advisor_available_count": advisor["available_count"],
             "advisor_source_file_accuracy": advisor["source_file_accuracy"],
             "advisor_bug_type_accuracy": advisor["bug_type_accuracy"],
             "advisor_average_confidence": advisor["average_confidence"],
+            "advisor_average_bug_type_confidence": advisor["average_bug_type_confidence"],
+            "advisor_average_source_file_confidence": advisor["average_source_file_confidence"],
+            "advisor_average_difficulty_confidence": advisor["average_difficulty_confidence"],
+            "advisor_average_patch_risk_confidence": advisor["average_patch_risk_confidence"],
+            "failure_categories": failure_categories,
         },
         "advisor": advisor,
+        "failure_taxonomy": failure_categories,
         "patch_quality": {
             "clean": _quality_count(results, "clean"),
             "probably_ok": _quality_count(results, "probably_ok"),
@@ -411,8 +441,35 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
                 default=0,
             ),
         },
-        "cases": [asdict(result) for result in results],
+        "cases": cases,
     }
+
+
+def _case_dict(result: CaseResult) -> dict[str, Any]:
+    case = asdict(result)
+    case["failure_category"] = classify_failure(case)
+    return case
+
+
+def _prediction_value(prediction: dict[str, Any], field: str) -> str | None:
+    value = prediction.get(field)
+    if isinstance(value, dict):
+        return value.get("value") if isinstance(value.get("value"), str) else None
+    return value if isinstance(value, str) else None
+
+
+def _prediction_confidence(prediction: dict[str, Any]) -> float | None:
+    value = prediction.get("overall_confidence", prediction.get("confidence"))
+    if isinstance(value, dict):
+        return _optional_float(value.get("confidence"))
+    return _optional_float(value)
+
+
+def _prediction_head_confidence(prediction: dict[str, Any], field: str) -> float | None:
+    value = prediction.get(field)
+    if isinstance(value, dict):
+        return _optional_float(value.get("confidence"))
+    return None
 
 
 def _advisor_metrics(results: list[CaseResult]) -> dict[str, Any]:
@@ -421,9 +478,15 @@ def _advisor_metrics(results: list[CaseResult]) -> dict[str, Any]:
         shadow = result.advisor_shadow or {}
         prediction = shadow.get("prediction") if isinstance(shadow.get("prediction"), dict) else {}
         expected_source = _expected_source_from_result(result)
-        predicted_source = prediction.get("source_file")
-        predicted_bug_type = prediction.get("bug_type")
-        confidence = _optional_float(prediction.get("confidence"))
+        predicted_source = _prediction_value(prediction, "source_file")
+        predicted_bug_type = _prediction_value(prediction, "bug_type")
+        confidence = _prediction_confidence(prediction)
+        head_confidences = {
+            "bug_type": _prediction_head_confidence(prediction, "bug_type"),
+            "source_file": _prediction_head_confidence(prediction, "source_file"),
+            "difficulty": _prediction_head_confidence(prediction, "difficulty"),
+            "patch_risk": _prediction_head_confidence(prediction, "patch_risk"),
+        }
         rows.append(
             {
                 "case_id": result.case_id,
@@ -435,6 +498,7 @@ def _advisor_metrics(results: list[CaseResult]) -> dict[str, Any]:
                 "predicted_source_file": predicted_source,
                 "source_file_correct": predicted_source == expected_source,
                 "confidence": confidence,
+                "head_confidences": head_confidences,
             }
         )
 
@@ -445,6 +509,10 @@ def _advisor_metrics(results: list[CaseResult]) -> dict[str, Any]:
         for row in rows
         if isinstance(row.get("confidence"), float)
     ]
+    head_averages = {
+        head: _average_head_confidence(rows, head)
+        for head in ("bug_type", "source_file", "difficulty", "patch_risk")
+    }
     return {
         "available_count": len(available),
         "cases": len(rows),
@@ -455,8 +523,22 @@ def _advisor_metrics(results: list[CaseResult]) -> dict[str, Any]:
             if confidences
             else 0.0
         ),
+        "average_bug_type_confidence": head_averages["bug_type"],
+        "average_source_file_confidence": head_averages["source_file"],
+        "average_difficulty_confidence": head_averages["difficulty"],
+        "average_patch_risk_confidence": head_averages["patch_risk"],
         "rows": rows,
     }
+
+
+def _average_head_confidence(rows: list[dict[str, Any]], head: str) -> float:
+    values = [
+        row["head_confidences"][head]
+        for row in rows
+        if isinstance(row.get("head_confidences"), dict)
+        and isinstance(row["head_confidences"].get(head), float)
+    ]
+    return round(sum(values) / len(values), 3) if values else 0.0
 
 
 def _expected_source_from_result(result: CaseResult) -> str | None:
@@ -504,6 +586,16 @@ def _trace_metrics(trace: dict[str, Any], metadata: dict[str, Any]) -> dict[str,
         if isinstance(validation.get("patch_scope"), dict)
         else {}
     )
+    checkpoint = (
+        validation.get("checkpoint")
+        if isinstance(validation.get("checkpoint"), dict)
+        else {}
+    )
+    rollback = (
+        validation.get("rollback")
+        if isinstance(validation.get("rollback"), dict)
+        else {}
+    )
     syntax = validation.get("syntax") if isinstance(validation.get("syntax"), dict) else {}
     tests = validation.get("tests") if isinstance(validation.get("tests"), dict) else {}
     patch = trace.get("proposed_patch") if isinstance(trace.get("proposed_patch"), dict) else None
@@ -541,6 +633,9 @@ def _trace_metrics(trace: dict[str, Any], metadata: dict[str, Any]) -> dict[str,
         "patch_changed_lines": changed_lines,
         "syntax_valid_after_patch": syntax.get("valid") if patch_applied else None,
         "tests_passed_after_patch": tests_passed_after_patch,
+        "snapshot_created": bool(checkpoint.get("checkpoint_id")),
+        "rollback_performed": bool(rollback.get("restored")),
+        "rollback_reason": _rollback_reason(trace, rollback),
         "confidence_before_patch": confidence.get("score"),
         "confidence_after_patch": confidence.get("score") if patch_applied else None,
         "apply_decision": confidence.get("decision"),
@@ -625,6 +720,17 @@ def _expected_changed_files(metadata: dict[str, Any]) -> list[str]:
 def _changed_line_count(patch_scope: dict[str, Any]) -> int | None:
     value = patch_scope.get("changed_line_budget")
     return int(value) if isinstance(value, int) else None
+
+
+def _rollback_reason(trace: dict[str, Any], rollback: dict[str, Any]) -> str | None:
+    if not rollback:
+        return None
+    if rollback.get("restored"):
+        response = trace.get("stop_reason") or trace.get("final_response")
+        if isinstance(response, str) and response:
+            return response
+        return "tests_failed_after_patch"
+    return "rollback_failed"
 
 
 def _patch_quality(

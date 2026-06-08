@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .approvals import save_pending_approval
+from .checkpoints import create_file_checkpoint
+from .git_safety import get_dirty_worktree_status
 from .models import TaskState, ToolAction, ToolResult
 from .policy import SafetyPolicy, PolicyError, validate_patch_scope
 
@@ -52,6 +55,7 @@ class ToolRegistry:
                 allowed=True,
                 success=False,
                 error=str(error),
+                output={"requested_path": action.args.get("path")},
             )
         except (PolicyError, ValueError) as error:
             return ToolResult(
@@ -178,7 +182,7 @@ def read_file(
     state: TaskState,
     policy: SafetyPolicy,
 ) -> ToolResult:
-    requested = str(action.args.get("path", ""))
+    requested = str(action.args.get("path", "")).strip()
     max_bytes = int(action.args.get("max_bytes", 50_000))
     resolved = policy.resolve_read_path(requested)
     if resolved.absolute.stat().st_size > max_bytes:
@@ -208,7 +212,7 @@ def analyze_ast_file(
     state: TaskState,
     policy: SafetyPolicy,
 ) -> ToolResult:
-    requested = str(action.args.get("path", ""))
+    requested = str(action.args.get("path", "")).strip()
     resolved = policy.resolve_read_path(requested)
     if resolved.absolute.suffix.lower() != ".py":
         raise PolicyError("AST analysis currently supports Python files only.")
@@ -315,7 +319,7 @@ def validate_syntax(
     state: TaskState,
     policy: SafetyPolicy,
 ) -> ToolResult:
-    requested = str(action.args.get("path", ""))
+    requested = str(action.args.get("path", "")).strip()
     resolved = policy.resolve_read_path(requested)
     if resolved.absolute.suffix.lower() != ".py":
         raise PolicyError("Syntax validation currently supports Python files only.")
@@ -340,13 +344,14 @@ def propose_patch(
     policy: SafetyPolicy,
 ) -> ToolResult:
     patch = {
-        "path": str(action.args.get("path", "")),
+        "path": str(action.args.get("path", "")).strip(),
         "old": str(action.args.get("old", "")),
         "new": str(action.args.get("new", "")),
         "reason": action.reason,
     }
     resolved = policy.resolve_patch_path(patch["path"])
-    scope = validate_patch_scope(patch)
+    _ensure_patch_file_allowed(state, resolved.relative)
+    scope = validate_patch_scope(patch, max_changed_lines=state.max_patch_changed_lines)
     state.validation.patch_scope = scope
     if not scope["valid"]:
         raise PolicyError(str(scope["reason"]))
@@ -376,11 +381,12 @@ def apply_patch(
     state: TaskState,
     policy: SafetyPolicy,
 ) -> ToolResult:
-    if not state.allow_edits:
+    if state.approval_mode == "never" or not state.allow_edits:
         raise PolicyError("File edits require allow_edits=true.")
     patch = state.proposed_patch or action.args
-    resolved = policy.resolve_patch_path(str(patch.get("path", "")))
-    scope = validate_patch_scope(patch)
+    resolved = policy.resolve_patch_path(str(patch.get("path", "")).strip())
+    _ensure_patch_file_allowed(state, resolved.relative)
+    scope = validate_patch_scope(patch, max_changed_lines=state.max_patch_changed_lines)
     state.validation.patch_scope = scope
     if not scope["valid"]:
         raise PolicyError(str(scope["reason"]))
@@ -388,6 +394,13 @@ def apply_patch(
     state.validation.confidence = confidence
     if confidence["score"] < 0.55:
         raise PolicyError(f"Patch confidence too low to apply: {confidence['score']}")
+
+    dirty = get_dirty_worktree_status(policy.project_root, resolved.absolute)
+    state.validation.dirty_worktree = dirty.to_dict()
+    if dirty.dirty and not state.allow_dirty_worktree:
+        raise PolicyError(
+            "Dirty working tree detected; refusing to apply patch without explicit override."
+        )
 
     old = str(patch.get("old", ""))
     new = str(patch.get("new", ""))
@@ -397,6 +410,49 @@ def apply_patch(
     updated = source.replace(old, new, 1)
     if resolved.absolute.suffix.lower() == ".py":
         ast.parse(updated)
+
+    if state.approval_mode == "review":
+        approval = save_pending_approval(
+            approval_root=state.approval_root,
+            task_id=state.task_id,
+            workspace_root=Path(state.workspace),
+            project_path=state.project_path,
+            patch={**patch, "path": resolved.relative},
+            confidence=confidence,
+            allow_tests=state.allow_tests,
+            allow_dirty_worktree=state.allow_dirty_worktree,
+            rollback_on_test_failure=state.rollback_on_test_failure,
+            checkpoint_root=state.checkpoint_root,
+        )
+        state.validation.approval = approval
+        state.status = "needs_approval"
+        state.final_response = (
+            "Patch is ready for human review. Approve it with "
+            f"approval_id={approval['approval_id']}."
+        )
+        return ToolResult(
+            action=action.action,
+            allowed=True,
+            success=True,
+            output={
+                "path": resolved.relative,
+                "applied": False,
+                "approval_required": True,
+                "approval": approval,
+                "scope": scope,
+                "confidence": confidence,
+                "dirty_worktree": dirty.to_dict(),
+            },
+        )
+
+    checkpoint = create_file_checkpoint(
+        checkpoint_root=state.checkpoint_root,
+        task_id=state.task_id,
+        project_root=policy.project_root,
+        relative_path=resolved.relative,
+        patch={**patch, "path": resolved.relative},
+    )
+    state.validation.checkpoint = checkpoint
     resolved.absolute.write_text(updated, encoding="utf-8")
     state.validation.syntax = {"path": resolved.relative, "valid": True}
     return ToolResult(
@@ -408,6 +464,8 @@ def apply_patch(
             "applied": True,
             "scope": scope,
             "confidence": confidence,
+            "checkpoint": checkpoint,
+            "dirty_worktree": dirty.to_dict(),
         },
     )
 
@@ -459,6 +517,15 @@ def score_patch_confidence(
         "decision": decision,
         "reasons": reasons,
     }
+
+
+def _ensure_patch_file_allowed(state: TaskState, relative_path: str) -> None:
+    allowed = {path for path in state.allowed_patch_files if path}
+    if allowed and relative_path not in allowed:
+        raise PolicyError(
+            "Patch target is outside the allowed real-repo source files: "
+            f"{relative_path}"
+        )
 
 
 def _was_ast_analyzed(state: TaskState, path: str) -> bool:

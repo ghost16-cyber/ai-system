@@ -16,6 +16,8 @@ TaskStatus = Literal[
     "max_steps_reached",
 ]
 
+ApprovalMode = Literal["auto", "review", "never"]
+
 ActionName = Literal[
     "search_files",
     "read_file",
@@ -24,6 +26,7 @@ ActionName = Literal[
     "validate_syntax",
     "propose_patch",
     "apply_patch",
+    "rollback_patch",
     "final_response",
 ]
 
@@ -58,6 +61,10 @@ class ValidationState(BaseModel):
     patch_scope: dict[str, Any] | None = None
     risk: dict[str, Any] | None = None
     confidence: dict[str, Any] | None = None
+    dirty_worktree: dict[str, Any] | None = None
+    checkpoint: dict[str, Any] | None = None
+    rollback: dict[str, Any] | None = None
+    approval: dict[str, Any] | None = None
 
 
 class TaskState(BaseModel):
@@ -69,6 +76,13 @@ class TaskState(BaseModel):
     step_count: int = 0
     allow_edits: bool = False
     allow_tests: bool = True
+    approval_mode: ApprovalMode = "auto"
+    allow_dirty_worktree: bool = False
+    rollback_on_test_failure: bool = True
+    max_patch_changed_lines: int = Field(default=20, ge=1, le=50)
+    allowed_patch_files: list[str] = Field(default_factory=list)
+    checkpoint_root: str = "data/app/checkpoints"
+    approval_root: str = "data/app/pending_approvals"
 
     intent: str | None = None
     advisor_outputs: list[AdvisorOutput] = Field(default_factory=list)
@@ -119,6 +133,8 @@ class OrchestratorConfig(BaseModel):
     slm_model: str = "qwen2.5-coder:1.5b"
     slm_base_url: str = "http://localhost:11434"
     slm_timeout_seconds: int = Field(default=90, ge=1, le=300)
+    checkpoint_root: str = "data/app/checkpoints"
+    approval_root: str = "data/app/pending_approvals"
 
 
 class OrchestratorResult(BaseModel):

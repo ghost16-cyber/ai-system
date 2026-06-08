@@ -1,0 +1,25 @@
+{
+  "bug_type": "config_constant",
+  "case_id": "real_002_inventory_discount_config",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "app/config.py"
+  ],
+  "expected_source_file": "app/config.py",
+  "expected_test_file": "tests/test_discount.py",
+  "goal": "Fix the failing ten-percent discount test.",
+  "known_patch": {
+    "new": "DISCOUNT_RATE = 0.10",
+    "old": "DISCOUNT_RATE = 0.05",
+    "path": "app/config.py"
+  },
+  "multi_file": true,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/config.py",
+    "app/pricing.py",
+    "tests/test_discount.py"
+  ],
+  "repo_family": "fastapi_inventory_app"
+}

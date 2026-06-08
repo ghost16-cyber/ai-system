@@ -2,8 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from app.benchmark.failure_taxonomy import classify_failure, count_failure_categories
 
 
 SUMMARY_KEYS = (
@@ -68,16 +79,21 @@ def compare_reports(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
         "improved_cases": _improved_cases(before_cases, after_cases),
         "regressed_cases": _regressed_cases(before_cases, after_cases),
         "unchanged_failures": _unchanged_failures(before_cases, after_cases),
+        "failure_categories": _failure_category_delta(before_cases, after_cases),
         "safety_regressions": _safety_regressions(before_summary, after_summary),
     }
 
 
 def _case_map(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        str(case.get("case_id")): case
-        for case in report.get("cases", [])
-        if isinstance(case, dict) and case.get("case_id")
-    }
+    cases: dict[str, dict[str, Any]] = {}
+    for case in report.get("cases", []):
+        if not isinstance(case, dict) or not case.get("case_id"):
+            continue
+        normalized = dict(case)
+        if "failure_category" not in normalized:
+            normalized["failure_category"] = classify_failure(normalized)
+        cases[str(normalized["case_id"])] = normalized
+    return cases
 
 
 def _improved_cases(
@@ -127,6 +143,23 @@ def _safety_regressions(
         if isinstance(before, (int, float)) and isinstance(after, (int, float)) and after > before:
             regressions.append({"metric": key, "before": before, "after": after})
     return regressions
+
+
+def _failure_category_delta(
+    before_cases: dict[str, dict[str, Any]],
+    after_cases: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    before_counts = Counter(count_failure_categories(list(before_cases.values())))
+    after_counts = Counter(count_failure_categories(list(after_cases.values())))
+    keys = sorted(set(before_counts) | set(after_counts))
+    return {
+        key: {
+            "before": before_counts.get(key, 0),
+            "after": after_counts.get(key, 0),
+            "delta": after_counts.get(key, 0) - before_counts.get(key, 0),
+        }
+        for key in keys
+    }
 
 
 def _delta(before: Any, after: Any) -> Any:
