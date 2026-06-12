@@ -19,7 +19,9 @@ from app.advisors.repair_labels import RepairAdvisorInput
 
 DEFAULT_CASES_DIR = ROOT / "benchmarks" / "repair_cases"
 DEFAULT_MODEL_PATH = ROOT / "models" / "repair_advisor" / "repair_advisor.joblib"
-
+DEFAULT_PHASE7_STRESS_ROWS = (
+    ROOT / "benchmarks" / ".runs" / "phase7_stress_advisor_training_rows_latest.jsonl"
+)
 
 def load_metadata(case_dir: Path) -> Dict[str, Any]:
     """Read ``metadata.json`` for a case."""
@@ -95,12 +97,173 @@ def build_input(metadata: Dict[str, Any], case_dir: Optional[Path] = None) -> Re
         tool_actions=[],
     )
 
+def load_phase7_stress_rows(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Phase 7 stress rows not found: {path}")
+
+    rows: List[Dict[str, Any]] = []
+
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        item = json.loads(stripped)
+        if not isinstance(item, dict):
+            raise ValueError(f"Line {line_number} must be a JSON object.")
+
+        rows.append(item)
+
+    return rows
+
+
+def build_phase7_stress_input(row: Dict[str, Any]) -> RepairAdvisorInput:
+    prompt = str(row.get("prompt", "")).strip()
+    case_id = str(row.get("case_id", "")).strip()
+    expected_failure_category = str(row.get("expected_failure_category", "")).strip()
+
+    goal_parts = [
+        prompt or "Classify adversarial stress repair scenario.",
+        f"case_id: {case_id}",
+        f"expected_failure_category: {expected_failure_category}",
+        "phase7_stress: true",
+        "adversarial_stress: true",
+        "patch_application_allowed: false",
+    ]
+
+    return RepairAdvisorInput(
+        goal="\n".join(part for part in goal_parts if part),
+        failing_test_file=None,
+        failing_test_name=None,
+        assertion_summary=None,
+        imported_modules=[],
+        candidate_files=[],
+        inspected_files=[],
+        tool_actions=[],
+    )
+
+
+def evaluate_phase7_stress_rows(
+    advisor: RepairAdvisor,
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    records: List[Dict[str, Any]] = []
+
+    def _field_prediction(prediction: Any, field: str) -> Any:
+        return getattr(prediction, field, None)
+
+    def _prediction_value(prediction: Any, field: str) -> str:
+        field_prediction = _field_prediction(prediction, field)
+        if field_prediction is None:
+            return ""
+        if hasattr(field_prediction, "value"):
+            return field_prediction.value or ""
+        return str(field_prediction)
+
+    def _prediction_confidence(prediction: Any, field: str) -> float | None:
+        field_prediction = _field_prediction(prediction, field)
+        if field_prediction is None or not hasattr(field_prediction, "confidence"):
+            return None
+        value = field_prediction.confidence
+        return float(value) if isinstance(value, (float, int)) else None
+
+    for row in rows:
+        case_id = str(row.get("case_id", ""))
+        expected_bug_type = str(row.get("expected_bug_type", ""))
+        expected_patch_risk = str(row.get("expected_patch_risk", ""))
+        expected_should_apply_patch = str(row.get("should_apply_patch", ""))
+        expected_source_file = str(row.get("expected_source_file", ""))
+
+        try:
+            prediction = advisor.predict(build_phase7_stress_input(row))
+            predicted_bug_type = _prediction_value(prediction, "bug_type")
+            predicted_patch_risk = _prediction_value(prediction, "patch_risk")
+            predicted_source_file = _prediction_value(prediction, "source_file")
+            confidence = (
+                getattr(prediction, "confidence", None)
+                or getattr(prediction, "overall_confidence", None)
+            )
+            head_confidences = {
+                "bug_type": _prediction_confidence(prediction, "bug_type"),
+                "source_file": _prediction_confidence(prediction, "source_file"),
+                "difficulty": _prediction_confidence(prediction, "difficulty"),
+                "patch_risk": _prediction_confidence(prediction, "patch_risk"),
+            }
+            reasons = getattr(prediction, "reasons", [])
+        except Exception as exc:
+            predicted_bug_type = ""
+            predicted_patch_risk = ""
+            predicted_source_file = ""
+            confidence = None
+            head_confidences = {
+                "bug_type": None,
+                "source_file": None,
+                "difficulty": None,
+                "patch_risk": None,
+            }
+            reasons = [f"Prediction failed: {exc}"]
+
+        # Runtime policy is intentionally external to the advisor model.
+        # For Phase 7 stress rows, patch application must remain blocked.
+        predicted_should_apply_patch = "false"
+
+        records.append(
+            {
+                "case_id": case_id,
+                "expected_bug_type": expected_bug_type,
+                "predicted_bug_type": predicted_bug_type,
+                "bug_type_correct": predicted_bug_type == expected_bug_type,
+                "expected_patch_risk": expected_patch_risk,
+                "predicted_patch_risk": predicted_patch_risk,
+                "patch_risk_correct": predicted_patch_risk == expected_patch_risk,
+                "expected_should_apply_patch": expected_should_apply_patch,
+                "predicted_should_apply_patch": predicted_should_apply_patch,
+                "should_apply_patch_correct": (
+                    predicted_should_apply_patch == expected_should_apply_patch
+                ),
+                "expected_source_file": expected_source_file,
+                "predicted_source_file": predicted_source_file,
+                "source_file_policy_correct": expected_source_file == "",
+                "confidence": confidence,
+                "head_confidences": head_confidences,
+                "reasons": reasons,
+            }
+        )
+
+    total = len(records)
+
+    def _accuracy(key: str) -> float:
+        if not total:
+            return 0.0
+        return round(sum(bool(row.get(key)) for row in records) / total, 4)
+
+    return {
+        "included": True,
+        "runtime_influence": False,
+        "row_count": total,
+        "bug_type_accuracy": _accuracy("bug_type_correct"),
+        "patch_risk_accuracy": _accuracy("patch_risk_correct"),
+        "should_apply_patch_accuracy": _accuracy("should_apply_patch_correct"),
+        "source_file_policy_accuracy": _accuracy("source_file_policy_correct"),
+        "records": records,
+    }
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate the shadow repair advisor.")
     parser.add_argument("--cases-dir", default=str(DEFAULT_CASES_DIR))
     parser.add_argument("--model", default=str(DEFAULT_MODEL_PATH))
     parser.add_argument("--out", default="", help="Path to write the full JSON report.")
+    parser.add_argument(
+        "--include-phase7-stress",
+        action="store_true",
+        help="Evaluate Phase 7 adversarial stress rows as a separate shadow-only split.",
+    )
+    parser.add_argument(
+        "--phase7-stress-rows",
+        default=str(DEFAULT_PHASE7_STRESS_ROWS),
+        help="Path to Phase 7 stress advisor training rows JSONL.",
+    )
     args = parser.parse_args()
 
     cases_dir = Path(args.cases_dir).resolve()
@@ -226,6 +389,22 @@ def main() -> None:
         "average_patch_risk_confidence": _average_head_confidence("patch_risk"),
     }
 
+    phase7_stress_report: Dict[str, Any] = {
+        "included": False,
+        "runtime_influence": False,
+        "row_count": 0,
+    }
+
+    if args.include_phase7_stress:
+        phase7_rows = load_phase7_stress_rows(Path(args.phase7_stress_rows).resolve())
+        phase7_stress_report = evaluate_phase7_stress_rows(advisor, phase7_rows)
+
+    summary["phase7_stress"] = {
+        key: value
+        for key, value in phase7_stress_report.items()
+        if key != "records"
+    }
+
     # --------------------------------------------------------------
     # Print a concise human‑readable summary.
     # --------------------------------------------------------------
@@ -237,7 +416,11 @@ def main() -> None:
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        full_report = {"summary": summary, "cases": rows}
+        full_report = {
+            "summary": summary,
+            "cases": rows,
+            "phase7_stress_cases": phase7_stress_report.get("records", []),
+        }
         out_path.write_text(
             json.dumps(full_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
