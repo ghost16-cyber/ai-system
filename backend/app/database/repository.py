@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import datetime
 from pathlib import Path
 
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
+    ChatRunResponse,
     FeedbackResponse,
     IssueResponse,
     MetricsResponse,
@@ -152,6 +154,31 @@ class AnalysisRepository:
                 ON patch_proposals (finding_ref)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_runs (
+                    run_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    user_message TEXT NOT NULL,
+                    assistant_response TEXT NOT NULL,
+                    selected_specialist TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    rag_used INTEGER NOT NULL,
+                    rag_context_count INTEGER NOT NULL,
+                    runtime_decision TEXT NOT NULL,
+                    safety_decision TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    trace_summary_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
+                ON chat_runs (created_at DESC)
+                """
+            )
 
     def _add_column_if_missing(
         self, connection: sqlite3.Connection, table: str, column: str, definition: str
@@ -263,6 +290,74 @@ class AnalysisRepository:
             ).fetchall()
 
         return [AnalysisHistoryItem.model_validate(dict(row)) for row in rows]
+
+    def store_chat_run(self, run: ChatRunResponse) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_runs (
+                    run_id,
+                    conversation_id,
+                    user_message,
+                    assistant_response,
+                    selected_specialist,
+                    intent,
+                    confidence,
+                    rag_used,
+                    rag_context_count,
+                    runtime_decision,
+                    safety_decision,
+                    created_at,
+                    trace_summary_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.run_id,
+                    run.conversation_id,
+                    run.user_message,
+                    run.assistant_response,
+                    run.selected_specialist,
+                    run.intent,
+                    run.confidence,
+                    int(run.rag_used),
+                    run.rag_context_count,
+                    run.runtime_decision,
+                    run.safety_decision,
+                    run.created_at.isoformat(),
+                    json.dumps(run.trace_summary, sort_keys=True),
+                ),
+            )
+
+    def list_chat_runs(self, *, limit: int) -> list[ChatRunResponse]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM chat_runs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [
+            ChatRunResponse(
+                run_id=str(row["run_id"]),
+                conversation_id=str(row["conversation_id"]),
+                user_message=str(row["user_message"]),
+                assistant_response=str(row["assistant_response"]),
+                selected_specialist=str(row["selected_specialist"]),
+                intent=str(row["intent"]),
+                confidence=float(row["confidence"]),
+                rag_used=bool(row["rag_used"]),
+                rag_context_count=int(row["rag_context_count"]),
+                runtime_decision=str(row["runtime_decision"]),
+                safety_decision=str(row["safety_decision"]),
+                created_at=row["created_at"],
+                trace_summary=json.loads(row["trace_summary_json"]),
+            )
+            for row in rows
+        ]
 
     def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:
         if not proposals:

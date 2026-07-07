@@ -76,6 +76,33 @@ class ExecutionProfileRequest(BaseModel):
     requested_plan: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChatRunRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    use_rag: bool = True
+    safety_mode: str = "read_only"
+    conversation_id: str | None = None
+
+
+class ChatRunResponse(BaseModel):
+    run_id: str
+    conversation_id: str
+    user_message: str
+    assistant_response: str
+    selected_specialist: str
+    intent: str
+    confidence: float
+    rag_used: bool
+    rag_context_count: int
+    runtime_decision: str
+    safety_decision: str
+    created_at: datetime
+    trace_summary: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatRunsResponse(BaseModel):
+    items: list[ChatRunResponse]
+
+
 PatchProposalStatus = Literal["proposed", "applied", "conflict"]
 
 

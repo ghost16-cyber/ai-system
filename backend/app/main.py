@@ -20,6 +20,7 @@ from backend.app.analyzer.patch_preview import preview_patch_proposal
 from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
+from backend.app.chat_workflow import run_chat_workflow
 from backend.app.database.repository import AnalysisRepository
 from backend.app.hardware_ai_optimizer import (
     HardwareOptimizerResponse,
@@ -45,6 +46,9 @@ from backend.app.schemas.api import (
     AnalyzeProjectRequest,
     AnalyzeRequest,
     AnalyzeResponse,
+    ChatRunRequest,
+    ChatRunResponse,
+    ChatRunsResponse,
     FeedbackRequest,
     FeedbackResponse,
     HealthResponse,
@@ -286,6 +290,19 @@ def create_app(
                 for item in search["results"]
             ],
         }
+
+    @application.post("/chat/run", response_model=ChatRunResponse)
+    def chat_run(request: ChatRunRequest) -> ChatRunResponse:
+        run = run_chat_workflow(
+            request,
+            workspace_root=configured_workspace_root,
+        )
+        repository.store_chat_run(run)
+        return run
+
+    @application.get("/chat/runs", response_model=ChatRunsResponse)
+    def chat_runs(limit: int = Query(default=20, ge=1, le=100)) -> ChatRunsResponse:
+        return ChatRunsResponse(items=repository.list_chat_runs(limit=limit))
 
     def build_patch_proposal(
         *,

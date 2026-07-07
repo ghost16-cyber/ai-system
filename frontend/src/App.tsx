@@ -21,26 +21,22 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   HttpAstraClient,
+  type ChatTraceEntry,
+  type ChatRunResponse,
   type HealthData,
   type RagStatusResponse,
   type RawHistoryItem,
   type RawJob,
   type RawTool,
   type SelectedSlmResponse,
-  type SlmChatResponse,
   type SlmProfilesResponse,
 } from "./clients/astraClient";
 import type {
   CompactTraceResponse,
-  ExecutionProfile,
-  PlanDecision,
   RuntimeContext,
-  RuntimePlanValidation,
   SpecialistDashboard,
   SpecialistModelsResponse,
-  SpecialistRouteResult,
   SpecialistTracesResponse,
-  TaskKind,
   TraceEvent,
 } from "./types/contracts";
 
@@ -60,21 +56,7 @@ interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   createdAt: string;
-  meta?: ChatRun;
-}
-
-interface ChatRun {
-  id: string;
-  title: string;
-  createdAt: string;
-  userMessage: string;
-  assistantMessage: string;
-  selectedSpecialist: string;
-  runtimeProfile: string;
-  safetyDecision: PlanDecision | "unknown";
-  traceId: string | null;
-  timeline: TraceEvent[];
-  validationReason: string;
+  meta?: ChatRunResponse;
 }
 
 interface SystemData {
@@ -89,13 +71,24 @@ interface SystemData {
 }
 
 interface HistoryData {
+  chatRuns: ChatRunResponse[];
   jobs: RawJob[];
   analyses: RawHistoryItem[];
   specialistTraces: SpecialistTracesResponse | null;
 }
 
-const SETTINGS_KEY = "astra.phase48.settings";
-const CHAT_HISTORY_KEY = "astra.phase48.chatRuns";
+interface HistoryItem {
+  id: string;
+  title: string;
+  kind: string;
+  meta: string;
+  preview?: string;
+  createdAt: string;
+  decision?: string;
+  detail?: string;
+}
+
+const SETTINGS_KEY = "astra.phase49.settings";
 
 const defaultSettings: FrontendSettings = {
   apiUrl: "http://127.0.0.1:8000",
@@ -116,7 +109,6 @@ function App() {
   const [activePage, setActivePage] = useState<PageId>("chat");
   const [settings, setSettings] = useState<FrontendSettings>(loadSettings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [runs, setRuns] = useState<ChatRun[]>(loadRuns);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -139,10 +131,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
-
-  useEffect(() => {
-    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(runs.slice(0, 30)));
-  }, [runs]);
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true);
@@ -195,17 +183,19 @@ function App() {
   const refreshHistory = useCallback(async () => {
     setHistoryLoading(true);
     setHistoryError(null);
-    const [jobs, analyses, traces] = await Promise.all([
+    const [chatRuns, jobs, analyses, traces] = await Promise.all([
+      settle(client.getChatRuns(30)),
       settle(client.getJobs(30)),
       settle(client.getHistory(30)),
       settle(client.getSpecialistTraces()),
     ]);
     setHistoryData({
+      chatRuns: chatRuns.value ?? [],
       jobs: jobs.value ?? [],
       analyses: analyses.value ?? [],
       specialistTraces: traces.value,
     });
-    setHistoryError(jobs.error ?? analyses.error ?? traces.error ?? null);
+    setHistoryError(chatRuns.error ?? jobs.error ?? analyses.error ?? traces.error ?? null);
     setHistoryLoading(false);
   }, [client]);
 
@@ -271,63 +261,24 @@ function App() {
     setMessages((current) => [...current, userMessage]);
 
     try {
-      const taskKind = inferTaskKind(prompt);
-      const requestedPlan = defaultPlanForTaskKind(taskKind);
-      const [routeResult, validation] = await Promise.all([
-        settings.specialistRoutingEnabled
-          ? settle(client.routeSpecialistTask(prompt, false))
-          : Promise.resolve({ value: null, error: null }),
-        settle(
-          client.validateRuntimePlan({
-            task: prompt,
-            taskKind,
-            requestedPlan,
-          }),
-        ),
-      ]);
-
-      if (!validation.value) {
-        throw new Error(validation.error ?? "Runtime validation failed.");
-      }
-
-      const profile = validation.value.decision === "block"
-        ? null
-        : await client
-            .buildExecutionProfile({
-              task: prompt,
-              taskKind,
-              requestedPlan: validation.value.recommendedPlan,
-            })
-            .catch(() => null);
-
-      const chatResponse = settings.ragEnabled
-        ? await client.chatWithContext(prompt)
-        : await client.chatWithSlm(prompt, {
-            safety_mode: settings.safetyMode,
-            specialist: routeResult.value?.recommended_specialist,
-          });
-
-      const assistantText =
-        readString(chatResponse.assistant_response) ||
-        "Astra completed the request, but the backend did not return response text.";
-      const run = buildChatRun({
-        prompt,
-        assistantText,
-        route: routeResult.value,
-        validation: validation.value,
-        profile,
-        response: chatResponse,
+      const run = await client.runChat({
+        message: prompt,
+        use_rag: settings.ragEnabled,
+        safety_mode: settings.safetyMode,
+        conversation_id: null,
       });
+      const assistantText =
+        readString(run.assistant_response) ||
+        "Astra completed the request, but the backend did not return response text.";
       const assistantMessage: ChatMessage = {
         id: newId("assistant"),
         role: "assistant",
         text: assistantText,
-        createdAt: run.createdAt,
+        createdAt: run.created_at,
         meta: run,
       };
       setMessages((current) => [...current, assistantMessage]);
-      setRuns((current) => [run, ...current].slice(0, 30));
-      setSelectedRunId(`chat:${run.id}`);
+      setSelectedRunId(`chat:${run.run_id}`);
       void refreshHistory();
     } catch (error) {
       const message = cleanError(error);
@@ -347,13 +298,11 @@ function App() {
   }
 
   function resetLocalState() {
-    localStorage.removeItem(CHAT_HISTORY_KEY);
     localStorage.removeItem(SETTINGS_KEY);
-    setRuns([]);
     setMessages([]);
     setSelectedRunId(null);
     setSettings(defaultSettings);
-    setSettingsNotice("Local chat history and frontend settings were reset.");
+    setSettingsNotice("Frontend settings and the visible chat transcript were reset.");
   }
 
   return (
@@ -415,7 +364,6 @@ function App() {
         )}
         {activePage === "history" && (
           <HistoryPage
-            runs={runs}
             data={historyData}
             loading={historyLoading}
             error={historyError}
@@ -551,14 +499,22 @@ function ChatPage({
   );
 }
 
-function ChatResultMeta({ run }: { run: ChatRun }) {
+function ChatResultMeta({ run }: { run: ChatRunResponse }) {
   return (
     <div className="result-meta">
-      <Metric label="Specialist" value={run.selectedSpecialist} />
-      <Metric label="Runtime profile" value={run.runtimeProfile} />
-      <Metric label="Safety decision" value={run.safetyDecision} tone={decisionTone(run.safetyDecision)} />
-      <Metric label="Trace ID" value={run.traceId ?? "Not returned"} />
-      <p className="meta-reason">{run.validationReason}</p>
+      <Metric label="Specialist" value={run.selected_specialist || "Not routed"} />
+      <Metric label="Intent" value={`${run.intent || "unknown"} / ${Math.round((run.confidence ?? 0) * 100)}%`} />
+      <Metric
+        label="RAG"
+        value={run.rag_used ? `Used (${run.rag_context_count ?? 0})` : "Not used"}
+        tone={run.rag_used ? "green" : "blue"}
+      />
+      <Metric label="Safety" value={run.safety_decision || "unknown"} tone={decisionTone(run.safety_decision)} />
+      <Metric label="Runtime" value={run.runtime_decision || "unknown"} />
+      <Metric label="Run ID" value={run.run_id ? run.run_id.slice(0, 8) : "Not returned"} />
+      <div className="meta-reason">
+        <TraceTimeline events={traceSummaryToEvents(run.trace_summary ?? [])} />
+      </div>
     </div>
   );
 }
@@ -664,7 +620,6 @@ function SystemPage({
 }
 
 function HistoryPage({
-  runs,
   data,
   loading,
   error,
@@ -673,7 +628,6 @@ function HistoryPage({
   selectedTrace,
   onRefresh,
 }: {
-  runs: ChatRun[];
   data: HistoryData | null;
   loading: boolean;
   error: string | null;
@@ -682,8 +636,12 @@ function HistoryPage({
   selectedTrace: CompactTraceResponse | null;
   onRefresh: () => void;
 }) {
-  const items = buildHistoryItems(runs, data);
+  const items = buildHistoryItems(data);
   const selected = items.find((item) => item.id === selectedRunId) ?? items[0] ?? null;
+  const selectedChatRun =
+    selected?.kind === "Chat"
+      ? data?.chatRuns.find((run) => `chat:${run.run_id}` === selected.id) ?? null
+      : null;
 
   useEffect(() => {
     if (!selectedRunId && items[0]) setSelectedRunId(items[0].id);
@@ -715,6 +673,7 @@ function HistoryPage({
                 onClick={() => setSelectedRunId(item.id)}
               >
                 <strong>{item.title}</strong>
+                {item.preview && <span>{item.preview}</span>}
                 <span>{item.kind} / {item.meta}</span>
                 <small>{formatAge(item.createdAt)}</small>
               </button>
@@ -730,13 +689,20 @@ function HistoryPage({
                     ["Status", selected.meta],
                     ["Created", formatDate(selected.createdAt)],
                     ["Decision", selected.decision ?? "Unavailable"],
+                    ...(selectedChatRun
+                      ? [
+                          ["Specialist", selectedChatRun.selected_specialist || "Not routed"] as [string, string],
+                          ["Intent", `${selectedChatRun.intent || "unknown"} / ${Math.round((selectedChatRun.confidence ?? 0) * 100)}%`] as [string, string],
+                          ["RAG", selectedChatRun.rag_used ? `Used (${selectedChatRun.rag_context_count ?? 0})` : "Not used"] as [string, string],
+                        ]
+                      : []),
                   ]}
                 />
                 <h3>Trace timeline</h3>
                 <TraceTimeline
                   events={
                     selected.kind === "Chat"
-                      ? runs.find((run) => `chat:${run.id}` === selected.id)?.timeline ?? []
+                      ? traceSummaryToEvents(selectedChatRun?.trace_summary ?? [])
                       : selectedTrace?.trace ?? []
                   }
                 />
@@ -1045,91 +1011,33 @@ function TraceTimeline({ events }: { events: TraceEvent[] }) {
   );
 }
 
-function buildChatRun({
-  prompt,
-  assistantText,
-  route,
-  validation,
-  profile,
-  response,
-}: {
-  prompt: string;
-  assistantText: string;
-  route: SpecialistRouteResult | null;
-  validation: RuntimePlanValidation;
-  profile: ExecutionProfile | null;
-  response: SlmChatResponse;
-}): ChatRun {
-  const createdAt = new Date().toISOString();
-  const id = newId("run");
-  return {
-    id,
-    title: prompt.slice(0, 80) || "Chat run",
-    createdAt,
-    userMessage: prompt,
-    assistantMessage: assistantText,
-    selectedSpecialist: route?.recommended_specialist ?? "Not routed",
-    runtimeProfile: profile ? `${profile.name} / ${profile.runtime}` : "No profile",
-    safetyDecision: validation.decision,
-    traceId: readString(response.trace_id) || null,
-    validationReason: validation.reason,
-    timeline: [
-      traceEvent("accepted", "Task accepted", "User message submitted to live backend.", "passed", "0.0s"),
-      traceEvent(
-        "specialist",
-        "Specialist routed",
-        route
-          ? `${route.recommended_specialist} at ${Math.round(route.confidence * 100)}% confidence.`
-          : "Specialist routing disabled or unavailable.",
-        route ? "passed" : "warning",
-        "0.2s",
-      ),
-      traceEvent(
-        "safety",
-        `Plan ${validation.decision}`,
-        validation.reason,
-        validation.decision === "allow" ? "passed" : validation.decision === "block" ? "blocked" : "warning",
-        "0.4s",
-      ),
-      traceEvent(
-        "profile",
-        "Runtime profile",
-        profile ? `${profile.name} using ${profile.device}.` : "No runtime profile returned.",
-        profile ? "passed" : "warning",
-        "0.6s",
-      ),
-      traceEvent("response", "Assistant response", "Backend returned the assistant message.", "passed", "0.8s"),
-    ],
-  };
-}
-
-function traceEvent(
-  phase: string,
-  title: string,
-  detail: string,
-  status: TraceEvent["status"],
-  elapsed: string,
-): TraceEvent {
-  return {
-    id: `${phase}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-    phase,
-    title,
-    detail,
-    status,
-    elapsed,
-  };
-}
-
-function buildHistoryItems(runs: ChatRun[], data: HistoryData | null) {
+function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
   return [
-    ...runs.map((run) => ({
-      id: `chat:${run.id}`,
-      title: run.title,
+    ...(data?.chatRuns ?? []).map((run) => ({
+      id: `chat:${run.run_id}`,
+      title: run.user_message.slice(0, 80) || "Chat run",
       kind: "Chat",
-      meta: String(run.safetyDecision),
-      createdAt: run.createdAt,
-      decision: String(run.safetyDecision),
-      detail: run.assistantMessage,
+      meta: `${run.selected_specialist || "Not routed"} / ${Math.round((run.confidence ?? 0) * 100)}%`,
+      preview: run.assistant_response.slice(0, 140),
+      createdAt: run.created_at,
+      decision: `${run.safety_decision || "unknown"} / ${run.runtime_decision || "unknown"} / RAG ${run.rag_used ? "used" : "not used"}`,
+      detail: JSON.stringify(
+        {
+          user_message: run.user_message,
+          assistant_response: run.assistant_response,
+          selected_specialist: run.selected_specialist,
+          intent: run.intent,
+          confidence: run.confidence,
+          rag_used: run.rag_used,
+          rag_context_count: run.rag_context_count,
+          safety_decision: run.safety_decision,
+          runtime_decision: run.runtime_decision,
+          conversation_id: run.conversation_id,
+          run_id: run.run_id,
+        },
+        null,
+        2,
+      ),
     })),
     ...(data?.jobs ?? []).map((job) => ({
       id: `job:${job.job_id}`,
@@ -1161,31 +1069,6 @@ function buildHistoryItems(runs: ChatRun[], data: HistoryData | null) {
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
-function defaultPlanForTaskKind(taskKind: TaskKind): Record<string, unknown> {
-  switch (taskKind) {
-    case "Code repair":
-      return { strategy: "code_repair", use_static_analysis: true };
-    case "RAG workflow":
-      return { strategy: "rag_retrieval", use_embeddings: true };
-    case "Model training":
-      return { strategy: "pytorch_training", model_size_billion_params: 1 };
-    case "Classical ML":
-      return { strategy: "sklearn_training", use_gpu: false };
-    case "Local SLM":
-    default:
-      return { strategy: "local_inference", model_size_billion_params: 3 };
-  }
-}
-
-function inferTaskKind(text: string): TaskKind {
-  const lowered = text.toLowerCase();
-  if (/(test|bug|fix|patch|repair|error|traceback)/.test(lowered)) return "Code repair";
-  if (/(rag|retrieval|index|embedding)/.test(lowered)) return "RAG workflow";
-  if (/(train|fine[- ]?tune|epoch|dataset)/.test(lowered)) return "Model training";
-  if (/(sklearn|classifier|regression|tabular)/.test(lowered)) return "Classical ML";
-  return "Local SLM";
-}
-
 function looksDestructive(text: string) {
   return /(delete|remove|overwrite|apply patch|write file|commit|push|deploy|drop|truncate|rollback)/i.test(text);
 }
@@ -1213,23 +1096,31 @@ function loadSettings(): FrontendSettings {
   }
 }
 
-function loadRuns(): ChatRun[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) ?? "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function labelSafety(mode: SafetyMode) {
   return mode === "confirm" ? "Confirm before action" : "Preview / read-only";
 }
 
-function decisionTone(decision: PlanDecision | "unknown") {
-  if (decision === "allow") return "green";
-  if (decision === "downgrade") return "amber";
-  if (decision === "block") return "red";
+function traceSummaryToEvents(entries: ChatTraceEntry[]): TraceEvent[] {
+  return entries.map((entry, index) => {
+    const status = ["passed", "active", "warning", "blocked"].includes(entry.status)
+      ? (entry.status as TraceEvent["status"])
+      : "warning";
+    return {
+      id: `${entry.phase || "trace"}-${index}`,
+      phase: entry.phase || "trace",
+      title: entry.title || "Trace event",
+      detail: entry.detail || "No detail returned.",
+      status,
+      elapsed: `${index + 1}`,
+    };
+  });
+}
+
+function decisionTone(decision: string | null | undefined) {
+  const normalized = (decision ?? "").toLowerCase();
+  if (normalized === "allow" || normalized === "allowed") return "green";
+  if (normalized === "downgrade" || normalized === "downgraded" || normalized === "read_only") return "amber";
+  if (normalized === "block" || normalized === "blocked") return "red";
   return "blue";
 }
 

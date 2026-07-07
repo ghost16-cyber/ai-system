@@ -91,6 +91,37 @@ export interface SlmChatResponse {
   trace_id?: string;
 }
 
+export interface ChatRunRequest {
+  message: string;
+  use_rag: boolean;
+  safety_mode?: string;
+  conversation_id?: string | null;
+}
+
+export interface ChatTraceEntry {
+  phase: string;
+  title: string;
+  detail: string;
+  status: string;
+  data?: Record<string, unknown>;
+}
+
+export interface ChatRunResponse {
+  run_id: string;
+  conversation_id: string;
+  user_message: string;
+  assistant_response: string;
+  selected_specialist: string;
+  intent: string;
+  confidence: number;
+  rag_used: boolean;
+  rag_context_count: number;
+  runtime_decision: string;
+  safety_decision: string;
+  created_at: string;
+  trace_summary: ChatTraceEntry[];
+}
+
 export interface RuntimePlanValidationRequest {
   task: string;
   taskKind: TaskKind;
@@ -127,6 +158,8 @@ export interface AstraClient {
     context?: Record<string, unknown>,
   ): Promise<SlmChatResponse>;
   chatWithContext(message: string, limit?: number): Promise<SlmChatResponse>;
+  runChat(request: ChatRunRequest): Promise<ChatRunResponse>;
+  getChatRuns(limit?: number): Promise<ChatRunResponse[]>;
   getCompactTrace(jobId: string): Promise<CompactTraceResponse>;
   getSpecialistDashboard(): Promise<SpecialistDashboard>;
   getSpecialistModels(): Promise<SpecialistModelsResponse>;
@@ -229,6 +262,17 @@ export class HttpAstraClient implements AstraClient {
       message,
       limit,
     });
+  }
+
+  async runChat(request: ChatRunRequest) {
+    return this.postJson<ChatRunResponse>("/chat/run", request);
+  }
+
+  async getChatRuns(limit = 30) {
+    const response = await this.getJson<{ items?: ChatRunResponse[] }>(
+      `/chat/runs?limit=${encodeURIComponent(String(limit))}`,
+    );
+    return Array.isArray(response.items) ? response.items : [];
   }
 
   async getCompactTrace(jobId: string) {
