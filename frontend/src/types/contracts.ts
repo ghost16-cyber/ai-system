@@ -144,6 +144,7 @@ export interface WorkflowScenario {
   validation: RuntimePlanValidation;
   slmSignal: SlmCoordinatorSignal;
   specialistSignals: SpecialistSignal[];
+  activeProfile: ExecutionProfile | null;
   activeProfileId: string | null;
   runtimeEvidence: RuntimeEvidence[];
   policyExplanations: PolicyExplanation[];
@@ -262,6 +263,7 @@ export interface AstraWorkflowState {
   validation: RuntimePlanValidation | null;
   slmSignal: SlmCoordinatorSignal | null;
   specialistSignals: SpecialistSignal[];
+  activeProfile: ExecutionProfile | null;
   activeProfileId: string | null;
   runtimeEvidence: RuntimeEvidence[];
   policyExplanations: PolicyExplanation[];

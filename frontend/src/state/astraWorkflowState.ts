@@ -16,6 +16,7 @@ export const initialAstraWorkflowState: AstraWorkflowState = {
   validation: null,
   slmSignal: null,
   specialistSignals: [],
+  activeProfile: null,
   activeProfileId: null,
   runtimeEvidence: [],
   policyExplanations: [],
@@ -50,7 +51,7 @@ export function astraWorkflowReducer(
       stage: "failed",
       testsRunning: false,
       error: action.error,
-      finalMessage: "The mock workflow stopped after a simulated failure.",
+      finalMessage: "The workflow stopped due to an error.",
       traceEvents: [
         ...state.traceEvents,
         trace(
@@ -75,6 +76,7 @@ export function astraWorkflowReducer(
       validation: action.scenario.validation,
       slmSignal: action.scenario.slmSignal,
       specialistSignals: action.scenario.specialistSignals,
+      activeProfile: action.scenario.activeProfile,
       runtimeEvidence: action.scenario.runtimeEvidence,
       policyExplanations: action.scenario.policyExplanations,
       traceEvents: [
@@ -147,6 +149,7 @@ export function astraWorkflowReducer(
       return {
         ...state,
         stage: "profile_built",
+        activeProfile: scenario.activeProfile,
         activeProfileId: scenario.activeProfileId,
         traceEvents: [
           ...completeLast(state.traceEvents),
@@ -168,7 +171,7 @@ export function astraWorkflowReducer(
           ...completeLast(state.traceEvents),
           trace(
             "authorization",
-            "Mock profile authorized",
+            "Profile authorized",
             scenario.traceDetails.authorization,
             "active",
             elapsed(state.traceEvents.length),
@@ -187,7 +190,7 @@ export function astraWorkflowReducer(
           ...completeLast(state.traceEvents),
           trace(
             "tools",
-            mockToolTitle(scenario),
+            toolTitle(scenario),
             scenario.traceDetails.tools,
             "active",
             elapsed(state.traceEvents.length),
@@ -205,7 +208,7 @@ export function astraWorkflowReducer(
           ...completeLast(state.traceEvents),
           trace(
             "response",
-            "Mock workflow completed",
+            "Workflow completed",
             scenario.traceDetails.response,
             "passed",
             elapsed(state.traceEvents.length),
@@ -247,6 +250,7 @@ function scenarioFromState(state: AstraWorkflowState): WorkflowScenario {
         advisoryOnly: true,
       },
     specialistSignals: state.specialistSignals,
+    activeProfile: state.activeProfile,
     activeProfileId: state.activeProfileId,
     runtimeEvidence: state.runtimeEvidence,
     policyExplanations: state.policyExplanations,
@@ -255,22 +259,22 @@ function scenarioFromState(state: AstraWorkflowState): WorkflowScenario {
       research: "Research evidence applied.",
       gate: state.validation?.reason ?? "Plan checked.",
       profile: "Execution profile built.",
-      authorization: "Mock authorization checked.",
-      tools: "Mock tools checked.",
-      response: state.finalMessage ?? "Mock workflow completed.",
+      authorization: "Authorization checked.",
+      tools: "Tools checked.",
+      response: state.finalMessage ?? "Workflow completed.",
     },
     patchVisible: state.patchVisible,
     testsVisible: state.testsVisible,
-    finalMessage: state.finalMessage ?? "Mock workflow completed.",
+    finalMessage: state.finalMessage ?? "Workflow completed.",
   };
 }
 
-function mockToolTitle(scenario: WorkflowScenario) {
-  if (scenario.taskKind === "Code repair") return "Mock analysis and tests running";
-  if (scenario.taskKind === "RAG workflow") return "Mock repository indexing";
-  if (scenario.taskKind === "Model training") return "Mock training gate checked";
-  if (scenario.taskKind === "Classical ML") return "Mock sklearn pipeline check";
-  return "Mock model load check";
+function toolTitle(scenario: WorkflowScenario) {
+  if (scenario.taskKind === "Code repair") return "Running analysis and tests";
+  if (scenario.taskKind === "RAG workflow") return "Indexing repository";
+  if (scenario.taskKind === "Model training") return "Checking training gate";
+  if (scenario.taskKind === "Classical ML") return "Running sklearn pipeline";
+  return "Loading model";
 }
 
 function trace(

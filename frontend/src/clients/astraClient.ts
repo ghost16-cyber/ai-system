@@ -1,10 +1,3 @@
-import {
-  executionProfiles,
-  runtimeContext,
-  runtimeResearchManifest,
-  scenarioForTask,
-  traceEvents,
-} from "../data/mockData";
 import type {
   CompactTraceResponse,
   ExecutionProfile,
@@ -31,6 +24,8 @@ export interface ExecutionProfileRequest {
   requestedPlan: Record<string, unknown>;
 }
 
+type JsonObject = Record<string, unknown>;
+
 export interface AstraClient {
   getRuntimeContext(task?: string): Promise<RuntimeContext>;
   getRuntimeResearchManifest(): Promise<RuntimeResearchManifest>;
@@ -51,114 +46,42 @@ export interface AstraClient {
   getSpecialistModelAudit(modelId: string): Promise<Record<string, unknown>>;
 }
 
-export class MockAstraClient implements AstraClient {
-  async getRuntimeContext() {
-    return runtimeContext;
-  }
-
-  async getRuntimeResearchManifest() {
-    return runtimeResearchManifest;
-  }
-
-  async validateRuntimePlan(request: RuntimePlanValidationRequest) {
-    return scenarioForTask(request.taskKind, request.task).validation;
-  }
-
-  async buildExecutionProfile(request: ExecutionProfileRequest) {
-    const scenario = scenarioForTask(request.taskKind, request.task);
-    const profile = executionProfiles.find(
-      (item) => item.id === scenario.activeProfileId,
-    );
-    if (!profile) {
-      throw new Error("Blocked plans do not produce execution profiles.");
-    }
-    return profile;
-  }
-
-  async getCompactTrace(jobId: string): Promise<CompactTraceResponse> {
-    return {
-      jobId,
-      status: "completed",
-      orchestratorStatus: "completed",
-      finalResponse: "Mock compact trace loaded from frontend fixtures.",
-      trace: traceEvents,
-    };
-  }
-
-  async getSpecialistDashboard(): Promise<SpecialistDashboard> {
-    return mockSpecialistDashboard;
-  }
-
-  async getSpecialistModels(): Promise<SpecialistModelsResponse> {
-    return mockSpecialistModels;
-  }
-
-  async getSpecialistTraces(): Promise<SpecialistTracesResponse> {
-    return { traces: mockSpecialistDashboard.recent_traces, count: mockSpecialistDashboard.recent_traces.length };
-  }
-
-  async getSpecialistRouterBenchmark(): Promise<SpecialistBenchmark> {
-    return mockSpecialistBenchmark;
-  }
-
-  async routeSpecialistTask(text: string): Promise<SpecialistRouteResult> {
-    const lowered = text.toLowerCase();
-    const runtime = lowered.includes("cuda") || lowered.includes("gpu") || lowered.includes("runtime");
-    const safety = lowered.includes("secret") || lowered.includes("token") || lowered.includes("security");
-    return {
-      task_type: runtime ? "runtime" : safety ? "safety" : "general",
-      recommended_specialist: runtime ? "runtime_specialist" : safety ? "safety_specialist" : "general_specialist",
-      confidence: runtime || safety ? 0.75 : 0.35,
-      promoted_model_available: false,
-      model_id: null,
-      fallback_required: true,
-      safety_notes: [
-        "Recommendation only.",
-        "No tools are executed.",
-        "No patch or runtime action is authorized by this router.",
-      ],
-      advisory_only: true,
-      execution_allowed: false,
-    };
-  }
-
-  async runSpecialistModelAction(): Promise<Record<string, unknown>> {
-    throw new Error("Lifecycle actions require a connected backend.");
-  }
-
-  async getSpecialistModelReport(modelId: string) {
-    return { model_id: modelId, mock: true, metrics: { accuracy: 0.92 } };
-  }
-
-  async getSpecialistModelAudit(modelId: string) {
-    return { model_id: modelId, events: mockSpecialistDashboard.recent_audit_events };
-  }
-}
-
 export class HttpAstraClient implements AstraClient {
-  constructor(private readonly baseUrl = "") {}
+  constructor(
+    private readonly baseUrl: string =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (import.meta as any).env?.VITE_API_BASE_URL ?? "http://127.0.0.1:8000",
+  ) {}
 
   async getRuntimeContext(task?: string) {
     const suffix = task ? `?task=${encodeURIComponent(task)}` : "";
-    return this.getJson<RuntimeContext>(`/runtime/context${suffix}`);
+    return mapRuntimeContext(
+      await this.getJson<JsonObject>(`/runtime/context${suffix}`),
+    );
   }
 
   async getRuntimeResearchManifest() {
-    return this.getJson<RuntimeResearchManifest>("/runtime/research-manifest");
+    return mapRuntimeResearchManifest(
+      await this.getJson<JsonObject>("/runtime/research-manifest"),
+    );
   }
 
   async validateRuntimePlan(request: RuntimePlanValidationRequest) {
-    return this.postJson<RuntimePlanValidation>("/runtime/validate-plan", {
-      task: request.task,
-      requested_plan: request.requestedPlan,
-    });
+    return mapRuntimePlanValidation(
+      await this.postJson<JsonObject>("/runtime/validate-plan", {
+        task: request.task,
+        requested_plan: request.requestedPlan,
+      }),
+    );
   }
 
   async buildExecutionProfile(request: ExecutionProfileRequest) {
-    return this.postJson<ExecutionProfile>("/runtime/execution-profile", {
-      task: request.task,
-      requested_plan: request.requestedPlan,
-    });
+    return mapExecutionProfile(
+      await this.postJson<JsonObject>("/runtime/execution-profile", {
+        task: request.task,
+        requested_plan: request.requestedPlan,
+      }),
+    );
   }
 
   async getCompactTrace(jobId: string) {
@@ -226,63 +149,139 @@ export class HttpAstraClient implements AstraClient {
   }
 }
 
-const mockSpecialistDashboard: SpecialistDashboard = {
-  total_models: 3,
-  models_by_status: { candidate: 1, promoted: 1, rejected: 0, deactivated: 1 },
-  total_datasets: 2,
-  datasets_by_status: { uploaded: 0, validated: 1, approved: 1, rejected: 0, archived: 0 },
-  total_training_jobs: 4,
-  training_jobs_by_status: { queued: 0, running: 0, completed: 3, failed: 0, rejected: 1 },
-  recent_audit_events: [
-    { timestamp: "mock", action: "model_promoted", model_id: "intent-001", specialist: "intent_classifier" },
-  ],
-  recent_traces: [
-    { trace_id: "trace-mock", timestamp: "mock", recommended_specialist: "runtime_specialist", decision_source: "router", fallback_used: true },
-  ],
-  recent_trace_summary: { total_recent_traces: 1, fallback_used_count: 1 },
-  fallback_status: { rule_based_fallback_available: true, promoted_model_count: 1, fallback_required: false },
-  read_only: true,
-};
+function mapRuntimeContext(raw: JsonObject): RuntimeContext {
+  if ("machine" in raw && "policy" in raw) return raw as unknown as RuntimeContext;
 
-const mockSpecialistModels: SpecialistModelsResponse = {
-  model_dir: "mock",
-  count: 3,
-  models: [
-    {
-      model_id: "intent-001",
-      specialist: "intent_classifier",
-      lifecycle_status: "promoted",
-      active: true,
-      valid: true,
-      metadata: { created_at: "mock", metrics: { accuracy: 0.94, precision: 0.93, recall: 0.92, f1_score: 0.92 } },
-    },
-    {
-      model_id: "runtime-002",
-      specialist: "runtime_specialist",
-      lifecycle_status: "candidate",
-      active: false,
-      valid: true,
-      metadata: { created_at: "mock", metrics: { accuracy: 0.88, precision: 0.86, recall: 0.87, f1_score: 0.86 } },
-    },
-    {
-      model_id: "safety-000",
-      specialist: "safety_specialist",
-      lifecycle_status: "deactivated",
-      active: false,
-      valid: true,
-      metadata: { created_at: "mock", metrics: { accuracy: 0.9 } },
-    },
-  ],
-};
+  const hardware = asObject(raw.hardware);
+  const gpu = asObject(hardware.gpu);
+  const ram = asObject(hardware.ram);
+  const storage = asObject(hardware.storage);
+  const policy = asObject(raw.policy);
 
-const mockSpecialistBenchmark: SpecialistBenchmark = {
-  total_examples: 7,
-  correct: 7,
-  overall_accuracy: 1,
-  accuracy_by_task_type: {
-    runtime: { total_examples: 1, correct: 1, accuracy: 1 },
-    safety: { total_examples: 1, correct: 1, accuracy: 1 },
-    rag: { total_examples: 1, correct: 1, accuracy: 1 },
-  },
-  failures: [],
-};
+  return {
+    machine: {
+      cpu: readString(hardware.cpu_name),
+      logicalCores: readNumber(hardware.cpu_count),
+      gpu: readString(gpu.name),
+      cudaAvailable: readBoolean(gpu.cuda_available),
+      vramGb: mbToGb(readNumber(gpu.vram_total_mb)),
+      ramGb: mbToGb(readNumber(ram.total_mb)),
+      storageFreeGb: mbToGb(readNumber(storage.free_mb)),
+    },
+    policy: {
+      lowVramMode: readBoolean(policy.low_vram_mode),
+      preferQuantizedModels: readBoolean(policy.prefer_quantized_models),
+      avoidLargeModels: readBoolean(policy.avoid_large_models),
+      cpuFallbackAllowed: readBoolean(policy.cpu_fallback_allowed),
+      preferRagOverFinetuning: readBoolean(policy.prefer_rag_over_finetuning),
+    },
+  };
+}
+
+function mapRuntimeResearchManifest(raw: JsonObject): RuntimeResearchManifest {
+  if ("manifestVersion" in raw) return raw as unknown as RuntimeResearchManifest;
+
+  const baseline = asObject(raw.hardware_baseline);
+  const defaults = asObject(raw.policy_defaults);
+
+  return {
+    manifestVersion: readString(raw.manifest_version),
+    sourceFolder: readString(raw.source_folder),
+    hardwareBaseline: {
+      gpu: readString(baseline.gpu),
+      vramGb: readNumber(baseline.vram_gb),
+      cudaAvailable: readBoolean(baseline.cuda_available),
+      pytorchCudaAvailable: readBoolean(baseline.pytorch_cuda_available),
+      cpuThreads: readNumber(baseline.cpu_threads),
+    },
+    facts: Array.isArray(raw.facts)
+      ? (raw.facts as RuntimeResearchManifest["facts"])
+      : [],
+    policyDefaults: {
+      lowVramMode: readBoolean(defaults.low_vram_mode),
+      preferQuantizedModels: readBoolean(defaults.prefer_quantized_models),
+      avoidLargeModels: readBoolean(defaults.avoid_large_models),
+      preferRagOverFinetuning: readBoolean(defaults.prefer_rag_over_finetuning),
+      cpuFallbackAllowed: readBoolean(defaults.cpu_fallback_allowed),
+      maxRecommendedLocalModelBillionParams: readNumber(
+        defaults.max_recommended_local_model_billion_params,
+      ),
+    },
+    usageNote: readString(raw.usage_note),
+  };
+}
+
+function mapRuntimePlanValidation(raw: JsonObject): RuntimePlanValidation {
+  if ("recommendedPlan" in raw) return raw as unknown as RuntimePlanValidation;
+
+  return {
+    decision: readDecision(raw.decision),
+    allowed: readBoolean(raw.allowed),
+    reason: readString(raw.reason),
+    blockedSignals: readStringArray(raw.blocked_signals),
+    requestedPlan: asObject(raw.requested_plan),
+    recommendedPlan: asObject(raw.recommended_plan),
+  };
+}
+
+function mapExecutionProfile(raw: JsonObject): ExecutionProfile {
+  if ("taskType" in raw && Array.isArray(raw.settings)) {
+    return raw as unknown as ExecutionProfile;
+  }
+
+  const taskType = readString(raw.task_type, "Runtime task");
+  const strategy = readString(raw.strategy, "runtime");
+  const runtime = readString(raw.runtime, "local");
+  const settings = asObject(raw.settings);
+
+  return {
+    id: [taskType, strategy, runtime].join(":"),
+    name: `${taskType} profile`,
+    taskType,
+    strategy,
+    runtime,
+    device: readDevice(raw.device),
+    status: readBoolean(settings.low_vram_mode) ? "limited" : "safe",
+    settings: Object.entries(settings).map(([label, value]) => ({
+      label: label.replace(/_/g, " "),
+      value: String(value),
+    })),
+    safeguards: readStringArray(raw.safeguards),
+  };
+}
+
+function asObject(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : {};
+}
+
+function readString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function readNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readBoolean(value: unknown): boolean {
+  return value === true;
+}
+
+function mbToGb(value: number): number {
+  return Math.round((value / 1024) * 10) / 10;
+}
+
+function readDecision(value: unknown): RuntimePlanValidation["decision"] {
+  return value === "downgrade" || value === "block" ? value : "allow";
+}
+
+function readDevice(value: unknown): ExecutionProfile["device"] {
+  return value === "cuda" || value === "hybrid" ? value : "cpu";
+}

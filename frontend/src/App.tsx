@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Bot,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   CircleOff,
@@ -14,10 +13,7 @@ import {
   Cpu,
   Database,
   FileDiff,
-  File,
   FileCode2,
-  FileJson,
-  FileText,
   Folder,
   Gauge,
   HardDrive,
@@ -43,26 +39,23 @@ import { useState } from "react";
 import { ConnectionBadge } from "./components/ConnectionBadge";
 import { SpecialistsView } from "./components/SpecialistsView";
 import {
-  executionProfiles,
-  featureConnections,
-  orchestratorJobs,
-  patchProposals,
-  recentRuns,
-  repositoryTree,
-  runtimeContext,
-  runtimeEvidence,
-  runtimeResearchManifest,
-  testRun,
-  toolCalls,
-  traceEvents,
-  workflowScenarios,
-} from "./data/mockData";
+  deriveFeatureConnections,
+  deriveRuntimeEvidence,
+  mapJobToOrchestratorJob,
+  mapHistoryToRunItem,
+  mapToolToToolCall,
+  useHealth,
+  useHistory,
+  useJobs,
+  useRuntimeContext,
+  useRuntimeResearchManifest,
+  useTools,
+} from "./api/hooks";
 import { useAstraWorkflow } from "./hooks/useAstraWorkflow";
 import type {
   AstraWorkflowState,
   ExecutionProfile,
   NavigationId,
-  RepositoryNode,
   TaskKind,
 } from "./types/contracts";
 
@@ -79,15 +72,15 @@ const navigation = [
 ];
 
 const headings: Record<NavigationId, [string, string]> = {
-  dashboard: ["Astra overview", "Product shell / centralized mock data"],
-  workspace: ["Task workspace", "Standalone workflow / no backend requests"],
-  runtime: ["Runtime intelligence", "Mock hardware and deterministic policy"],
+  dashboard: ["Astra overview", "Backend-connected product shell"],
+  workspace: ["Task workspace", "Live orchestration via backend API"],
+  runtime: ["Runtime intelligence", "Live hardware context and policy"],
   specialists: ["Specialists", "Backend specialist lifecycle and traces"],
   profiles: ["Execution profiles", "Validated plans compiled into settings"],
   traces: ["Trace audit", "Visible planning, policy, and tool decisions"],
-  repository: ["Repository explorer", "Static fixture / no local file access"],
+  repository: ["Repository explorer", "File system access not yet available"],
   patches: ["Patch review", "Review only / apply actions disabled"],
-  tests: ["Test results", "Simulated verification output"],
+  tests: ["Test results", "Run via orchestrated tasks"],
   settings: ["Preferences", "Browser-session settings only"],
 };
 
@@ -108,12 +101,21 @@ function App() {
     "Set up the best local coding model for this laptop and keep it responsive while I work.",
   );
   const [selectedRun, setSelectedRun] = useState(0);
-  const [selectedProfile, setSelectedProfile] = useState(0);
   const [selectedPatch, setSelectedPatch] = useState(0);
   const [selectedPath, setSelectedPath] = useState(
     "backend/app/local_runtime/execution_profiles.py",
   );
   const workflow = useAstraWorkflow();
+
+  // Real API data
+  const { data: health } = useHealth();
+  const { data: runtimeCtx } = useRuntimeContext();
+  const { data: rawJobs } = useJobs(10_000);
+  const { data: rawTools } = useTools();
+
+  const featureConnections = deriveFeatureConnections(health, rawTools ?? []);
+  const orchestratorJobs = (rawJobs ?? []).slice(0, 5).map(mapJobToOrchestratorJob);
+  const toolCalls = (rawTools ?? []).map(mapToolToToolCall);
 
   const [heading, subtitle] = headings[activeNav];
 
@@ -180,12 +182,13 @@ function App() {
           <div className="machine-brief">
             <div className="machine-brief-top">
               <span className="status-dot" />
-              <span>Mock machine ready</span>
+              <span>{health?.status === "ok" ? "Backend connected" : "Connecting…"}</span>
             </div>
-            <strong>{runtimeContext.machine.gpu}</strong>
+            <strong>{runtimeCtx?.machine.gpu ?? "—"}</strong>
             <span>
-              {runtimeContext.machine.vramGb} GB VRAM /{" "}
-              {runtimeContext.machine.ramGb} GB RAM
+              {runtimeCtx
+                ? `${runtimeCtx.machine.vramGb} GB VRAM / ${runtimeCtx.machine.ramGb} GB RAM`
+                : "Loading hardware…"}
             </span>
           </div>
         )}
@@ -238,7 +241,7 @@ function App() {
             </div>
           </div>
           <div className="topbar-actions">
-            <ConnectionBadge state="connected" />
+            <ConnectionBadge state={health?.status === "ok" ? "connected" : "disabled"} />
             <button className="search-button">
               <Search size={17} />
               <span>Search</span>
@@ -258,6 +261,10 @@ function App() {
             <DashboardView
               onNavigate={navigate}
               workflowState={workflow.state}
+              orchestratorJobs={orchestratorJobs}
+              featureConnections={featureConnections}
+              jobCount={rawJobs?.length ?? 0}
+              historyCount={0}
             />
           )}
           {activeNav === "workspace" && (
@@ -267,27 +274,21 @@ function App() {
               taskKind={taskKind}
               setTaskKind={setTaskKind}
               workflowState={workflow.state}
-              startRun={() => workflow.submit(prompt, taskKind)}
+              submitting={workflow.submitting}
+              startRun={() => void workflow.submit(prompt, taskKind)}
               resetRun={workflow.reset}
               selectedRun={selectedRun}
               setSelectedRun={setSelectedRun}
               onNavigate={navigate}
-              onOpenProfile={(profileId) => {
-                const index = executionProfiles.findIndex(
-                  (profile) => profile.id === profileId,
-                );
-                if (index >= 0) setSelectedProfile(index);
-                navigate("profiles");
-              }}
+              onOpenProfile={() => navigate("profiles")}
             />
           )}
-          {activeNav === "runtime" && <RuntimeView />}
+          {activeNav === "runtime" && (
+            <RuntimeView toolCalls={toolCalls} />
+          )}
           {activeNav === "specialists" && <SpecialistsView />}
           {activeNav === "profiles" && (
-            <ProfilesView
-              selected={selectedProfile}
-              setSelected={setSelectedProfile}
-            />
+            <ProfilesView activeProfile={workflow.state.activeProfile} />
           )}
           {activeNav === "traces" && (
             <TracesView workflowState={workflow.state} />
@@ -318,19 +319,26 @@ function App() {
 function DashboardView({
   onNavigate,
   workflowState,
+  orchestratorJobs,
+  featureConnections,
+  jobCount,
+  historyCount,
 }: {
   onNavigate: (id: NavigationId) => void;
   workflowState: AstraWorkflowState;
+  orchestratorJobs: ReturnType<typeof mapJobToOrchestratorJob>[];
+  featureConnections: ReturnType<typeof deriveFeatureConnections>;
+  jobCount: number;
+  historyCount: number;
 }) {
   return (
     <div className="page-stack">
       <section className="dashboard-strip">
         <div>
-          <span className="eyebrow">Phase 16</span>
+          <span className="eyebrow">AI System</span>
           <h2>Astra control center</h2>
           <p>
-            The product shell now simulates research-backed runtime decisions.
-            Backend authority remains intentionally limited.
+            Research-backed runtime decisions. Live backend integration active.
           </p>
         </div>
         <button className="primary-button" onClick={() => onNavigate("workspace")}>
@@ -341,27 +349,27 @@ function DashboardView({
       <div className="stats-grid">
         <StatBlock
           icon={Activity}
-          label="Recent runs"
-          value="3"
-          sub="2 passed / 1 downgraded"
+          label="Jobs"
+          value={String(jobCount)}
+          sub={jobCount === 0 ? "No jobs yet" : `${jobCount} total`}
         />
         <StatBlock
           icon={ShieldCheck}
           label="Runtime policy"
-          value="Low-VRAM"
-          sub="Deterministic mock gate"
+          value="Live"
+          sub="Deterministic gate active"
         />
         <StatBlock
           icon={FileDiff}
-          label="Patch queue"
-          value="2"
-          sub="Apply remains disabled"
+          label="Analyses"
+          value={String(historyCount)}
+          sub={historyCount === 0 ? "No analyses yet" : `${historyCount} recorded`}
         />
         <StatBlock
           icon={TestTube2}
-          label="Verification"
-          value="156 passed"
-          sub="Simulated latest run"
+          label="Backend"
+          value={featureConnections[0]?.state === "connected" ? "Connected" : "Offline"}
+          sub="Live API"
         />
       </div>
 
@@ -409,29 +417,39 @@ function DashboardView({
               )}
             </div>
           )}
-          <div className="job-list">
-            {orchestratorJobs.map((job) => (
-              <div className="job-row" key={job.id}>
-                <span className={`decision-icon decision-${job.decision}`}>
-                  {job.decision === "allow" ? (
-                    <Check size={14} />
-                  ) : job.decision === "downgrade" ? (
-                    <AlertTriangle size={14} />
-                  ) : (
-                    <CircleStop size={14} />
-                  )}
-                </span>
-                <div>
-                  <strong>{job.title}</strong>
-                  <span>
-                    {job.taskType} / {job.duration}
-                  </span>
-                </div>
-                <DecisionBadge decision={job.decision} />
-                <time>{job.updatedAt}</time>
+          {orchestratorJobs.length === 0 ? (
+            <div className="empty-run">
+              <div className="empty-run-icon"><Activity size={18} /></div>
+              <div>
+                <strong>No jobs yet</strong>
+                <span>Submit a task from the Workspace to create your first job.</span>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div className="job-list">
+              {orchestratorJobs.map((job) => (
+                <div className="job-row" key={job.id}>
+                  <span className={`decision-icon decision-${job.decision}`}>
+                    {job.decision === "allow" ? (
+                      <Check size={14} />
+                    ) : job.decision === "downgrade" ? (
+                      <AlertTriangle size={14} />
+                    ) : (
+                      <CircleStop size={14} />
+                    )}
+                  </span>
+                  <div>
+                    <strong>{job.title}</strong>
+                    <span>
+                      {job.taskType} / {job.duration}
+                    </span>
+                  </div>
+                  <DecisionBadge decision={job.decision} />
+                  <time>{job.updatedAt}</time>
+                </div>
+              ))}
+            </div>
+          )}
           <button className="rail-link" onClick={() => onNavigate("traces")}>
             Inspect trace audit <ChevronRight size={15} />
           </button>
@@ -447,12 +465,13 @@ type WorkspaceProps = {
   taskKind: TaskKind;
   setTaskKind: (value: TaskKind) => void;
   workflowState: AstraWorkflowState;
+  submitting: boolean;
   startRun: () => void;
   resetRun: () => void;
   selectedRun: number;
   setSelectedRun: (value: number) => void;
   onNavigate: (id: NavigationId) => void;
-  onOpenProfile: (profileId: string | null) => void;
+  onOpenProfile: () => void;
 };
 
 function WorkspaceView({
@@ -461,6 +480,7 @@ function WorkspaceView({
   taskKind,
   setTaskKind,
   workflowState,
+  submitting,
   startRun,
   resetRun,
   selectedRun,
@@ -468,6 +488,10 @@ function WorkspaceView({
   onNavigate,
   onOpenProfile,
 }: WorkspaceProps) {
+  const { data: runtimeCtx } = useRuntimeContext();
+  const { data: rawHistory } = useHistory(5);
+  const recentRuns = (rawHistory ?? []).map(mapHistoryToRunItem);
+  const busy = submitting || isWorkflowRunning(workflowState);
   return (
     <div className="workspace-grid">
       <section className="workspace-main">
@@ -476,7 +500,7 @@ function WorkspaceView({
             <span className="eyebrow">New task</span>
             <h2>What should Astra work on?</h2>
           </div>
-          <ConnectionBadge state="mock" />
+          <ConnectionBadge state="connected" />
         </div>
 
         <div className="composer">
@@ -511,18 +535,20 @@ function WorkspaceView({
               </button>
               <button
                 className="primary-button"
-                onClick={
-                  isWorkflowRunning(workflowState) ? undefined : startRun
-                }
-                disabled={isWorkflowRunning(workflowState) || !prompt.trim()}
+                onClick={busy ? undefined : startRun}
+                disabled={busy || !prompt.trim()}
               >
-                {isWorkflowRunning(workflowState) ? (
+                {submitting ? (
                   <>
-                    <Activity size={17} className="spin-soft" /> Planning
+                    <Activity size={17} className="spin-soft" /> Fetching plan…
+                  </>
+                ) : isWorkflowRunning(workflowState) ? (
+                  <>
+                    <Activity size={17} className="spin-soft" /> Running
                   </>
                 ) : (
                   <>
-                    <Play size={16} fill="currentColor" /> Run mock task
+                    <Play size={16} fill="currentColor" /> Run task
                   </>
                 )}
               </button>
@@ -576,7 +602,7 @@ function WorkspaceView({
         <RunPanel
           workflowState={workflowState}
           resetRun={resetRun}
-          onOpenProfile={() => onOpenProfile(workflowState.activeProfileId)}
+          onOpenProfile={() => onOpenProfile()}
         />
 
         <section className="recent-section">
@@ -621,14 +647,9 @@ function WorkspaceView({
       </section>
 
       <aside className="workspace-rail">
-        <RuntimeSummary />
+        <RuntimeSummary context={runtimeCtx} />
         <ProfileSummary
-          profile={
-            executionProfiles.find(
-              (profile) => profile.id === workflowState.activeProfileId,
-            ) ??
-            (workflowState.stage === "idle" ? executionProfiles[1] : null)
-          }
+          profile={workflowState.activeProfile ?? null}
           preview={workflowState.stage === "idle"}
         />
       </aside>
@@ -670,8 +691,8 @@ function RunPanel({
         <div>
           <strong>Your task plan will appear here</strong>
           <span>
-            This mock workflow previews runtime validation, profile compilation,
-            tool calls, patch review, tests, and final response.
+            Submit a task to kick off live runtime validation, profile compilation,
+            and backend orchestration.
           </span>
         </div>
       </div>
@@ -684,7 +705,7 @@ function RunPanel({
         <div>
           <span className="eyebrow">
             {isWorkflowRunning(workflowState)
-              ? "Mock orchestration"
+              ? "Orchestrating"
               : workflowState.stage === "blocked"
                 ? "Plan blocked"
                 : workflowState.stage === "failed"
@@ -828,7 +849,7 @@ function RunPanel({
               <strong>
                 {workflowState.stage === "blocked"
                   ? "Runtime policy stopped this plan"
-                  : "Mock workflow ready"}
+                  : "Workflow ready"}
               </strong>
               {workflowState.finalMessage}
             </span>
@@ -844,7 +865,7 @@ function RunPanel({
   );
 }
 
-function RuntimeSummary() {
+function RuntimeSummary({ context }: { context: import("./types/contracts").RuntimeContext | null }) {
   return (
     <section className="rail-section">
       <div className="rail-heading">
@@ -852,41 +873,50 @@ function RuntimeSummary() {
           <span className="eyebrow">Runtime</span>
           <h3>This machine</h3>
         </div>
-        <ConnectionBadge state="mock" compact />
+        <ConnectionBadge state={context ? "connected" : "disabled"} compact />
       </div>
-      <div className="hardware-name">
-        <div className="hardware-icon">
-          <Cpu size={20} />
+      {context ? (
+        <>
+          <div className="hardware-name">
+            <div className="hardware-icon">
+              <Cpu size={20} />
+            </div>
+            <div>
+              <strong>{context.machine.gpu || "CPU only"}</strong>
+              <span>{context.machine.cudaAvailable ? "CUDA available" : "No CUDA"}</span>
+            </div>
+          </div>
+          <MetricRow
+            icon={MemoryStick}
+            label="VRAM"
+            value={`${context.machine.vramGb} GB`}
+            detail={context.policy.lowVramMode ? "Low-VRAM mode" : "Normal mode"}
+            percent={context.machine.vramGb < 8 ? 76 : 40}
+            tone={context.machine.vramGb < 8 ? "amber" : "green"}
+          />
+          <MetricRow
+            icon={Cpu}
+            label="System RAM"
+            value={`${context.machine.ramGb} GB`}
+            detail={`${context.machine.logicalCores} cores`}
+            percent={37}
+            tone="green"
+          />
+          <MetricRow
+            icon={HardDrive}
+            label="Storage"
+            value={`${context.machine.storageFreeGb} GB free`}
+            detail="Workspace storage"
+            percent={64}
+            tone="blue"
+          />
+        </>
+      ) : (
+        <div className="profile-empty">
+          <Activity size={16} className="spin-soft" />
+          <span>Loading hardware context…</span>
         </div>
-        <div>
-          <strong>{runtimeContext.machine.gpu}</strong>
-          <span>CUDA available</span>
-        </div>
-      </div>
-      <MetricRow
-        icon={MemoryStick}
-        label="VRAM"
-        value={`${runtimeContext.machine.vramGb} GB`}
-        detail="Low-VRAM mode"
-        percent={76}
-        tone="amber"
-      />
-      <MetricRow
-        icon={Cpu}
-        label="System RAM"
-        value={`${runtimeContext.machine.ramGb} GB`}
-        detail="20.4 GB available"
-        percent={37}
-        tone="green"
-      />
-      <MetricRow
-        icon={HardDrive}
-        label="Storage"
-        value="512 GB"
-        detail={`${runtimeContext.machine.storageFreeGb} GB available`}
-        percent={64}
-        tone="blue"
-      />
+      )}
     </section>
   );
 }
@@ -979,195 +1009,176 @@ function ProfileSummary({
   );
 }
 
-function RuntimeView() {
+function RuntimeView({ toolCalls }: { toolCalls: ReturnType<typeof mapToolToToolCall>[] }) {
+  const { data: ctx } = useRuntimeContext();
+  const { data: manifest } = useRuntimeResearchManifest();
+  const runtimeEvidence = ctx ? deriveRuntimeEvidence(ctx) : [];
   return (
     <div className="page-stack">
       <PageIntro
         eyebrow="Machine intelligence"
         title="Hardware, research, policy, and toolchain"
-        detail="Representative runtime context plus research evidence from the system information reports."
-        state="mock"
+        detail="Live hardware context and research evidence from backend probes."
+        state={ctx ? "connected" : "disabled"}
       />
       <div className="stats-grid">
         <StatBlock
           icon={Cpu}
           label="CPU"
-          value={runtimeContext.machine.cpu}
-          sub={`${runtimeContext.machine.logicalCores} logical cores`}
+          value={ctx?.machine.cpu ?? "—"}
+          sub={ctx ? `${ctx.machine.logicalCores} logical cores` : "Loading…"}
         />
         <StatBlock
           icon={Zap}
           label="GPU"
-          value="RTX 3050"
-          sub="CUDA / 4 GB VRAM"
+          value={ctx?.machine.gpu || "None"}
+          sub={ctx ? (ctx.machine.cudaAvailable ? `CUDA / ${ctx.machine.vramGb} GB VRAM` : "No CUDA") : "Loading…"}
         />
         <StatBlock
           icon={MemoryStick}
           label="Memory"
-          value="32 GB"
-          sub="20.4 GB available"
+          value={ctx ? `${ctx.machine.ramGb} GB` : "—"}
+          sub="System RAM"
         />
         <StatBlock
           icon={HardDrive}
           label="Workspace"
-          value="186 GB free"
-          sub="NVMe storage"
+          value={ctx ? `${ctx.machine.storageFreeGb} GB free` : "—"}
+          sub="Available storage"
         />
       </div>
       <div className="runtime-layout">
         <section className="data-section">
           <SectionHeading eyebrow="Policy" title="Runtime decisions" />
-          <div className="policy-list">
-            <PolicyRow title="Low-VRAM mode" value="Enabled" tone="amber" />
-            <PolicyRow title="Quantized models" value="Preferred" tone="green" />
-            <PolicyRow title="Large local models" value="Restricted" tone="red" />
-            <PolicyRow title="CPU fallback" value="Allowed" tone="green" />
-            <PolicyRow
-              title="RAG before fine-tuning"
-              value="Preferred"
-              tone="blue"
-            />
-          </div>
+          {ctx ? (
+            <div className="policy-list">
+              <PolicyRow title="Low-VRAM mode" value={ctx.policy.lowVramMode ? "Enabled" : "Disabled"} tone={ctx.policy.lowVramMode ? "amber" : "green"} />
+              <PolicyRow title="Quantized models" value={ctx.policy.preferQuantizedModels ? "Preferred" : "Optional"} tone={ctx.policy.preferQuantizedModels ? "green" : "blue"} />
+              <PolicyRow title="Large local models" value={ctx.policy.avoidLargeModels ? "Restricted" : "Allowed"} tone={ctx.policy.avoidLargeModels ? "red" : "green"} />
+              <PolicyRow title="CPU fallback" value={ctx.policy.cpuFallbackAllowed ? "Allowed" : "Disabled"} tone={ctx.policy.cpuFallbackAllowed ? "green" : "amber"} />
+              <PolicyRow title="RAG before fine-tuning" value={ctx.policy.preferRagOverFinetuning ? "Preferred" : "Optional"} tone={ctx.policy.preferRagOverFinetuning ? "blue" : "green"} />
+            </div>
+          ) : (
+            <div className="profile-empty"><Activity size={16} className="spin-soft" /><span>Loading policy…</span></div>
+          )}
         </section>
         <section className="data-section">
-          <SectionHeading eyebrow="Toolchain" title="Detected software" />
-          <div className="tool-compact-list">
-            {toolCalls.map((tool) => (
-              <div className="tool-compact-row" key={tool.id}>
-                <div>
-                  <TerminalSquare size={16} />
-                  <span>
-                    <strong>{tool.name}</strong>
-                    <small>{tool.detail}</small>
-                  </span>
+          <SectionHeading eyebrow="Toolchain" title="Registered tools" />
+          {toolCalls.length === 0 ? (
+            <div className="profile-empty"><Activity size={16} className="spin-soft" /><span>Loading tools…</span></div>
+          ) : (
+            <div className="tool-compact-list">
+              {toolCalls.map((tool) => (
+                <div className="tool-compact-row" key={tool.id}>
+                  <div>
+                    <TerminalSquare size={16} />
+                    <span>
+                      <strong>{tool.name}</strong>
+                      <small>{tool.detail}</small>
+                    </span>
+                  </div>
+                  <ConnectionBadge state={tool.state} />
                 </div>
-                <ConnectionBadge state={tool.state} />
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
-      <div className="runtime-audit-grid">
-        <section className="data-section">
-          <SectionHeading eyebrow="Research baseline" title="Evidence applied" />
-          <div className="manifest-card">
-            <strong>{runtimeResearchManifest.hardwareBaseline.gpu}</strong>
-            <span>
-              {runtimeResearchManifest.hardwareBaseline.vramGb} GB VRAM / CUDA{" "}
-              {runtimeResearchManifest.hardwareBaseline.cudaAvailable
-                ? "available"
-                : "unavailable"}{" "}
-              / {runtimeResearchManifest.sourceFolder}
-            </span>
-            <small>{runtimeResearchManifest.usageNote}</small>
-          </div>
-          <div className="evidence-list">
-            {runtimeEvidence.map((item) => (
-              <EvidenceRow key={item.id} label={item.label} value={item.value}>
-                {item.detail}
-              </EvidenceRow>
-            ))}
-          </div>
-        </section>
-        <section className="data-section">
-          <SectionHeading eyebrow="Plan validation" title="Scenario gates" />
-          <div className="scenario-list">
-            {workflowScenarios.map((scenario) => (
-              <div className="scenario-row" key={scenario.id}>
-                <div>
-                  <strong>{scenario.title}</strong>
-                  <span>{scenario.validation.reason}</span>
-                </div>
-                <DecisionBadge decision={scenario.validation.decision} />
+      {(runtimeEvidence.length > 0 || manifest) && (
+        <div className="runtime-audit-grid">
+          <section className="data-section">
+            <SectionHeading eyebrow="Research baseline" title="Evidence applied" />
+            {manifest && (
+              <div className="manifest-card">
+                <strong>{manifest.hardwareBaseline.gpu || "CPU"}</strong>
+                <span>
+                  {manifest.hardwareBaseline.vramGb} GB VRAM / CUDA{" "}
+                  {manifest.hardwareBaseline.cudaAvailable ? "available" : "unavailable"}{" "}
+                  / {manifest.sourceFolder}
+                </span>
+                <small>{manifest.usageNote}</small>
               </div>
-            ))}
-          </div>
-        </section>
-      </div>
-      <section className="data-section">
-        <SectionHeading eyebrow="AI architecture" title="Coordinator, specialists, policy" />
-        <div className="ai-stack-panel ai-stack-panel-flat">
-          <SignalRow
-            label="SLM coordinator"
-            value="understand / plan / explain"
-            detail="The SLM proposes actions and explanations but does not execute tools."
-          />
-          <SignalRow
-            label="Specialist models"
-            value="predict / classify / rank"
-            detail="Intent and error classifiers are advisory v1 signals shaped for future local training."
-          />
-          <SignalRow
-            label="Deterministic backend"
-            value="approve / block / verify"
-            detail="Runtime gates, patch validation, and tool policy remain the final authority."
-          />
-          <SignalRow
-            label="Frontend"
-            value="review / approve"
-            detail="The control center displays decisions while dangerous actions stay disabled."
-          />
+            )}
+            <div className="evidence-list">
+              {runtimeEvidence.map((item) => (
+                <EvidenceRow key={item.id} label={item.label} value={item.value}>
+                  {item.detail}
+                </EvidenceRow>
+              ))}
+            </div>
+          </section>
+          <section className="data-section">
+            <SectionHeading eyebrow="AI architecture" title="Coordinator, specialists, policy" />
+            <div className="ai-stack-panel ai-stack-panel-flat">
+              <SignalRow label="SLM coordinator" value="understand / plan / explain" detail="The SLM proposes actions and explanations but does not execute tools." />
+              <SignalRow label="Specialist models" value="predict / classify / rank" detail="Intent and error classifiers are advisory signals." />
+              <SignalRow label="Deterministic backend" value="approve / block / verify" detail="Runtime gates, patch validation, and tool policy remain the final authority." />
+              <SignalRow label="Frontend" value="review / approve" detail="The control center displays decisions while dangerous actions stay disabled." />
+            </div>
+          </section>
         </div>
-      </section>
+      )}
     </div>
   );
 }
 
-function ProfilesView({
-  selected,
-  setSelected,
-}: {
-  selected: number;
-  setSelected: (index: number) => void;
-}) {
-  const profile = executionProfiles[selected];
+function ProfilesView({ activeProfile }: { activeProfile: ExecutionProfile | null }) {
+  if (!activeProfile) {
+    return (
+      <div className="page-stack">
+        <PageIntro
+          eyebrow="Execution profiles"
+          title="No active profile"
+          detail="Run a task from the Workspace view to build a live execution profile."
+          state="disabled"
+        />
+        <div className="data-section">
+          <div className="empty-run">
+            <div className="empty-run-icon"><Layers3 size={21} /></div>
+            <div>
+              <strong>Profile will appear here after a task runs</strong>
+              <span>The backend compiles an execution profile from your runtime context and validated plan.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="split-view">
       <section className="data-section browser-pane">
-        <SectionHeading eyebrow="Mock profiles" title="Available profiles" />
+        <SectionHeading eyebrow="Active profile" title="Current run" />
         <div className="profile-browser">
-          {executionProfiles.map((item, index) => (
-            <button
-              key={item.id}
-              className={`profile-browser-row ${
-                selected === index ? "selected" : ""
-              }`}
-              onClick={() => setSelected(index)}
-            >
-              <span className={`run-icon profile-${item.status}`}>
-                <Layers3 size={17} />
-              </span>
-              <span>
-                <strong>{item.name}</strong>
-                <small>
-                  {item.runtime} / {item.device}
-                </small>
-              </span>
-              <span className={`status-label profile-${item.status}`}>
-                {item.status}
-              </span>
-            </button>
-          ))}
+          <button className="profile-browser-row selected">
+            <span className={`run-icon profile-${activeProfile.status}`}>
+              <Layers3 size={17} />
+            </span>
+            <span>
+              <strong>{activeProfile.name}</strong>
+              <small>{activeProfile.runtime} / {activeProfile.device}</small>
+            </span>
+            <span className={`status-label profile-${activeProfile.status}`}>{activeProfile.status}</span>
+          </button>
         </div>
       </section>
       <section className="data-section detail-pane">
         <div className="detail-title-row">
           <div>
-            <span className="eyebrow">{profile.taskType}</span>
-            <h2>{profile.name}</h2>
-            <p>{profile.strategy}</p>
+            <span className="eyebrow">{activeProfile.taskType}</span>
+            <h2>{activeProfile.name}</h2>
+            <p>{activeProfile.strategy}</p>
           </div>
-          <ConnectionBadge state="mock" />
+          <ConnectionBadge state="connected" />
         </div>
         <div className="profile-overview-grid">
-          <ProfileItem term="Runtime" value={profile.runtime} />
-          <ProfileItem term="Device" value={profile.device.toUpperCase()} />
-          <ProfileItem term="Status" value={profile.status} />
+          <ProfileItem term="Runtime" value={activeProfile.runtime} />
+          <ProfileItem term="Device" value={activeProfile.device.toUpperCase()} />
+          <ProfileItem term="Status" value={activeProfile.status} />
           <ProfileItem term="Source" value="Validated active plan" />
         </div>
         <h3 className="subsection-title">Execution settings</h3>
         <div className="settings-table">
-          {profile.settings.map((setting) => (
+          {activeProfile.settings.map((setting) => (
             <div key={setting.label}>
               <span>{setting.label}</span>
               <strong>{setting.value}</strong>
@@ -1176,7 +1187,7 @@ function ProfilesView({
         </div>
         <h3 className="subsection-title">Safeguards</h3>
         <ul className="safeguard-list">
-          {profile.safeguards.map((item) => (
+          {activeProfile.safeguards.map((item) => (
             <li key={item}>
               <ShieldCheck size={15} />
               <span>{item}</span>
@@ -1196,39 +1207,36 @@ function TracesView({
 }: {
   workflowState: AstraWorkflowState;
 }) {
-  const events =
-    workflowState.traceEvents.length > 0
-      ? workflowState.traceEvents
-      : traceEvents;
-  const decision = workflowState.decision ?? "downgrade";
+  const events = workflowState.traceEvents;
+  const decision = workflowState.decision ?? "allow";
   const requestedPlan = summarizePlan(
     workflowState.validation?.requestedPlan,
-    "8B local inference",
+    "—",
   );
   const activePlan =
     decision === "block"
       ? "blocked before execution"
       : summarizePlan(
           workflowState.validation?.recommendedPlan,
-          "3B quantized inference",
+          "—",
         );
   return (
     <div className="page-stack">
       <PageIntro
         eyebrow="Auditability"
         title="Runtime and orchestration trace"
-        detail="Every mock decision is visible before future backend integration."
-        state="mock"
+        detail="Live planning, policy, and tool decisions from workflow runs."
+        state={workflowState.stage !== "idle" ? "connected" : "disabled"}
       />
       <section className="trace-layout">
         <div className="trace-summary">
           <DecisionBadge decision={decision} />
           <div>
-            <strong>{workflowState.task || "Prepare local code model"}</strong>
+            <strong>{workflowState.task || "No task run yet"}</strong>
             <span>
-              {workflowState.runId ?? "run-model"} /{" "}
+              {workflowState.runId ?? "—"} /{" "}
               {workflowState.stage === "idle"
-                ? "completed in 2.0 sec"
+                ? "run a task to see traces"
                 : workflowState.stage.replace(/_/g, " ")}
             </span>
           </div>
@@ -1236,29 +1244,39 @@ function TracesView({
           <ProfileItem term="Requested" value={requestedPlan} />
           <ProfileItem term="Active plan" value={activePlan} />
         </div>
-        <div className="trace-event-list">
-          {events.map((event, index) => (
-            <div className="trace-event" key={event.id}>
-              <div className={`trace-node trace-${event.status}`}>
-                {event.status === "passed" ? (
-                  <Check size={14} />
-                ) : event.status === "blocked" ? (
-                  <CircleStop size={14} />
-                ) : (
-                  <AlertTriangle size={14} />
-                )}
-              </div>
-              <div>
-                <span className="trace-phase">
-                  {index + 1}. {event.phase}
-                </span>
-                <strong>{event.title}</strong>
-                <p>{event.detail}</p>
-              </div>
-              <time>{event.elapsed}</time>
+        {events.length === 0 ? (
+          <div className="empty-run">
+            <div className="empty-run-icon"><Workflow size={21} /></div>
+            <div>
+              <strong>No trace events yet</strong>
+              <span>Submit a task from the Workspace to see live trace events here.</span>
             </div>
-          ))}
-        </div>
+          </div>
+        ) : (
+          <div className="trace-event-list">
+            {events.map((event, index) => (
+              <div className="trace-event" key={event.id}>
+                <div className={`trace-node trace-${event.status}`}>
+                  {event.status === "passed" ? (
+                    <Check size={14} />
+                  ) : event.status === "blocked" ? (
+                    <CircleStop size={14} />
+                  ) : (
+                    <AlertTriangle size={14} />
+                  )}
+                </div>
+                <div>
+                  <span className="trace-phase">
+                    {index + 1}. {event.phase}
+                  </span>
+                  <strong>{event.title}</strong>
+                  <p>{event.detail}</p>
+                </div>
+                <time>{event.elapsed}</time>
+              </div>
+            ))}
+          </div>
+        )}
         {workflowState.stage !== "idle" && (
           <div className="trace-ai-stack">
             {workflowState.slmSignal && (
@@ -1297,102 +1315,27 @@ function RepositoryView({
   selectedPath: string;
   setSelectedPath: (path: string) => void;
 }) {
-  return (
-    <div className="repository-layout">
-      <section className="data-section repository-tree-pane">
-        <div className="section-heading compact">
-          <div>
-            <span className="eyebrow">Static fixture</span>
-            <h2>ai-system-1</h2>
-          </div>
-          <ConnectionBadge state="mock" compact />
-        </div>
-        <div className="repo-filter">
-          <Search size={15} />
-          <input placeholder="Filter files" aria-label="Filter files" />
-        </div>
-        <div className="tree">
-          {repositoryTree.map((node) => (
-            <TreeNode
-              key={node.path}
-              node={node}
-              depth={0}
-              selectedPath={selectedPath}
-              onSelect={setSelectedPath}
-            />
-          ))}
-        </div>
-      </section>
-      <section className="data-section file-preview-pane">
-        <div className="file-preview-header">
-          <div>
-            <span className="eyebrow">Selected file</span>
-            <h2>
-              {selectedPath.split("/")[selectedPath.split("/").length - 1]}
-            </h2>
-            <p>{selectedPath}</p>
-          </div>
-          <ConnectionBadge state="mock" />
-        </div>
-        <pre className="code-preview">
-          <code>{mockFileContent(selectedPath)}</code>
-        </pre>
-        <div className="file-action-bar">
-          <span>
-            Repository reading is disabled until a backend workspace contract is
-            connected.
-          </span>
-          <button className="secondary-button" disabled>
-            Open file
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
+  void selectedPath;
+  void setSelectedPath;
 
-function TreeNode({
-  node,
-  depth,
-  selectedPath,
-  onSelect,
-}: {
-  node: RepositoryNode;
-  depth: number;
-  selectedPath: string;
-  onSelect: (path: string) => void;
-}) {
-  const Icon =
-    node.kind === "folder"
-      ? Folder
-      : node.kind === "python"
-        ? FileCode2
-        : node.kind === "markdown"
-          ? FileText
-          : node.kind === "json"
-            ? FileJson
-            : File;
   return (
-    <>
-      <button
-        className={`tree-row ${selectedPath === node.path ? "selected" : ""}`}
-        style={{ paddingLeft: `${8 + depth * 17}px` }}
-        onClick={() => onSelect(node.path)}
-      >
-        <Icon size={15} />
-        <span>{node.name}</span>
-        {node.state && <small className={`file-state ${node.state}`} />}
-      </button>
-      {node.children?.map((child) => (
-        <TreeNode
-          key={child.path}
-          node={child}
-          depth={depth + 1}
-          selectedPath={selectedPath}
-          onSelect={onSelect}
-        />
-      ))}
-    </>
+    <div className="page-stack">
+      <PageIntro
+        eyebrow="Repository"
+        title="File system access not available"
+        detail="A backend workspace file API is required to browse and read files."
+        state="disabled"
+      />
+      <div className="data-section">
+        <div className="empty-run">
+          <div className="empty-run-icon"><Folder size={21} /></div>
+          <div>
+            <strong>No file access API connected</strong>
+            <span>Repository browsing will be available once a workspace file contract is implemented in the backend.</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1405,81 +1348,36 @@ function PatchesView({
   setSelected: (index: number) => void;
   workflowState: AstraWorkflowState;
 }) {
-  const patch = patchProposals[selected];
+  void selected;
+  void setSelected;
+
   return (
-    <div className="split-view">
-      <section className="data-section browser-pane">
-        <SectionHeading eyebrow="Review queue" title="Patch proposals" />
-        <div className="patch-browser">
-          {patchProposals.map((item, index) => (
-            <button
-              key={item.id}
-              className={`patch-browser-row ${
-                index === selected ? "selected" : ""
-              }`}
-              onClick={() => setSelected(index)}
-            >
-              <span
-                className={`decision-icon ${
-                  item.status === "blocked"
-                    ? "decision-block"
-                    : "decision-downgrade"
-                }`}
-              >
-                <FileDiff size={15} />
-              </span>
-              <span>
-                <strong>{item.title}</strong>
-                <small>{item.file}</small>
-              </span>
-              <span className={`risk-label risk-${item.risk}`}>{item.risk}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-      <section className="data-section detail-pane">
-        <div className="detail-title-row">
-          <div>
-            <span className="eyebrow">{patch.id}</span>
-            <h2>{patch.title}</h2>
-            <p>
-              {patch.file} / {patch.changedLines} changed lines
-            </p>
+    <div className="page-stack">
+      <PageIntro
+        eyebrow="Patch review"
+        title="No patches in queue"
+        detail="Patches are generated from code analysis runs. Use Analyze File or Analyze Project to produce proposals."
+        state={workflowState.patchVisible ? "connected" : "disabled"}
+      />
+      <div className="data-section">
+        {workflowState.patchVisible ? (
+          <div className="empty-run">
+            <div className="empty-run-icon"><FileDiff size={21} /></div>
+            <div>
+              <strong>Patch generated by workflow</strong>
+              <span>Patch review UI requires a full patch proposal from the analysis API. Apply remains disabled.</span>
+            </div>
           </div>
-          <ConnectionBadge state="disabled" />
-        </div>
-        <div className="diff-view">
-          <pre className="diff-old">
-            <code>{patch.oldCode}</code>
-          </pre>
-          <pre className="diff-new">
-            <code>{patch.newCode}</code>
-          </pre>
-        </div>
-        <h3 className="subsection-title">Safety checks</h3>
-        <ul className="safeguard-list">
-          {patch.checks.map((check) => (
-            <li key={check}>
-              {patch.status === "blocked" ? (
-                <AlertTriangle size={15} />
-              ) : (
-                <CheckCircle2 size={15} />
-              )}
-              <span>{check}</span>
-            </li>
-          ))}
-        </ul>
-        <div className="disabled-action-row">
-          <span>
-            {workflowState.patchVisible
-              ? "The workflow produced this mock proposal. Apply remains disabled until backend authorization is connected."
-              : "No current workflow patch exists. This fixture demonstrates the future review surface."}
-          </span>
-          <button className="primary-button" disabled>
-            Apply patch
-          </button>
-        </div>
-      </section>
+        ) : (
+          <div className="empty-run">
+            <div className="empty-run-icon"><FileDiff size={21} /></div>
+            <div>
+              <strong>No patch proposals yet</strong>
+              <span>Run a Code Repair task or use the /analyze-file endpoint to produce patch proposals.</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1489,79 +1387,49 @@ function TestsView({
 }: {
   workflowState: AstraWorkflowState;
 }) {
-  const displayStatus = workflowState.testsRunning
-    ? "running"
-    : workflowState.testsVisible
-      ? "passed"
-      : testRun.status;
   return (
     <div className="page-stack">
       <PageIntro
         eyebrow="Verification"
-        title="Latest test result"
-        detail="Representative test output shaped for the future job contract."
-        state="mock"
+        title="Test results"
+        detail="Tests run automatically during orchestrated tasks with allow_tests enabled."
+        state={workflowState.testsVisible ? "connected" : "disabled"}
       />
-      <div className="test-summary-grid">
-        <StatBlock
-          icon={CheckCircle2}
-          label="Passed"
-          value={
-            workflowState.testsRunning
-              ? "..."
-              : String(workflowState.testsVisible ? testRun.passed : testRun.passed)
-          }
-          sub={
-            workflowState.testsVisible
-              ? "Produced by current mock workflow"
-              : "Fixture from latest mock run"
-          }
-        />
-        <StatBlock
-          icon={CircleStop}
-          label="Failed"
-          value={String(testRun.failed)}
-          sub="No active failures"
-        />
-        <StatBlock
-          icon={Activity}
-          label="Duration"
-          value={testRun.duration}
-          sub="Mock execution time"
-        />
-        <StatBlock
-          icon={TerminalSquare}
-          label="Command"
-          value="pytest"
-          sub="Execution disabled"
-        />
-      </div>
-      <section className="data-section">
-        <div className="test-command">
-          <TerminalSquare size={16} />
-          <code>{testRun.command}</code>
-          <span className={`status-label ${displayStatus === "passed" ? "green" : "amber"}`}>
-            {displayStatus}
-          </span>
-        </div>
-        <div className="suite-list">
-          {testRun.suites.map((suite) => (
-            <div className="suite-row" key={suite.name}>
-              <span className="decision-icon decision-allow">
-                <Check size={14} />
-              </span>
-              <div>
-                <strong>{suite.name}</strong>
-                <span>{suite.detail}</span>
-              </div>
-              <span className="status-label green">{suite.status}</span>
+      {workflowState.testsRunning ? (
+        <div className="data-section">
+          <div className="empty-run">
+            <div className="empty-run-icon"><Activity size={21} className="spin-soft" /></div>
+            <div>
+              <strong>Tests running…</strong>
+              <span>Waiting for verification results from the backend.</span>
             </div>
-          ))}
+          </div>
         </div>
-        <button className="secondary-button" disabled>
-          <Play size={15} /> Run tests unavailable
-        </button>
-      </section>
+      ) : workflowState.testsVisible ? (
+        <div className="data-section">
+          <div className="suite-row">
+            <span className="decision-icon decision-allow"><Check size={14} /></span>
+            <div>
+              <strong>Tests completed</strong>
+              <span>Verification ran as part of the orchestrated task. Check the Jobs view for detailed results.</span>
+            </div>
+            <span className="status-label green">passed</span>
+          </div>
+          <button className="secondary-button" disabled>
+            <Play size={15} /> Run tests unavailable
+          </button>
+        </div>
+      ) : (
+        <div className="data-section">
+          <div className="empty-run">
+            <div className="empty-run-icon"><TestTube2 size={21} /></div>
+            <div>
+              <strong>No test results yet</strong>
+              <span>Submit an orchestrated task with allow_tests enabled to see results here.</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1600,10 +1468,10 @@ function SettingsView() {
           <div>
             <CircleOff size={20} />
           </div>
-          <strong>Backend intentionally disconnected</strong>
+          <strong>Patch apply and test execution disabled</strong>
           <span>
-            No network requests, patch actions, file reads, commands, or model
-            workloads are available from this frontend.
+            Direct patch application, file writes, and test execution require
+            explicit user authorization via the backend API.
           </span>
           <ConnectionBadge state="disabled" />
         </div>
@@ -1799,35 +1667,6 @@ function ToggleRow({
       </span>
     </label>
   );
-}
-
-function mockFileContent(path: string) {
-  if (path.endsWith("execution_profiles.py")) {
-    return `def build_execution_profile(task, runtime_context, active_plan):
-    """Compile an approved plan into machine-specific settings."""
-    if not active_plan:
-        raise ValueError("active validated plan required")
-
-    return ExecutionProfile(
-        task_type=classify_task(task),
-        source_plan=active_plan,
-        safeguards=["dry-run before execution"],
-    )`;
-  }
-  if (path.endsWith("planning_rules.py")) {
-    return `def validate_task_plan(task, requested_plan, runtime_context):
-    if runtime_context.policy.low_vram_mode:
-        return downgrade_large_plan(requested_plan)
-    return allow(requested_plan)`;
-  }
-  if (path.endsWith("App.tsx")) {
-    return `export default function App() {
-  return <AstraProductShell connection="connected" />;
-}`;
-  }
-  return `# Static frontend preview
-# Selected path: ${path}
-# Real repository reads are not connected.`;
 }
 
 function isWorkflowRunning(workflowState: AstraWorkflowState) {

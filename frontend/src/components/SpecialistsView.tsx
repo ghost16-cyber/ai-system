@@ -8,8 +8,8 @@ import {
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { HttpAstraClient, MockAstraClient } from "../clients/astraClient";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { HttpAstraClient } from "../clients/astraClient";
 import type {
   SpecialistBenchmark,
   SpecialistDashboard,
@@ -24,10 +24,9 @@ type DetailPanel = { title: string; body: Record<string, unknown> } | null;
 
 export function SpecialistsView() {
   const httpClient = useMemo(
-    () => new HttpAstraClient(import.meta.env.VITE_API_BASE_URL ?? ""),
+    () => new HttpAstraClient(),
     [],
   );
-  const mockClient = useMemo(() => new MockAstraClient(), []);
   const [dashboard, setDashboard] = useState<SpecialistDashboard | null>(null);
   const [models, setModels] = useState<SpecialistModelsResponse | null>(null);
   const [traces, setTraces] = useState<SpecialistTracesResponse | null>(null);
@@ -35,13 +34,12 @@ export function SpecialistsView() {
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [usingMock, setUsingMock] = useState(false);
   const [routeText, setRouteText] = useState("CUDA out of memory while building a RAG index");
   const [useSlmIntent, setUseSlmIntent] = useState(false);
   const [routeResult, setRouteResult] = useState<SpecialistRouteResult | null>(null);
   const [detailPanel, setDetailPanel] = useState<DetailPanel>(null);
 
-  async function loadData() {
+  const loadData = useCallback(async function loadData() {
     setLoading(true);
     setError(null);
     try {
@@ -56,39 +54,23 @@ export function SpecialistsView() {
       setModels(nextModels);
       setTraces(nextTraces);
       setBenchmark(nextBenchmark);
-      setUsingMock(false);
     } catch (caught) {
-      const [nextDashboard, nextModels, nextTraces, nextBenchmark] =
-        await Promise.all([
-          mockClient.getSpecialistDashboard(),
-          mockClient.getSpecialistModels(),
-          mockClient.getSpecialistTraces(),
-          mockClient.getSpecialistRouterBenchmark(),
-        ]);
-      setDashboard(nextDashboard);
-      setModels(nextModels);
-      setTraces(nextTraces);
-      setBenchmark(nextBenchmark);
-      setUsingMock(true);
       setError(cleanError(caught));
     } finally {
       setLoading(false);
     }
-  }
+  }, [httpClient]);
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [loadData]);
 
   async function runRouteTest() {
     setError(null);
     try {
       setRouteResult(await httpClient.routeSpecialistTask(routeText, useSlmIntent));
-      setUsingMock(false);
       await loadData();
     } catch (caught) {
-      setRouteResult(await mockClient.routeSpecialistTask(routeText));
-      setUsingMock(true);
       setError(cleanError(caught));
     }
   }
@@ -125,11 +107,6 @@ export function SpecialistsView() {
       setDetailPanel({ title: `${kind} / ${model.model_id}`, body });
     } catch (caught) {
       setError(cleanError(caught));
-      const body =
-        kind === "report"
-          ? await mockClient.getSpecialistModelReport(model.model_id)
-          : await mockClient.getSpecialistModelAudit(model.model_id);
-      setDetailPanel({ title: `mock ${kind} / ${model.model_id}`, body });
     }
   }
 
@@ -146,7 +123,7 @@ export function SpecialistsView() {
           </p>
         </div>
         <div className="specialist-header-actions">
-          <ConnectionBadge state={usingMock ? "mock" : "connected"} />
+          <ConnectionBadge state={error ? "disabled" : "connected"} />
           <button className="secondary-button" onClick={loadData}>
             <RefreshCw size={15} /> Refresh
           </button>
