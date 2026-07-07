@@ -30,6 +30,7 @@ import {
   type RawTool,
   type SelectedSlmResponse,
   type SlmProfilesResponse,
+  type SlmStatusResponse,
 } from "./clients/astraClient";
 import type {
   CompactTraceResponse,
@@ -64,6 +65,7 @@ interface SystemData {
   runtime: RuntimeContext | null;
   selectedSlm: SelectedSlmResponse | null;
   slmProfiles: SlmProfilesResponse | null;
+  slmStatus: SlmStatusResponse | null;
   rag: RagStatusResponse | null;
   specialistDashboard: SpecialistDashboard | null;
   specialistModels: SpecialistModelsResponse | null;
@@ -140,6 +142,7 @@ function App() {
       runtime,
       selectedSlm,
       slmProfiles,
+      slmStatus,
       rag,
       specialistDashboard,
       specialistModels,
@@ -149,6 +152,7 @@ function App() {
       settle(client.getRuntimeContext()),
       settle(client.getSelectedSlm()),
       settle(client.getSlmProfiles()),
+      settle(client.getSlmStatus()),
       settle(client.getRagStatus()),
       settle(client.getSpecialistDashboard()),
       settle(client.getSpecialistModels()),
@@ -160,6 +164,7 @@ function App() {
       runtime: runtime.value,
       selectedSlm: selectedSlm.value,
       slmProfiles: slmProfiles.value,
+      slmStatus: slmStatus.value,
       rag: rag.value,
       specialistDashboard: specialistDashboard.value,
       specialistModels: specialistModels.value,
@@ -171,6 +176,7 @@ function App() {
       runtime.error,
       selectedSlm.error,
       slmProfiles.error,
+      slmStatus.error,
       rag.error,
       specialistDashboard.error,
       specialistModels.error,
@@ -506,11 +512,21 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
       <Metric label="Intent" value={`${run.intent || "unknown"} / ${Math.round((run.confidence ?? 0) * 100)}%`} />
       <Metric
         label="RAG"
-        value={run.rag_used ? `Used (${run.rag_context_count ?? 0})` : "Not used"}
+        value={ragDisplay(run)}
         tone={run.rag_used ? "green" : "blue"}
       />
       <Metric label="Safety" value={run.safety_decision || "unknown"} tone={decisionTone(run.safety_decision)} />
       <Metric label="Runtime" value={run.runtime_decision || "unknown"} />
+      <Metric
+        label="SLM"
+        value={run.used_real_slm ? `${run.slm_provider} / ${run.slm_model ?? "selected model"}` : `Fallback / ${run.slm_model ?? "no model"}`}
+        tone={run.used_real_slm ? "green" : "amber"}
+      />
+      <Metric
+        label={run.used_real_slm ? "SLM latency" : "Fallback reason"}
+        value={run.used_real_slm ? `${run.slm_latency_ms ?? 0} ms` : run.slm_fallback_reason ?? "Unavailable"}
+        tone={run.used_real_slm ? "green" : "amber"}
+      />
       <Metric label="Run ID" value={run.run_id ? run.run_id.slice(0, 8) : "Not returned"} />
       <div className="meta-reason">
         <TraceTimeline events={traceSummaryToEvents(run.trace_summary ?? [])} />
@@ -581,6 +597,8 @@ function SystemPage({
             items={[
               ["Selected SLM", readString(selectedProfile.name) || data?.selectedSlm?.selected_profile_id || "Unavailable"],
               ["Backend", readString(selectedProfile.backend) || "Unknown"],
+              ["Ollama route", data?.slmStatus ? (data.slmStatus.reachable ? "Reachable" : "Unreachable") : "Unavailable"],
+              ["Gateway model", data?.slmStatus?.configured_model || data?.slmStatus?.selected_model || readString(selectedProfile.model_name) || "Unavailable"],
               ["Profiles", data?.slmProfiles ? String(data.slmProfiles.count) : "Unavailable"],
               ["RAG status", data?.rag?.status ?? "Unavailable"],
               ["Indexed files", data?.rag ? String(data.rag.indexed_file_count) : "Unavailable"],
@@ -693,7 +711,9 @@ function HistoryPage({
                       ? [
                           ["Specialist", selectedChatRun.selected_specialist || "Not routed"] as [string, string],
                           ["Intent", `${selectedChatRun.intent || "unknown"} / ${Math.round((selectedChatRun.confidence ?? 0) * 100)}%`] as [string, string],
-                          ["RAG", selectedChatRun.rag_used ? `Used (${selectedChatRun.rag_context_count ?? 0})` : "Not used"] as [string, string],
+                          ["RAG", ragDisplay(selectedChatRun)] as [string, string],
+                          ["SLM", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_provider} / ${selectedChatRun.slm_model ?? "selected model"}` : `Fallback / ${selectedChatRun.slm_model ?? "no model"}`] as [string, string],
+                          ["SLM detail", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_latency_ms ?? 0} ms` : selectedChatRun.slm_fallback_reason ?? "Unavailable"] as [string, string],
                         ]
                       : []),
                   ]}
@@ -1030,6 +1050,11 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
           confidence: run.confidence,
           rag_used: run.rag_used,
           rag_context_count: run.rag_context_count,
+          used_real_slm: run.used_real_slm,
+          slm_provider: run.slm_provider,
+          slm_model: run.slm_model,
+          slm_fallback_reason: run.slm_fallback_reason,
+          slm_latency_ms: run.slm_latency_ms,
           safety_decision: run.safety_decision,
           runtime_decision: run.runtime_decision,
           conversation_id: run.conversation_id,
@@ -1098,6 +1123,17 @@ function loadSettings(): FrontendSettings {
 
 function labelSafety(mode: SafetyMode) {
   return mode === "confirm" ? "Confirm before action" : "Preview / read-only";
+}
+
+function ragDisplay(run: ChatRunResponse) {
+  if (run.rag_used) return `Used (${run.rag_context_count ?? 0})`;
+  const ragTrace = run.trace_summary?.find((entry) => entry.phase === "rag");
+  const reason = readString(ragTrace?.data?.reason);
+  if (reason === "greeting") return "Skipped: greeting";
+  if (reason === "system_meta_question") return "Skipped: system/meta question";
+  if (reason === "low_relevance") return "Skipped: low relevance";
+  if (reason === "disabled") return "Skipped: disabled";
+  return "Skipped";
 }
 
 function traceSummaryToEvents(entries: ChatTraceEntry[]): TraceEvent[] {

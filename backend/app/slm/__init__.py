@@ -16,6 +16,7 @@ from .gateway import (
     SLMIntentRequest,
     chat_with_slm,
     deterministic_intent,
+    get_slm_gateway_status,
     infer_intent_with_slm,
 )
 from .prompt_builder import build_action_prompt
@@ -25,6 +26,8 @@ from .runtime_config import (
     select_slm_profile,
 )
 from .slm_router import SLMProposedAction, SLMRouter
+
+
 
 __all__ = [
     "ActionParseError",
@@ -47,4 +50,5 @@ __all__ = [
     "list_slm_profiles",
     "normalize_action_payload",
     "select_slm_profile",
+    "get_slm_gateway_status",
 ]

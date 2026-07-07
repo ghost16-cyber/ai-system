@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sqlite3
 import json
@@ -168,11 +168,25 @@ class AnalysisRepository:
                     rag_context_count INTEGER NOT NULL,
                     runtime_decision TEXT NOT NULL,
                     safety_decision TEXT NOT NULL,
+                    used_real_slm INTEGER NOT NULL DEFAULT 0,
+                    slm_provider TEXT NOT NULL DEFAULT 'fallback',
+                    slm_model TEXT,
+                    slm_fallback_reason TEXT,
+                    slm_latency_ms INTEGER,
                     created_at TEXT NOT NULL,
                     trace_summary_json TEXT NOT NULL
                 )
                 """
             )
+            self._add_column_if_missing(
+                connection, "chat_runs", "used_real_slm", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"
+            )
+            self._add_column_if_missing(connection, "chat_runs", "slm_model", "TEXT")
+            self._add_column_if_missing(connection, "chat_runs", "slm_fallback_reason", "TEXT")
+            self._add_column_if_missing(connection, "chat_runs", "slm_latency_ms", "INTEGER")
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
@@ -307,9 +321,14 @@ class AnalysisRepository:
                     rag_context_count,
                     runtime_decision,
                     safety_decision,
+                    used_real_slm,
+                    slm_provider,
+                    slm_model,
+                    slm_fallback_reason,
+                    slm_latency_ms,
                     created_at,
                     trace_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -323,6 +342,11 @@ class AnalysisRepository:
                     run.rag_context_count,
                     run.runtime_decision,
                     run.safety_decision,
+                    int(run.used_real_slm),
+                    run.slm_provider,
+                    run.slm_model,
+                    run.slm_fallback_reason,
+                    run.slm_latency_ms,
                     run.created_at.isoformat(),
                     json.dumps(run.trace_summary, sort_keys=True),
                 ),
@@ -353,6 +377,19 @@ class AnalysisRepository:
                 rag_context_count=int(row["rag_context_count"]),
                 runtime_decision=str(row["runtime_decision"]),
                 safety_decision=str(row["safety_decision"]),
+                used_real_slm=bool(row["used_real_slm"]),
+                slm_provider=str(row["slm_provider"]),
+                slm_model=str(row["slm_model"]) if row["slm_model"] else None,
+                slm_fallback_reason=(
+                    str(row["slm_fallback_reason"])
+                    if row["slm_fallback_reason"]
+                    else None
+                ),
+                slm_latency_ms=(
+                    int(row["slm_latency_ms"])
+                    if row["slm_latency_ms"] is not None
+                    else None
+                ),
                 created_at=row["created_at"],
                 trace_summary=json.loads(row["trace_summary_json"]),
             )

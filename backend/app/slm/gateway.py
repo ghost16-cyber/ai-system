@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import time
 from typing import Any
+from urllib import request, error
 
 from pydantic import BaseModel, Field
 
 from backend.app.local_runtime.task_optimizer import classify_task
 from backend.app.slm.action_parser import ActionParseError, extract_json_object
 from backend.app.slm.runtime_config import get_selected_slm_profile
+from backend.app.slm.model_registry import build_ollama_client
 
 
 SAFETY_METADATA = {
@@ -28,15 +33,162 @@ class SLMIntentRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
-def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+def _load_gateway_config() -> dict[str, Any]:
+    try:
+        timeout_seconds = int(os.getenv("ASTRA_SLM_TIMEOUT_SECONDS", "30"))
+    except ValueError:
+        timeout_seconds = 30
+    return {
+        "enabled": os.getenv("ASTRA_SLM_ENABLED", "true").strip().lower() == "true",
+        "base_url": os.getenv("ASTRA_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        "model": os.getenv("ASTRA_SLM_MODEL"),
+        "timeout_seconds": max(1, min(timeout_seconds, 120)),
+    }
+
+
+def _check_ollama_reachable(base_url: str, timeout: int) -> tuple[bool, list[str]]:
+    """Check if Ollama is reachable and return a list of available models."""
+    try:
+        http_req = request.Request(f"{base_url.rstrip('/')}/api/tags")
+        with request.urlopen(http_req, timeout=timeout) as response:
+            if response.status != 200:
+                return False, []
+            data = json.loads(response.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            return True, models
+    except (error.URLError, TimeoutError, Exception):
+        return False, []
+
+
+def get_slm_gateway_status() -> dict[str, Any]:
+    config = _load_gateway_config()
     selected = get_selected_slm_profile()
     profile = selected["profile"]
-    compact_context = _compact_context(context or {})
-    response = _mock_chat_response(message, compact_context)
+    selected_model = config["model"] or profile.get("model_name")
+    reachable, available_models = _check_ollama_reachable(
+        config["base_url"], timeout=min(config["timeout_seconds"], 5)
+    )
+    return {
+        "enabled": config["enabled"],
+        "base_url": config["base_url"],
+        "configured_model": config["model"],
+        "selected_model": selected_model,
+        "provider": profile.get("backend", "unknown"),
+        "selected_profile_id": selected["selected_profile_id"],
+        "reachable": reachable,
+        "available_models": available_models,
+    }
+
+
+def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = _load_gateway_config()
+    selected = get_selected_slm_profile()
+    profile = selected["profile"]
+    safe_context = {
+        key: value for key, value in (context or {}).items() if key != "prompt"
+    }
+    compact_context = _compact_context(safe_context)
+
+    def fallback(reason: str) -> dict[str, Any]:
+        return _fallback_response(
+            message,
+            compact_context,
+            profile,
+            reason=reason,
+            model=config["model"] or profile.get("model_name"),
+        )
+
+    if not config["enabled"]:
+        return fallback("disabled_by_config")
+
+    if profile.get("backend") != "ollama":
+        return fallback("profile_backend_not_ollama")
+
+    target_model = config["model"] or profile.get("model_name")
+    reachable, available_models = _check_ollama_reachable(
+        config["base_url"], timeout=5
+    )
+
+    if not reachable:
+        return fallback("ollama_unreachable")
+
+    if not target_model:
+        return fallback("model_missing")
+
+    if not _model_available(str(target_model), available_models):
+        return fallback("model_missing")
+
+    client = build_ollama_client(
+        model=target_model,
+        base_url=config["base_url"],
+        timeout_seconds=config["timeout_seconds"],
+    )
+
+    explicit_prompt = (context or {}).get("prompt")
+    prompt = (
+        explicit_prompt
+        if isinstance(explicit_prompt, str) and explicit_prompt.strip()
+        else f"{message}\n\nContext:\n{compact_context}"
+        if compact_context
+        else message
+    )
+
+    start_time = time.monotonic()
+    try:
+        response_text = client.generate(prompt)
+    except (TimeoutError, socket.timeout):
+        return fallback("timeout")
+    except Exception as e:
+        return fallback(f"exception:{e}")
+
+    latency_ms = int((time.monotonic() - start_time) * 1000)
+
+    if not response_text:
+        return fallback("invalid_response")
+
+    return {
+        "message": message,
+        "assistant_response": response_text,
+        "source": "local_slm",
+        "provider": "ollama",
+        "model": target_model,
+        "used_real_slm": True,
+        "fallback_reason": None,
+        "latency_ms": latency_ms,
+        "selected_profile": profile,
+        "backend_available": True,
+        **SAFETY_METADATA,
+    }
+
+
+def _model_available(target_model: str, available_models: list[str]) -> bool:
+    if target_model in available_models:
+        return True
+    if ":" not in target_model and f"{target_model}:latest" in available_models:
+        return True
+    if target_model.endswith(":latest") and target_model.removesuffix(":latest") in available_models:
+        return True
+    return False
+
+
+def _fallback_response(
+    message: str,
+    context: str,
+    profile: dict[str, Any],
+    *,
+    reason: str,
+    model: str | None,
+) -> dict[str, Any]:
+    response = _mock_chat_response(message, context)
     return {
         "message": message,
         "assistant_response": response,
         "source": "mock",
+        "provider": "fallback",
+        "model": model,
+        "used_real_slm": False,
+        "fallback_reason": reason,
+        "latency_ms": None,
         "selected_profile": profile,
         "backend_available": profile.get("backend") == "mock",
         **SAFETY_METADATA,

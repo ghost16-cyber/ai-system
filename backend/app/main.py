@@ -75,6 +75,7 @@ from backend.app.slm import (
     SLMIntentRequest,
     chat_with_slm,
     get_selected_slm_profile,
+    get_slm_gateway_status,
     infer_intent_with_slm,
     list_slm_profiles,
     select_slm_profile,
@@ -245,6 +246,10 @@ def create_app(
         if result.get("selected") is not True:
             raise HTTPException(status_code=400, detail=result.get("reason", "Invalid SLM profile."))
         return result
+
+    @application.get("/runtime/slm/status")
+    def runtime_slm_status() -> dict:
+        return get_slm_gateway_status()
 
     @application.post("/slm/chat")
     def slm_chat(request: SLMChatRequest) -> dict:

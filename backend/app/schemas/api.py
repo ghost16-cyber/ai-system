@@ -95,8 +95,14 @@ class ChatRunResponse(BaseModel):
     rag_context_count: int
     runtime_decision: str
     safety_decision: str
+    used_real_slm: bool = False
+    slm_provider: str = "fallback"
+    slm_model: str | None = None
+    slm_fallback_reason: str | None = None
+    slm_latency_ms: int | None = None
     created_at: datetime
     trace_summary: list[dict[str, Any]] = Field(default_factory=list)
+
 
 
 class ChatRunsResponse(BaseModel):

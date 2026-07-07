@@ -81,6 +81,11 @@ export interface SlmChatResponse {
   assistant_response: string;
   selected_profile?: Record<string, unknown>;
   source?: string;
+  provider?: string;
+  model?: string | null;
+  used_real_slm?: boolean;
+  fallback_reason?: string | null;
+  latency_ms?: number | null;
   backend_available?: boolean;
   advisory_only?: boolean;
   tools_executed?: boolean;
@@ -118,6 +123,11 @@ export interface ChatRunResponse {
   rag_context_count: number;
   runtime_decision: string;
   safety_decision: string;
+  used_real_slm: boolean;
+  slm_provider: string;
+  slm_model: string | null;
+  slm_fallback_reason: string | null;
+  slm_latency_ms: number | null;
   created_at: string;
   trace_summary: ChatTraceEntry[];
 }
@@ -132,6 +142,17 @@ export interface ExecutionProfileRequest {
   task: string;
   taskKind: TaskKind;
   requestedPlan: Record<string, unknown>;
+}
+
+export interface SlmStatusResponse {
+  enabled: boolean;
+  base_url: string;
+  configured_model: string | null;
+  selected_profile_id: string;
+  selected_model: string | null;
+  provider: string;
+  reachable: boolean;
+  available_models: string[];
 }
 
 type JsonObject = Record<string, unknown>;
@@ -151,6 +172,7 @@ export interface AstraClient {
   ): Promise<ExecutionProfile>;
   getSlmProfiles(): Promise<SlmProfilesResponse>;
   getSelectedSlm(): Promise<SelectedSlmResponse>;
+  getSlmStatus(): Promise<SlmStatusResponse>;
   selectSlmProfile(profileId: string): Promise<Record<string, unknown>>;
   getRagStatus(): Promise<RagStatusResponse>;
   chatWithSlm(
@@ -238,6 +260,10 @@ export class HttpAstraClient implements AstraClient {
 
   async getSelectedSlm() {
     return this.getJson<SelectedSlmResponse>("/runtime/slm/selected");
+  }
+
+  async getSlmStatus() {
+    return this.getJson<SlmStatusResponse>("/runtime/slm/status");
   }
 
   async selectSlmProfile(profileId: string) {

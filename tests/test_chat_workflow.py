@@ -32,6 +32,9 @@ def test_chat_run_returns_useful_backend_response(tmp_path: Path):
     assert body["rag_context_count"] == 0
     assert body["safety_decision"] in {"allow", "downgrade", "block"}
     assert body["runtime_decision"]
+    assert body["used_real_slm"] is False
+    assert body["slm_provider"] == "fallback"
+    assert body["slm_fallback_reason"] == "ollama_unreachable"
     assert body["trace_summary"]
     assert "No files were changed" in body["assistant_response"]
 
@@ -62,6 +65,103 @@ def test_chat_run_uses_rag_context_when_enabled(tmp_path: Path):
     assert rag_trace["data"]["count"] == 1
 
 
+def test_chat_run_skips_rag_for_greeting(tmp_path: Path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "noise.md").write_text("cleanup duplicate file notes", encoding="utf-8")
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post("/chat/run", json={"message": "hi", "use_rag": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rag_used"] is False
+    assert body["rag_context_count"] == 0
+    assert "Hi." in body["assistant_response"]
+    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
+    assert rag_trace["data"]["reason"] == "greeting"
+
+
+def test_chat_run_skips_rag_for_astra_capability_question(tmp_path: Path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "cleanup.md").write_text(
+        "Cleanup duplicate files and stale generated folders.",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/run",
+            json={
+                "message": "Explain what this Astra system can currently do in 5 simple bullet points",
+                "use_rag": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rag_used"] is False
+    assert body["rag_context_count"] == 0
+    assert "local prototype assistant" in body["assistant_response"]
+    assert "duplicate files" not in body["assistant_response"].lower()
+    assert body["assistant_response"].count("\n- ") == 4
+    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
+    assert rag_trace["data"]["reason"] == "system_meta_question"
+
+
+def test_irrelevant_rag_context_is_not_injected_into_slm_prompt(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from backend.app import chat_workflow
+
+    captured_prompt = ""
+
+    def unrelated_rag(*args, **kwargs):
+        return {
+            "results": [
+                {
+                    "path": "docs/cleanup.md",
+                    "title": "cleanup.md",
+                    "snippet": "Duplicate file cleanup notes for old artifacts.",
+                    "score": 1.0,
+                }
+            ]
+        }
+
+    def capture_slm(message, context):
+        nonlocal captured_prompt
+        captured_prompt = context["prompt"]
+        return {
+            "source": "local_slm",
+            "provider": "ollama",
+            "model": "qwen2.5-coder:1.5b",
+            "used_real_slm": True,
+            "fallback_reason": None,
+            "latency_ms": 5,
+            "assistant_response": "Use the backend test suite and inspect failing assertions.",
+        }
+
+    monkeypatch.setattr(chat_workflow.rag_context_service, "rag_search", unrelated_rag)
+    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", capture_slm)
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/run",
+            json={"message": "How do I fix backend tests?", "use_rag": True},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rag_used"] is False
+    assert body["rag_context_count"] == 0
+    assert "Duplicate file cleanup" not in captured_prompt
+    assert "No RAG context is attached" in captured_prompt
+    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
+    assert rag_trace["data"]["reason"] == "low_relevance"
+
+
 def test_chat_run_gracefully_falls_back_when_rag_and_slm_fail(tmp_path: Path, monkeypatch):
     from backend.app import chat_workflow
 
@@ -88,6 +188,9 @@ def test_chat_run_gracefully_falls_back_when_rag_and_slm_fail(tmp_path: Path, mo
     titles = [item["title"] for item in body["trace_summary"]]
     assert "RAG unavailable" in titles
     assert "SLM unavailable" in titles
+    assert body["used_real_slm"] is False
+    assert body["slm_provider"] == "fallback"
+    assert body["slm_fallback_reason"].startswith("gateway_exception:")
 
 
 def test_chat_run_stores_one_clear_history_record(tmp_path: Path):
@@ -111,3 +214,35 @@ def test_chat_run_stores_one_clear_history_record(tmp_path: Path):
     with sqlite3.connect(database_path) as connection:
         stored_count = connection.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0]
     assert stored_count == 1
+
+
+def test_chat_run_includes_slm_metadata_when_real_slm_used(tmp_path: Path, monkeypatch):
+    from backend.app import chat_workflow
+
+    def mock_chat_with_slm(*args, **kwargs):
+        return {
+            "source": "local_slm",
+            "provider": "ollama",
+            "model": "qwen2.5-coder:1.5b",
+            "used_real_slm": True,
+            "fallback_reason": None,
+            "latency_ms": 12,
+            "assistant_response": "Real response text",
+        }
+
+    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", mock_chat_with_slm)
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post("/chat/run", json={"message": "Test SLM inclusion"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["used_real_slm"] is True
+    assert body["slm_provider"] == "ollama"
+    assert body["slm_model"] == "qwen2.5-coder:1.5b"
+    assert body["slm_fallback_reason"] is None
+    assert body["slm_latency_ms"] == 12
+    assert "Real response text" in body["assistant_response"]
+    slm_trace = next(item for item in body["trace_summary"] if item["phase"] == "slm")
+    assert slm_trace["title"] == "SLM response generated"
+    assert slm_trace["data"]["used_real_slm"] is True
