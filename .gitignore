@@ -20,3 +20,6 @@ model_offload/
 .ipynb_checkpoints/
 .vscode/*
 !/.vscode/settings.json
+
+# Local/generated specialist data
+data/specialists/
