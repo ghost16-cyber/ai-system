@@ -12,6 +12,85 @@ import type {
   TaskKind,
 } from "../types/contracts";
 
+export interface HealthData {
+  status: string;
+  service: string;
+  version: string;
+  phase: string;
+  database: string;
+  timestamp: string;
+}
+
+export interface RawTool {
+  name: string;
+  description: string;
+  read_only: boolean;
+  execution: string;
+}
+
+export interface RawJob {
+  job_id: string;
+  job_type: string;
+  status: string;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface RawHistoryItem {
+  analysis_id: string;
+  created_at: string;
+  language: string;
+  filename: string | null;
+  code_length: number;
+  line_count: number;
+  issue_count: number;
+  phase: string;
+}
+
+export interface SlmProfilesResponse {
+  profiles: Array<Record<string, unknown>>;
+  count: number;
+  supported_backends: string[];
+  default_profile_id: string;
+}
+
+export interface SelectedSlmResponse {
+  selected_profile_id: string;
+  profile: Record<string, unknown>;
+  loaded: boolean;
+  prompts_executed: boolean;
+  advisory_only: boolean;
+}
+
+export interface RagStatusResponse {
+  status: string;
+  workspace_root: string;
+  indexed_file_count: number;
+  source_roots: string[];
+  safe_extensions: string[];
+  exclusions: string[];
+  advisory_only: boolean;
+  tools_executed: boolean;
+}
+
+export interface SlmChatResponse {
+  message: string;
+  assistant_response: string;
+  selected_profile?: Record<string, unknown>;
+  source?: string;
+  backend_available?: boolean;
+  advisory_only?: boolean;
+  tools_executed?: boolean;
+  patches_applied?: boolean;
+  runtime_authorized?: boolean;
+  context_results?: Array<Record<string, unknown>>;
+  citations?: Array<Record<string, unknown>>;
+  trace_id?: string;
+}
+
 export interface RuntimePlanValidationRequest {
   task: string;
   taskKind: TaskKind;
@@ -27,6 +106,10 @@ export interface ExecutionProfileRequest {
 type JsonObject = Record<string, unknown>;
 
 export interface AstraClient {
+  getHealth(): Promise<HealthData>;
+  getTools(): Promise<RawTool[]>;
+  getJobs(limit?: number): Promise<RawJob[]>;
+  getHistory(limit?: number): Promise<RawHistoryItem[]>;
   getRuntimeContext(task?: string): Promise<RuntimeContext>;
   getRuntimeResearchManifest(): Promise<RuntimeResearchManifest>;
   validateRuntimePlan(
@@ -35,6 +118,15 @@ export interface AstraClient {
   buildExecutionProfile(
     request: ExecutionProfileRequest,
   ): Promise<ExecutionProfile>;
+  getSlmProfiles(): Promise<SlmProfilesResponse>;
+  getSelectedSlm(): Promise<SelectedSlmResponse>;
+  selectSlmProfile(profileId: string): Promise<Record<string, unknown>>;
+  getRagStatus(): Promise<RagStatusResponse>;
+  chatWithSlm(
+    message: string,
+    context?: Record<string, unknown>,
+  ): Promise<SlmChatResponse>;
+  chatWithContext(message: string, limit?: number): Promise<SlmChatResponse>;
   getCompactTrace(jobId: string): Promise<CompactTraceResponse>;
   getSpecialistDashboard(): Promise<SpecialistDashboard>;
   getSpecialistModels(): Promise<SpecialistModelsResponse>;
@@ -52,6 +144,29 @@ export class HttpAstraClient implements AstraClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (import.meta as any).env?.VITE_API_BASE_URL ?? "http://127.0.0.1:8000",
   ) {}
+
+  async getHealth() {
+    return this.getJson<HealthData>("/health");
+  }
+
+  async getTools() {
+    const response = await this.getJson<{ items?: RawTool[] }>("/tools");
+    return Array.isArray(response.items) ? response.items : [];
+  }
+
+  async getJobs(limit = 20) {
+    const response = await this.getJson<{ items?: RawJob[] }>(
+      `/jobs?limit=${encodeURIComponent(String(limit))}`,
+    );
+    return Array.isArray(response.items) ? response.items : [];
+  }
+
+  async getHistory(limit = 20) {
+    const response = await this.getJson<{ items?: RawHistoryItem[] }>(
+      `/history?limit=${encodeURIComponent(String(limit))}`,
+    );
+    return Array.isArray(response.items) ? response.items : [];
+  }
 
   async getRuntimeContext(task?: string) {
     const suffix = task ? `?task=${encodeURIComponent(task)}` : "";
@@ -82,6 +197,38 @@ export class HttpAstraClient implements AstraClient {
         requested_plan: request.requestedPlan,
       }),
     );
+  }
+
+  async getSlmProfiles() {
+    return this.getJson<SlmProfilesResponse>("/runtime/slm/profiles");
+  }
+
+  async getSelectedSlm() {
+    return this.getJson<SelectedSlmResponse>("/runtime/slm/selected");
+  }
+
+  async selectSlmProfile(profileId: string) {
+    return this.postJson<Record<string, unknown>>("/runtime/slm/select", {
+      profile_id: profileId,
+    });
+  }
+
+  async getRagStatus() {
+    return this.getJson<RagStatusResponse>("/rag/status");
+  }
+
+  async chatWithSlm(message: string, context: Record<string, unknown> = {}) {
+    return this.postJson<SlmChatResponse>("/slm/chat", {
+      message,
+      context,
+    });
+  }
+
+  async chatWithContext(message: string, limit = 4) {
+    return this.postJson<SlmChatResponse>("/slm/chat-with-context", {
+      message,
+      limit,
+    });
   }
 
   async getCompactTrace(jobId: string) {
