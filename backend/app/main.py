@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
 from backend.app.analyzer.patch_apply import (
@@ -19,7 +21,23 @@ from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.database.repository import AnalysisRepository
+from backend.app.hardware_ai_optimizer import (
+    HardwareOptimizerResponse,
+    probe_hardware,
+    recommend_training_settings,
+)
 from backend.app.jobs import JobQueue
+from backend.app.local_runtime import (
+    ExecutionProfile,
+    PlanValidationResult,
+    RuntimeContext,
+    RuntimeResearchManifest,
+    build_execution_profile,
+    build_runtime_context,
+    get_runtime_research_manifest,
+    validate_task_plan,
+)
+from backend.app.rag.context_service import compact_context, rag_search, rag_status
 from backend.app.orchestrator.approvals import approve_pending_patch
 from backend.app.orchestrator.policy import PolicyError
 from backend.app.schemas.api import (
@@ -36,6 +54,7 @@ from backend.app.schemas.api import (
     JobsResponse,
     JobStatus,
     MetricsResponse,
+    ExecutionProfileRequest,
     OrchestrateRequest,
     PatchApplyRequest,
     PatchApplyResponse,
@@ -43,7 +62,18 @@ from backend.app.schemas.api import (
     PatchPreviewResponse,
     PatchProposalResponse,
     RulesResponse,
+    RuntimePlanValidationRequest,
     ToolsResponse,
+)
+from backend.app.specialists.routes import router as specialists_router
+from backend.app.slm import (
+    SLMChatRequest,
+    SLMIntentRequest,
+    chat_with_slm,
+    get_selected_slm_profile,
+    infer_intent_with_slm,
+    list_slm_profiles,
+    select_slm_profile,
 )
 from backend.app.tools import get_tool_metadata
 
@@ -52,6 +82,22 @@ APP_VERSION = "0.5.0"
 APP_PHASE = "release-4-feedback"
 DEFAULT_DATABASE_PATH = Path("data/app/ai_system.db")
 DEFAULT_WORKSPACE_ROOT = Path.cwd()
+
+
+class SLMSelectRequest(BaseModel):
+    profile_id: str
+
+
+class RAGSearchRequest(BaseModel):
+    query: str = ""
+    limit: int = Field(default=5, ge=0, le=20)
+    source_filter: str | None = None
+
+
+class SLMChatWithContextRequest(BaseModel):
+    message: str = ""
+    limit: int = Field(default=4, ge=0, le=10)
+    source_filter: str | None = None
 
 
 def create_app(
@@ -82,9 +128,22 @@ def create_app(
         lifespan=lifespan,
     )
 
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
     application.state.analysis_repository = repository
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
+    application.include_router(specialists_router)
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -96,6 +155,137 @@ def create_app(
             database=repository.status(),
             timestamp=datetime.now(timezone.utc),
         )
+
+    @application.get(
+        "/hardware-ai/report",
+        response_model=HardwareOptimizerResponse,
+    )
+    def hardware_ai_report() -> HardwareOptimizerResponse:
+        report = probe_hardware(configured_workspace_root)
+        return HardwareOptimizerResponse(
+            report=report,
+            recommendations=recommend_training_settings(report),
+        )
+
+    @application.get("/runtime/context", response_model=RuntimeContext)
+    def runtime_context(task: str | None = Query(default=None)) -> RuntimeContext:
+        return build_runtime_context(
+            task=task,
+            workspace_root=configured_workspace_root,
+        )
+
+    @application.get(
+        "/runtime/research-manifest",
+        response_model=RuntimeResearchManifest,
+    )
+    def runtime_research_manifest() -> RuntimeResearchManifest:
+        return get_runtime_research_manifest()
+
+    @application.post(
+        "/runtime/validate-plan",
+        response_model=PlanValidationResult,
+    )
+    def runtime_validate_plan(
+        request: RuntimePlanValidationRequest,
+    ) -> PlanValidationResult:
+        context = build_runtime_context(
+            task=request.task,
+            workspace_root=configured_workspace_root,
+        )
+        return validate_task_plan(
+            task=request.task,
+            requested_plan=request.requested_plan,
+            runtime_context=context,
+        )
+
+    @application.post(
+        "/runtime/execution-profile",
+        response_model=ExecutionProfile,
+    )
+    def runtime_execution_profile(
+        request: ExecutionProfileRequest,
+    ) -> ExecutionProfile:
+        context = build_runtime_context(
+            task=request.task,
+            workspace_root=configured_workspace_root,
+        )
+        validation = validate_task_plan(
+            task=request.task,
+            requested_plan=request.requested_plan,
+            runtime_context=context,
+        )
+        if validation.decision == "block":
+            raise HTTPException(status_code=409, detail=validation.reason)
+        active_plan = (
+            validation.recommended_plan
+            if validation.decision == "downgrade"
+            else validation.requested_plan
+        )
+        return build_execution_profile(
+            task=request.task,
+            runtime_context=context,
+            active_runtime_plan=active_plan,
+        )
+
+    @application.get("/runtime/slm/profiles")
+    def runtime_slm_profiles() -> dict:
+        return list_slm_profiles()
+
+    @application.get("/runtime/slm/selected")
+    def runtime_slm_selected() -> dict:
+        return get_selected_slm_profile()
+
+    @application.post("/runtime/slm/select")
+    def runtime_slm_select(request: SLMSelectRequest) -> dict:
+        result = select_slm_profile(request.profile_id)
+        if result.get("selected") is not True:
+            raise HTTPException(status_code=400, detail=result.get("reason", "Invalid SLM profile."))
+        return result
+
+    @application.post("/slm/chat")
+    def slm_chat(request: SLMChatRequest) -> dict:
+        return chat_with_slm(request.message, request.context)
+
+    @application.post("/slm/intent")
+    def slm_intent(request: SLMIntentRequest) -> dict:
+        return infer_intent_with_slm(request.message, request.context)
+
+    @application.get("/rag/status")
+    def local_rag_status() -> dict:
+        return rag_status(configured_workspace_root)
+
+    @application.post("/rag/search")
+    def local_rag_search(request: RAGSearchRequest) -> dict:
+        return rag_search(
+            configured_workspace_root,
+            query=request.query,
+            limit=request.limit,
+            source_filter=request.source_filter,
+        )
+
+    @application.post("/slm/chat-with-context")
+    def slm_chat_with_context(request: SLMChatWithContextRequest) -> dict:
+        search = rag_search(
+            configured_workspace_root,
+            query=request.message,
+            limit=request.limit,
+            source_filter=request.source_filter,
+        )
+        response = chat_with_slm(
+            request.message,
+            {
+                "rag_context": compact_context(search["results"]),
+                "sources": search["results"],
+            },
+        )
+        return {
+            **response,
+            "context_results": search["results"],
+            "citations": [
+                {"path": item.get("path"), "source": item.get("source")}
+                for item in search["results"]
+            ],
+        }
 
     def build_patch_proposal(
         *,
@@ -373,6 +563,7 @@ def create_app(
                 "allowed_patch_files": request.allowed_patch_files,
                 "max_steps": request.max_steps,
                 "proposer": request.proposer,
+                "advisor_runtime_mode": request.advisor_runtime_mode,
                 "slm_model": request.slm_model,
                 "slm_base_url": request.slm_base_url,
             },
