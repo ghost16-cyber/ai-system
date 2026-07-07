@@ -13,6 +13,11 @@ from typing import Any
 from .approvals import save_pending_approval
 from .checkpoints import create_file_checkpoint
 from .git_safety import get_dirty_worktree_status
+from ..local_runtime import (
+    build_execution_profile as compile_execution_profile,
+    build_runtime_context,
+    validate_task_plan,
+)
 from .models import TaskState, ToolAction, ToolResult
 from .policy import SafetyPolicy, PolicyError, validate_patch_scope
 
@@ -78,6 +83,30 @@ def build_default_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
             ToolSpec("search_files", "Find files in the task project.", "low", search_files),
+            ToolSpec(
+                "get_runtime_context",
+                "Read local hardware/tool capability context for the task.",
+                "low",
+                get_runtime_context,
+            ),
+            ToolSpec(
+                "validate_runtime_plan",
+                "Validate an AI runtime plan against deterministic machine policy.",
+                "low",
+                validate_runtime_plan,
+            ),
+            ToolSpec(
+                "build_execution_profile",
+                "Compile the active validated plan into concrete runtime settings.",
+                "low",
+                build_execution_profile,
+            ),
+            ToolSpec(
+                "authorize_runtime_plan",
+                "Authorize only the active runtime-policy-approved plan.",
+                "medium",
+                authorize_runtime_plan,
+            ),
             ToolSpec("read_file", "Read a policy-approved source/text file.", "low", read_file),
             ToolSpec("analyze_ast", "Extract Python AST structure.", "low", analyze_ast_file),
             ToolSpec("run_tests", "Run an allowlisted verification command.", "medium", run_tests),
@@ -95,6 +124,41 @@ def get_slm_tool_schemas() -> list[dict[str, Any]]:
             "name": "search_files",
             "description": "Search for files inside the task project.",
             "args": {"query": "string", "max_results": "integer | optional"},
+        },
+        {
+            "name": "get_runtime_context",
+            "description": (
+                "Read compact local hardware, tool, capability, and task optimization "
+                "context before choosing AI runtimes or heavy commands."
+            ),
+            "args": {"task": "string | optional"},
+        },
+        {
+            "name": "validate_runtime_plan",
+            "description": (
+                "Required policy gate for proposed AI model, training, RAG, or "
+                "GPU execution plans. Obey its recommended_plan on downgrade."
+            ),
+            "args": {
+                "task": "string",
+                "requested_plan": "object",
+            },
+        },
+        {
+            "name": "build_execution_profile",
+            "description": (
+                "Compile the active approved or downgraded plan into concrete "
+                "runtime, device, tool, timeout, memory, and workload settings."
+            ),
+            "args": {"task": "string | optional"},
+        },
+        {
+            "name": "authorize_runtime_plan",
+            "description": (
+                "Required immediately before future AI workload execution. "
+                "Fails unless validate_runtime_plan approved the same active plan."
+            ),
+            "args": {"plan": "object | optional"},
         },
         {
             "name": "read_file",
@@ -136,6 +200,142 @@ def get_slm_tool_schemas() -> list[dict[str, Any]]:
             "args": {"message": "string"},
         },
     ]
+
+
+def get_runtime_context(
+    action: ToolAction,
+    state: TaskState,
+    policy: SafetyPolicy,
+) -> ToolResult:
+    task = str(action.args.get("task") or state.goal)
+    context = build_runtime_context(
+        task=task,
+        workspace_root=policy.project_root,
+    )
+    return ToolResult(
+        action=action.action,
+        allowed=True,
+        success=True,
+        output={
+            "slm_context": context.slm_context,
+            "policy": context.policy.model_dump(mode="json"),
+            "task_optimization": context.task_optimization.model_dump(mode="json"),
+            "capabilities": [
+                capability.model_dump(mode="json")
+                for capability in context.capabilities
+            ],
+            "tool_availability": {
+                tool.name: tool.available
+                for tool in context.tools
+            },
+        },
+    )
+
+
+def validate_runtime_plan(
+    action: ToolAction,
+    state: TaskState,
+    policy: SafetyPolicy,
+) -> ToolResult:
+    task = str(action.args.get("task") or state.goal)
+    requested_plan = action.args.get("requested_plan")
+    if not isinstance(requested_plan, dict):
+        raise ValueError("requested_plan must be an object.")
+
+    context = build_runtime_context(
+        task=task,
+        workspace_root=policy.project_root,
+    )
+    validation = validate_task_plan(
+        task=task,
+        requested_plan=requested_plan,
+        runtime_context=context,
+    )
+    output = validation.model_dump(mode="json")
+    state.validation.runtime_plan = output
+    return ToolResult(
+        action=action.action,
+        allowed=True,
+        success=True,
+        output=output,
+    )
+
+
+def authorize_runtime_plan(
+    action: ToolAction,
+    state: TaskState,
+    policy: SafetyPolicy,
+) -> ToolResult:
+    validation = state.validation.runtime_plan
+    if not isinstance(validation, dict):
+        raise PolicyError(
+            "validate_runtime_plan must run before runtime plan authorization."
+        )
+    if validation.get("decision") == "block":
+        raise PolicyError("Blocked runtime plans cannot be authorized.")
+    if not isinstance(state.active_runtime_plan, dict):
+        raise PolicyError("No active approved runtime plan is available.")
+    if not isinstance(state.execution_profile, dict):
+        raise PolicyError(
+            "build_execution_profile must run before runtime plan authorization."
+        )
+    if state.execution_profile.get("source_plan") != state.active_runtime_plan:
+        raise PolicyError("Execution profile does not match the active runtime plan.")
+
+    requested = action.args.get("plan", state.active_runtime_plan)
+    if not isinstance(requested, dict):
+        raise ValueError("plan must be an object.")
+    if requested != state.active_runtime_plan:
+        raise PolicyError(
+            "Runtime plan does not match the active approved or downgraded plan."
+        )
+
+    return ToolResult(
+        action=action.action,
+        allowed=True,
+        success=True,
+        output={
+            "authorized": True,
+            "decision": validation.get("decision"),
+            "active_runtime_plan": state.active_runtime_plan,
+        },
+    )
+
+
+def build_execution_profile(
+    action: ToolAction,
+    state: TaskState,
+    policy: SafetyPolicy,
+) -> ToolResult:
+    validation = state.validation.runtime_plan
+    if not isinstance(validation, dict):
+        raise PolicyError(
+            "validate_runtime_plan must run before building an execution profile."
+        )
+    if validation.get("decision") == "block":
+        raise PolicyError("Blocked runtime plans cannot produce execution profiles.")
+    if not isinstance(state.active_runtime_plan, dict):
+        raise PolicyError("No active validated runtime plan is available.")
+
+    task = str(action.args.get("task") or state.goal)
+    context = build_runtime_context(
+        task=task,
+        workspace_root=policy.project_root,
+    )
+    profile = compile_execution_profile(
+        task=task,
+        runtime_context=context,
+        active_runtime_plan=state.active_runtime_plan,
+    )
+    output = profile.model_dump(mode="json")
+    state.execution_profile = output
+    state.validation.execution_profile = output
+    return ToolResult(
+        action=action.action,
+        allowed=True,
+        success=True,
+        output=output,
+    )
 
 
 def search_files(

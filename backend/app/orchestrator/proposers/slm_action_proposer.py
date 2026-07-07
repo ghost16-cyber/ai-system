@@ -293,6 +293,10 @@ class SLMActionProposer:
 def _normalize_action_name(value: str) -> ActionName:
     allowed = {
         "search_files",
+        "get_runtime_context",
+        "validate_runtime_plan",
+        "build_execution_profile",
+        "authorize_runtime_plan",
         "read_file",
         "analyze_ast",
         "run_tests",

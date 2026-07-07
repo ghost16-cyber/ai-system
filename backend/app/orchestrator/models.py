@@ -17,9 +17,14 @@ TaskStatus = Literal[
 ]
 
 ApprovalMode = Literal["auto", "review", "never"]
+AdvisorRuntimeMode = Literal["off", "shadow", "ranking_boost", "guarded_action"]
 
 ActionName = Literal[
     "search_files",
+    "get_runtime_context",
+    "validate_runtime_plan",
+    "build_execution_profile",
+    "authorize_runtime_plan",
     "read_file",
     "analyze_ast",
     "run_tests",
@@ -65,6 +70,8 @@ class ValidationState(BaseModel):
     checkpoint: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
     approval: dict[str, Any] | None = None
+    runtime_plan: dict[str, Any] | None = None
+    execution_profile: dict[str, Any] | None = None
 
 
 class TaskState(BaseModel):
@@ -90,8 +97,13 @@ class TaskState(BaseModel):
     candidate_files: list[str] = Field(default_factory=list)
     inspected_files: list[str] = Field(default_factory=list)
     tool_history: list[ToolResult] = Field(default_factory=list)
+    advisor_action_audits: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_plan_audits: list[dict[str, Any]] = Field(default_factory=list)
+    repair_trace_events: list[dict[str, Any]] = Field(default_factory=list)
 
     proposed_patch: dict[str, Any] | None = None
+    active_runtime_plan: dict[str, Any] | None = None
+    execution_profile: dict[str, Any] | None = None
     validation: ValidationState = Field(default_factory=ValidationState)
     final_response: str | None = None
     stop_reason: str | None = None
@@ -129,6 +141,9 @@ class OrchestratorConfig(BaseModel):
     max_file_bytes: int = Field(default=50_000, ge=1_000, le=500_000)
     command_timeout_seconds: int = Field(default=60, ge=1, le=300)
     auto_run_advisors_each_step: bool = True
+    advisor_runtime_mode: AdvisorRuntimeMode = "off"
+    repair_trace_logging_enabled: bool = True
+    repair_trace_events_dir: str = "benchmarks/.runs/traces"
     proposer: Literal["scripted", "slm"] = "scripted"
     slm_model: str = "qwen2.5-coder:1.5b"
     slm_base_url: str = "http://localhost:11434"

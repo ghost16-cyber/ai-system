@@ -61,8 +61,19 @@ class OrchestrateRequest(BaseModel):
     allowed_patch_files: list[str] = Field(default_factory=list)
     max_steps: int = Field(default=12, ge=1, le=50)
     proposer: Literal["scripted", "slm"] = "scripted"
+    advisor_runtime_mode: Literal["off", "shadow", "ranking_boost", "guarded_action"] = "off"
     slm_model: str = "qwen2.5-coder:1.5b"
     slm_base_url: str = "http://localhost:11434"
+
+
+class RuntimePlanValidationRequest(BaseModel):
+    task: str = Field(..., min_length=1)
+    requested_plan: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionProfileRequest(BaseModel):
+    task: str = Field(..., min_length=1)
+    requested_plan: dict[str, Any] = Field(default_factory=dict)
 
 
 PatchProposalStatus = Literal["proposed", "applied", "conflict"]

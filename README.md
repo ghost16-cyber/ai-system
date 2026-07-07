@@ -22,6 +22,9 @@ metrics, and queued project analysis.
 - SLM-ready orchestrator job loop with structured task state, advisor hooks, safe tool routing, policy-gated edits, validators, and redacted traces.
 - Project analysis summaries that exclude source code and validated replacement text.
 - Finding-linked feedback for helpfulness and validated suggestion acceptance.
+- Hardware-aware AI optimizer report endpoint with low-VRAM training recommendations.
+- Local Runtime Intelligence context for hardware, installed tools, capability planning, and task-specific execution settings.
+- Runtime-aware plan gating with trace audits and benchmark decision metrics.
 
 ### Inactive / Future Layers
 
@@ -153,6 +156,10 @@ The live API is then available at:
 - `POST /analyze-file`
 - `POST /analyze-project`
 - `POST /orchestrate`
+- `GET /hardware-ai/report`
+- `GET /runtime/context`
+- `POST /runtime/validate-plan`
+- `POST /runtime/execution-profile`
 - `GET /rules`
 - `GET /tools`
 - `POST /feedback`

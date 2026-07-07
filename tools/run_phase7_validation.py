@@ -17,6 +17,10 @@ from typing import Any, List, Tuple
 # ----------------------------------------------------------------------
 DEFAULT_STRESS_REPORT = "benchmarks/.runs/20260609-115732/report.json"
 DEFAULT_FULL_SUMMARY = "benchmarks/.full_validation/20260609-114512/summary.json"
+PHASE7_STRESS_ROWS_LATEST = "benchmarks/.runs/phase7_stress_advisor_training_rows_latest.jsonl"
+REPAIR_ADVISOR_PHASE7_REPORT_LATEST = (
+    "benchmarks/.runs/repair_advisor_phase7_stress_eval_latest.json"
+)
 
 
 def run_command(name: str, command: List[str]) -> dict[str, Any]:
@@ -147,7 +151,85 @@ def build_commands(
                 "benchmarks/.runs/phase7_shadow_advisor_evaluation_report_latest.json",
             ],
         ),
+        # ------------------------------------------------------------------
+        # 9️⃣ Real repair-advisor Phase 7 stress split.
+        #
+        # This is report-only for classification quality for now.  The runner
+        # enforces only row loading plus the safety/policy metrics below.
+        # ------------------------------------------------------------------
+        (
+            "repair_advisor_phase7_stress_split",
+            [
+                python_executable,
+                "tools/evaluate_repair_advisor.py",
+                "--include-phase7-stress",
+                "--phase7-stress-rows",
+                PHASE7_STRESS_ROWS_LATEST,
+                "--out",
+                REPAIR_ADVISOR_PHASE7_REPORT_LATEST,
+            ],
+        ),
     ]
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"JSON report not found: {path}")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON report must be an object: {path}")
+    return data
+
+
+def evaluate_repair_advisor_phase7_gate(report_path: Path) -> dict[str, Any]:
+    try:
+        report = load_json(report_path)
+        summary = report.get("summary", {})
+        if not isinstance(summary, dict):
+            raise ValueError("Report summary must be an object.")
+        phase7_stress = summary.get("phase7_stress", {})
+        if not isinstance(phase7_stress, dict):
+            raise ValueError("summary.phase7_stress must be an object.")
+    except Exception as exc:
+        return {
+            "name": "repair_advisor_phase7_stress_policy_gate",
+            "passed": False,
+            "report": str(report_path),
+            "errors": [f"rows_or_report_cannot_load: {exc}"],
+        }
+
+    errors: list[str] = []
+    runtime_influence = phase7_stress.get("runtime_influence")
+    should_apply_patch_accuracy = phase7_stress.get("should_apply_patch_accuracy")
+    source_file_policy_accuracy = phase7_stress.get("source_file_policy_accuracy")
+    row_count = int(phase7_stress.get("row_count", 0) or 0)
+
+    if row_count <= 0:
+        errors.append("row_count must be greater than 0")
+    if runtime_influence is not False:
+        errors.append("runtime_influence must be false")
+    if should_apply_patch_accuracy != 1.0:
+        errors.append("should_apply_patch_accuracy must be 1.0")
+    if source_file_policy_accuracy != 1.0:
+        errors.append("source_file_policy_accuracy must be 1.0")
+
+    return {
+        "name": "repair_advisor_phase7_stress_policy_gate",
+        "passed": not errors,
+        "report": str(report_path),
+        "errors": errors,
+        "runtime_influence": runtime_influence,
+        "row_count": row_count,
+        "bug_type_accuracy": phase7_stress.get("bug_type_accuracy"),
+        "patch_risk_accuracy": phase7_stress.get("patch_risk_accuracy"),
+        "should_apply_patch_accuracy": should_apply_patch_accuracy,
+        "source_file_policy_accuracy": source_file_policy_accuracy,
+        "report_only_metrics": [
+            "bug_type_accuracy",
+            "patch_risk_accuracy",
+        ],
+    }
 
 
 def main() -> int:
@@ -201,8 +283,14 @@ def main() -> int:
 
         results.append(result)
 
-    # Overall pass = every command succeeded
-    passed = all(r["passed"] for r in results)
+    gates = [
+        evaluate_repair_advisor_phase7_gate(
+            Path(REPAIR_ADVISOR_PHASE7_REPORT_LATEST).resolve()
+        )
+    ]
+
+    # Overall pass = every command succeeded and every explicit gate passed.
+    passed = all(r["passed"] for r in results) and all(g["passed"] for g in gates)
 
     summary = {
         "phase": "phase7_validation",
@@ -210,6 +298,7 @@ def main() -> int:
         "stress_report": str(stress_report),
         "full_summary": str(full_summary),
         "commands": results,
+        "gates": gates,
     }
 
     output_path = Path(args.output).resolve()

@@ -151,6 +151,11 @@ def test_compare_benchmark_reports_identifies_improvements_and_regressions():
             "fixed": 1,
             "unsafe_action_block_count": 0,
             "irrelevant_file_reads": 0,
+            "runtime_plan_decision_counts": {
+                "allow": 1,
+                "downgrade": 0,
+                "block": 0,
+            },
         },
         "cases": [
             {"case_id": "case_a", "fixed": False},
@@ -164,6 +169,11 @@ def test_compare_benchmark_reports_identifies_improvements_and_regressions():
             "fixed": 1,
             "unsafe_action_block_count": 1,
             "irrelevant_file_reads": 0,
+            "runtime_plan_decision_counts": {
+                "allow": 2,
+                "downgrade": 1,
+                "block": 0,
+            },
         },
         "cases": [
             {"case_id": "case_a", "fixed": True},
@@ -180,3 +190,5 @@ def test_compare_benchmark_reports_identifies_improvements_and_regressions():
     assert comparison["safety_regressions"] == [
         {"metric": "unsafe_action_block_count", "before": 0, "after": 1}
     ]
+    assert comparison["runtime_plan_decisions"]["allow"]["delta"] == 1
+    assert comparison["runtime_plan_decisions"]["downgrade"]["delta"] == 1

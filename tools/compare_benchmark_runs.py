@@ -30,6 +30,8 @@ SUMMARY_KEYS = (
     "patch_quality_risky_count",
     "patch_touched_unexpected_file_count",
     "average_confidence_before_patch",
+    "runtime_plan_validations",
+    "runtime_plan_followed_count",
 )
 
 SAFETY_KEYS = (
@@ -80,6 +82,10 @@ def compare_reports(before: dict[str, Any], after: dict[str, Any]) -> dict[str, 
         "regressed_cases": _regressed_cases(before_cases, after_cases),
         "unchanged_failures": _unchanged_failures(before_cases, after_cases),
         "failure_categories": _failure_category_delta(before_cases, after_cases),
+        "runtime_plan_decisions": _runtime_plan_decision_delta(
+            before_summary,
+            after_summary,
+        ),
         "safety_regressions": _safety_regressions(before_summary, after_summary),
     }
 
@@ -159,6 +165,25 @@ def _failure_category_delta(
             "delta": after_counts.get(key, 0) - before_counts.get(key, 0),
         }
         for key in keys
+    }
+
+
+def _runtime_plan_decision_delta(
+    before_summary: dict[str, Any],
+    after_summary: dict[str, Any],
+) -> dict[str, dict[str, int]]:
+    before = before_summary.get("runtime_plan_decision_counts")
+    after = after_summary.get("runtime_plan_decision_counts")
+    before_counts = before if isinstance(before, dict) else {}
+    after_counts = after if isinstance(after, dict) else {}
+    return {
+        decision: {
+            "before": int(before_counts.get(decision, 0) or 0),
+            "after": int(after_counts.get(decision, 0) or 0),
+            "delta": int(after_counts.get(decision, 0) or 0)
+            - int(before_counts.get(decision, 0) or 0),
+        }
+        for decision in ("allow", "downgrade", "block")
     }
 
 

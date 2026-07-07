@@ -63,6 +63,10 @@ class CaseResult:
     confidence_before_patch: float | None
     confidence_after_patch: float | None
     apply_decision: str | None
+    runtime_plan_decision: str | None
+    runtime_plan_decisions: list[str]
+    runtime_plan_enforcement: str | None
+    runtime_plan_followed: bool
     fallback_reason: str | None
     duration_seconds: float
     advisor_shadow: dict[str, Any] | None = None
@@ -182,6 +186,12 @@ def run_case(case_dir: Path, run_root: Path, args: argparse.Namespace) -> CaseRe
             confidence_before_patch=_optional_float(metrics["confidence_before_patch"]),
             confidence_after_patch=_optional_float(metrics["confidence_after_patch"]),
             apply_decision=_optional_str(metrics["apply_decision"]),
+            runtime_plan_decision=_optional_str(metrics["runtime_plan_decision"]),
+            runtime_plan_decisions=list(metrics["runtime_plan_decisions"]),
+            runtime_plan_enforcement=_optional_str(
+                metrics["runtime_plan_enforcement"]
+            ),
+            runtime_plan_followed=bool(metrics["runtime_plan_followed"]),
             fallback_reason=_optional_str(metrics["fallback_reason"]),
             duration_seconds=round(time.monotonic() - started, 3),
             advisor_shadow=advisor_shadow,
@@ -227,6 +237,10 @@ def run_case(case_dir: Path, run_root: Path, args: argparse.Namespace) -> CaseRe
             confidence_before_patch=None,
             confidence_after_patch=None,
             apply_decision=None,
+            runtime_plan_decision=None,
+            runtime_plan_decisions=[],
+            runtime_plan_enforcement=None,
+            runtime_plan_followed=False,
             fallback_reason=f"{type(error).__name__}: {error}",
             duration_seconds=round(time.monotonic() - started, 3),
             advisor_shadow=advisor_shadow,
@@ -366,6 +380,7 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
     advisor = _advisor_metrics(results)
     cases = [_case_dict(result) for result in results]
     failure_categories = count_failure_categories(cases)
+    runtime_plan_summary = build_runtime_plan_summary(results)
     return {
         "summary": {
             "cases_run": len(results),
@@ -420,10 +435,14 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
             "advisor_average_source_file_confidence": advisor["average_source_file_confidence"],
             "advisor_average_difficulty_confidence": advisor["average_difficulty_confidence"],
             "advisor_average_patch_risk_confidence": advisor["average_patch_risk_confidence"],
+            **runtime_plan_summary,
             "failure_categories": failure_categories,
         },
         "advisor": advisor,
         "failure_taxonomy": failure_categories,
+        "runtime_plan_decisions": runtime_plan_summary[
+            "runtime_plan_decision_counts"
+        ],
         "patch_quality": {
             "clean": _quality_count(results, "clean"),
             "probably_ok": _quality_count(results, "probably_ok"),
@@ -442,6 +461,30 @@ def build_report(results: list[CaseResult]) -> dict[str, Any]:
             ),
         },
         "cases": cases,
+    }
+
+
+def count_runtime_plan_decisions(results: list[Any]) -> dict[str, int]:
+    counts = {"allow": 0, "downgrade": 0, "block": 0}
+    for result in results:
+        decisions = getattr(result, "runtime_plan_decisions", None)
+        if not isinstance(decisions, list):
+            decisions = [getattr(result, "runtime_plan_decision", None)]
+        for decision in decisions:
+            if decision in counts:
+                counts[decision] += 1
+    return counts
+
+
+def build_runtime_plan_summary(results: list[Any]) -> dict[str, Any]:
+    counts = count_runtime_plan_decisions(results)
+    return {
+        "runtime_plan_validations": sum(counts.values()),
+        "runtime_plan_decision_counts": counts,
+        "runtime_plan_followed_count": sum(
+            bool(getattr(result, "runtime_plan_followed", False))
+            for result in results
+        ),
     }
 
 
@@ -598,6 +641,22 @@ def _trace_metrics(trace: dict[str, Any], metadata: dict[str, Any]) -> dict[str,
     )
     syntax = validation.get("syntax") if isinstance(validation.get("syntax"), dict) else {}
     tests = validation.get("tests") if isinstance(validation.get("tests"), dict) else {}
+    runtime_plan = (
+        validation.get("runtime_plan")
+        if isinstance(validation.get("runtime_plan"), dict)
+        else {}
+    )
+    runtime_audits = [
+        item
+        for item in trace.get("runtime_plan_audits", [])
+        if isinstance(item, dict)
+    ]
+    latest_runtime_audit = runtime_audits[-1] if runtime_audits else {}
+    runtime_plan_decisions = [
+        str(item.get("decision"))
+        for item in runtime_audits
+        if item.get("decision") in {"allow", "downgrade", "block"}
+    ]
     patch = trace.get("proposed_patch") if isinstance(trace.get("proposed_patch"), dict) else None
     changed_lines = _changed_line_count(patch_scope)
     expected = set(_expected_changed_files(metadata))
@@ -639,6 +698,15 @@ def _trace_metrics(trace: dict[str, Any], metadata: dict[str, Any]) -> dict[str,
         "confidence_before_patch": confidence.get("score"),
         "confidence_after_patch": confidence.get("score") if patch_applied else None,
         "apply_decision": confidence.get("decision"),
+        "runtime_plan_decision": runtime_plan.get("decision"),
+        "runtime_plan_decisions": runtime_plan_decisions,
+        "runtime_plan_enforcement": latest_runtime_audit.get("enforcement"),
+        "runtime_plan_followed": latest_runtime_audit.get("enforcement")
+        in {
+            "requested_plan_activated",
+            "recommended_plan_activated",
+            "task_stopped",
+        },
         "fallback_reason": _fallback_reason(trace),
     }
 

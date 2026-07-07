@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from backend.app.jobs import LocalWorker, build_job_handlers
 from backend.app.main import create_app
 from backend.app.orchestrator import Orchestrator, OrchestratorConfig
-from backend.app.orchestrator.models import ToolAction
+from backend.app.orchestrator.models import AdvisorOutput, ToolAction
 
 
 class ReadSecretProposer:
@@ -114,6 +114,58 @@ class RunTestsThenStopProposer:
             reason="Stop after advisors update candidates.",
             args={"message": "done"},
         )
+
+
+class StopProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="final_response",
+            reason="Stop after advisor setup.",
+            args={"message": "done"},
+        )
+
+
+class RuntimeContextProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="get_runtime_context",
+            reason="Read machine context before planning.",
+            args={"task": "run a local SLM"},
+        )
+
+
+class RuntimePlanValidationProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="validate_runtime_plan",
+            reason="Validate a CPU-safe classical ML plan.",
+            args={
+                "task": "classical_ml",
+                "requested_plan": {
+                    "strategy": "sklearn_pipeline",
+                    "requires_gpu": False,
+                    "device": "cpu",
+                },
+            },
+        )
+
+
+class ReadAlphaProposer:
+    def propose_next_action(self, state):
+        return ToolAction(
+            action="read_file",
+            reason="Read alpha.",
+            args={"path": "alpha.py"},
+        )
+
+
+class StaticAdvisor:
+    def __init__(self, output: AdvisorOutput):
+        self.name = output.name
+        self.output = output
+
+    def analyze(self, state, policy):
+        return self.output
 
 
 def test_orchestrator_runs_scripted_loop_and_redacts_read_content(tmp_path: Path):
@@ -336,6 +388,182 @@ def test_file_relevance_prioritizes_failing_test_imports(tmp_path: Path):
         "sequence_utils.py",
     ]
     assert "unrelated.py" not in result.trace["candidate_files"][:3]
+
+
+def test_advisor_runtime_mode_defaults_to_off():
+    config = OrchestratorConfig()
+
+    assert config.advisor_runtime_mode == "off"
+
+
+def test_orchestrator_injects_and_executes_local_runtime_context(tmp_path: Path):
+    (tmp_path / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RuntimeContextProposer(),
+        config=OrchestratorConfig(max_steps=1),
+    ).run(goal="Run a local SLM for this project")
+
+    runtime_advisors = [
+        item for item in result.trace["advisor_outputs"] if item["name"] == "local_runtime"
+    ]
+    assert runtime_advisors
+    assert runtime_advisors[0]["label"] == "local_slm"
+    assert result.trace["tool_history"][0]["action"] == "get_runtime_context"
+    assert result.trace["tool_history"][0]["output"]["task_optimization"]["task_type"] == "local_slm"
+
+
+def test_orchestrator_records_deterministic_runtime_plan_gate(tmp_path: Path):
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=RuntimePlanValidationProposer(),
+        config=OrchestratorConfig(max_steps=1),
+    ).run(goal="Build a classical ML baseline")
+
+    validation = result.trace["validation"]["runtime_plan"]
+    assert validation["allowed"] is True
+    assert validation["decision"] == "allow"
+    assert result.trace["tool_history"][0]["action"] == "validate_runtime_plan"
+
+
+def test_ranking_boost_only_nudges_existing_candidate_files(tmp_path: Path):
+    (tmp_path / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+    (tmp_path / "beta.py").write_text("print('beta')\n", encoding="utf-8")
+
+    advisors = [
+        StaticAdvisor(
+            AdvisorOutput(
+                name="file_relevance",
+                label="ranked_files",
+                confidence=0.7,
+                data={"top_files": ["alpha.py", "beta.py"]},
+            )
+        ),
+        StaticAdvisor(
+            AdvisorOutput(
+                name="repair_runtime",
+                label="runtime_signal",
+                confidence=0.9,
+                data={
+                    "source_file": "beta.py",
+                    "source_file_confidence": 0.9,
+                    "next_action": {
+                        "next_action": "switch_target_file",
+                        "mapped_action": "read_file",
+                        "path": "beta.py",
+                        "confidence": 0.9,
+                    },
+                },
+            )
+        ),
+    ]
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=StopProposer(),
+        advisors=advisors,
+        config=OrchestratorConfig(max_steps=1, advisor_runtime_mode="ranking_boost"),
+    ).run(goal="Inspect alpha beta")
+
+    assert result.trace["candidate_files"][:2] == ["beta.py", "alpha.py"]
+    ranking_outputs = [
+        item for item in result.trace["advisor_outputs"] if item["name"] == "advisor_runtime_ranking"
+    ]
+    assert ranking_outputs[-1]["label"] == "boost_applied"
+
+
+def test_shadow_action_recommendation_logs_without_override(tmp_path: Path):
+    (tmp_path / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+    advisor = StaticAdvisor(
+        AdvisorOutput(
+            name="repair_runtime",
+            label="runtime_signal",
+            confidence=0.9,
+            data={
+                "next_action": {
+                    "next_action": "run_tests",
+                    "mapped_action": "run_tests",
+                    "confidence": 0.9,
+                }
+            },
+        )
+    )
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=ReadAlphaProposer(),
+        advisors=[advisor],
+        config=OrchestratorConfig(max_steps=1, advisor_runtime_mode="shadow"),
+    ).run(goal="Read alpha")
+
+    assert result.trace["tool_history"][0]["action"] == "read_file"
+    audit = result.trace["advisor_action_audits"][0]
+    assert audit["advisor_recommended"] == "run_tests"
+    assert audit["actual_action"] == "read_file"
+    assert audit["override_applied"] is False
+
+
+def test_guarded_action_can_override_to_safe_run_tests(tmp_path: Path):
+    (tmp_path / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+    (tmp_path / "test_alpha.py").write_text(
+        "def test_alpha():\n    assert True\n",
+        encoding="utf-8",
+    )
+    advisor = StaticAdvisor(
+        AdvisorOutput(
+            name="repair_runtime",
+            label="runtime_signal",
+            confidence=0.9,
+            data={
+                "next_action": {
+                    "next_action": "run_tests",
+                    "mapped_action": "run_tests",
+                    "confidence": 0.9,
+                }
+            },
+        )
+    )
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=ReadAlphaProposer(),
+        advisors=[advisor],
+        config=OrchestratorConfig(max_steps=1, advisor_runtime_mode="guarded_action"),
+    ).run(goal="Fix failing tests")
+
+    assert result.trace["tool_history"][0]["action"] == "run_tests"
+    audit = result.trace["advisor_action_audits"][0]
+    assert audit["actual_action"] == "run_tests"
+    assert audit["override_applied"] is True
+
+
+def test_guarded_action_does_not_override_to_patch_actions(tmp_path: Path):
+    (tmp_path / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+    advisor = StaticAdvisor(
+        AdvisorOutput(
+            name="repair_runtime",
+            label="runtime_signal",
+            confidence=1.0,
+            data={
+                "next_action": {
+                    "next_action": "apply_patch",
+                    "mapped_action": "apply_patch",
+                    "confidence": 1.0,
+                }
+            },
+        )
+    )
+
+    result = Orchestrator(
+        workspace_root=tmp_path,
+        proposer=ReadAlphaProposer(),
+        advisors=[advisor],
+        config=OrchestratorConfig(max_steps=1, advisor_runtime_mode="guarded_action"),
+    ).run(goal="Patch alpha")
+
+    assert result.trace["tool_history"][0]["action"] == "read_file"
+    assert result.trace["advisor_action_audits"][0]["override_applied"] is False
 
 
 def test_orchestrate_api_queues_worker_job(tmp_path: Path):

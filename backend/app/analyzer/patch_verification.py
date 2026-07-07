@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -15,12 +16,25 @@ PYTEST_TIMEOUT_SECONDS = 60
 def run_pytest_verification(workspace_root: Path) -> PatchVerificationResponse:
     """Run the allowlisted post-apply check in the configured workspace."""
     checked_at = datetime.now(timezone.utc)
+    temp_dir = workspace_root / ".pytest_verification_tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    for key in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS"):
+        env.pop(key, None)
+    env.update(
+        {
+            "TMPDIR": str(temp_dir),
+            "TEMP": str(temp_dir),
+            "TMP": str(temp_dir),
+        }
+    )
 
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q"],
+            [sys.executable, "-m", "pytest", "-q", "--capture=no"],
             cwd=workspace_root,
             capture_output=True,
+            env=env,
             text=True,
             timeout=PYTEST_TIMEOUT_SECONDS,
             check=False,

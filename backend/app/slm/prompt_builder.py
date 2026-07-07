@@ -139,6 +139,34 @@ def _summarize_output(output: Any) -> str:
                 if isinstance(item, dict)
             ]
             return f"matches: {paths}"
+        if "slm_context" in output:
+            context = output.get("slm_context") or {}
+            task = context.get("task_optimization") if isinstance(context, dict) else {}
+            machine = context.get("machine_summary") if isinstance(context, dict) else {}
+            return (
+                "runtime context: "
+                f"task={task.get('task_type') if isinstance(task, dict) else None}, "
+                f"fit={task.get('local_fit') if isinstance(task, dict) else None}, "
+                f"gpu={machine.get('gpu') if isinstance(machine, dict) else None}, "
+                f"vram={machine.get('vram_total_mb') if isinstance(machine, dict) else None}, "
+                f"cuda={machine.get('cuda_available') if isinstance(machine, dict) else None}"
+            )
+        if "decision" in output and "blocked_signals" in output:
+            return (
+                f"runtime plan {output.get('decision')}: "
+                f"allowed={output.get('allowed')}, "
+                f"blocked={output.get('blocked_signals')}, "
+                f"recommended={output.get('recommended_plan')}"
+            )[:600]
+        if "profile_version" in output and "runtime" in output:
+            return (
+                "execution profile: "
+                f"task={output.get('task_type')}, "
+                f"strategy={output.get('strategy')}, "
+                f"runtime={output.get('runtime')}, "
+                f"device={output.get('device')}, "
+                f"settings={output.get('settings')}"
+            )[:600]
         if "functions" in output or "classes" in output:
             return (
                 f"AST {output.get('path')}: "
@@ -196,6 +224,10 @@ Important rules:
 - Do not invent files.
 - Do not claim tests passed unless validation/tests say they passed.
 - Prefer gathering evidence before editing.
+- Validate proposed AI model/training/runtime plans with validate_runtime_plan.
+- Never continue with a blocked plan; use recommended_plan after a downgrade.
+- Build an execution profile after runtime plan validation.
+- Call authorize_runtime_plan before any future AI workload executor.
 - Prefer run_tests before fixing a failing-test task.
 - Prefer read_file/analyze_ast before proposing a patch.
 - Never call read_file for a path already listed in inspected_files.

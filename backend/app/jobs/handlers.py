@@ -122,6 +122,7 @@ def orchestrate_task_job(
         config=OrchestratorConfig(
             max_steps=int(payload.get("max_steps", 12)),
             proposer=str(payload.get("proposer", "scripted")),  # type: ignore[arg-type]
+            advisor_runtime_mode=str(payload.get("advisor_runtime_mode", "off")),  # type: ignore[arg-type]
             slm_model=str(payload.get("slm_model", "qwen2.5-coder:1.5b")),
             slm_base_url=str(payload.get("slm_base_url", "http://localhost:11434")),
             checkpoint_root=str(payload.get("checkpoint_root", "data/app/checkpoints")),

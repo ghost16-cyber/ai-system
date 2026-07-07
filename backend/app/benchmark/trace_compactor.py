@@ -19,6 +19,11 @@ def compact_orchestrator_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
         "inspected_files": trace.get("inspected_files", []),
         "tool_actions": [item.get("action") for item in compact_tools],
         "tool_history": compact_tools,
+        "repair_trace_events": trace.get("repair_trace_events", []),
+        "advisor_action_audits": trace.get("advisor_action_audits", []),
+        "runtime_plan_audits": trace.get("runtime_plan_audits", []),
+        "active_runtime_plan": trace.get("active_runtime_plan"),
+        "execution_profile": trace.get("execution_profile"),
         "proposed_patch": _compact_patch(trace.get("proposed_patch")),
         "validation": _compact_validation(trace.get("validation")),
         "final_response": trace.get("final_response"),
@@ -41,6 +46,11 @@ def _compact_tool(item: dict[str, Any]) -> dict[str, Any]:
         "applied": output.get("applied"),
         "message": output.get("message"),
         "requested_path": output.get("requested_path"),
+        "decision": output.get("decision"),
+        "blocked_signals": output.get("blocked_signals"),
+        "recommended_plan": output.get("recommended_plan"),
+        "runtime": output.get("runtime"),
+        "device": output.get("device"),
     }
 
 
@@ -91,6 +101,16 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
         if isinstance(validation.get("approval"), dict)
         else {}
     )
+    runtime_plan = (
+        validation.get("runtime_plan")
+        if isinstance(validation.get("runtime_plan"), dict)
+        else {}
+    )
+    execution_profile = (
+        validation.get("execution_profile")
+        if isinstance(validation.get("execution_profile"), dict)
+        else {}
+    )
     return {
         "tests": {
             "status": tests.get("status"),
@@ -132,6 +152,21 @@ def _compact_validation(validation: Any) -> dict[str, Any]:
         "approval": {
             "approval_id": approval.get("approval_id"),
             "status": approval.get("status"),
+        },
+        "runtime_plan": {
+            "allowed": runtime_plan.get("allowed"),
+            "decision": runtime_plan.get("decision"),
+            "reason": runtime_plan.get("reason"),
+            "blocked_signals": runtime_plan.get("blocked_signals", []),
+            "recommended_plan": runtime_plan.get("recommended_plan", {}),
+        },
+        "execution_profile": {
+            "profile_version": execution_profile.get("profile_version"),
+            "task_type": execution_profile.get("task_type"),
+            "strategy": execution_profile.get("strategy"),
+            "runtime": execution_profile.get("runtime"),
+            "device": execution_profile.get("device"),
+            "settings": execution_profile.get("settings", {}),
         },
     }
 
