@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from backend.app.local_runtime import (
@@ -60,6 +60,7 @@ def run_chat_workflow(
     *,
     workspace_root: str | Path,
     previous_turns: list[ChatRunResponse] | None = None,
+    event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> ChatRunResponse:
     created_at = datetime.now(timezone.utc)
     run_id = str(uuid4())
@@ -67,6 +68,17 @@ def run_chat_workflow(
     prior_turns = previous_turns or []
     memory_summary = _build_memory_summary(prior_turns)
     memory_used = bool(memory_summary) and _should_use_memory(request.message, prior_turns)
+    _emit_event(
+        event_sink,
+        "run_started",
+        {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "user_message": request.message,
+            "created_at": created_at.isoformat(),
+            "memory_used": memory_used,
+        },
+    )
     trace: list[dict[str, Any]] = [
         _trace(
             "accepted",
@@ -93,6 +105,17 @@ def run_chat_workflow(
     )
 
     route = _route_message(request.message, trace)
+    _emit_event(
+        event_sink,
+        "specialist_selected",
+        {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "selected_specialist": str(route.get("recommended_specialist") or "general_specialist"),
+            "intent": str(route.get("task_type") or classify_task(request.message)),
+            "confidence": _float(route.get("confidence"), 0.0),
+        },
+    )
     rag_results = _retrieve_context(
         request.message,
         use_rag=request.use_rag,
@@ -100,10 +123,31 @@ def run_chat_workflow(
         route=route,
         trace=trace,
     )
+    _emit_event(
+        event_sink,
+        "rag_completed",
+        {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "rag_used": bool(rag_results),
+            "rag_skip_reason": _rag_skip_reason(trace),
+            "rag_context_count": len(rag_results),
+        },
+    )
     runtime_context, validation, profile = _runtime_decision(
         request.message,
         trace=trace,
         workspace_root=workspace_root,
+    )
+    _emit_event(
+        event_sink,
+        "safety_completed",
+        {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "safety_decision": validation.decision,
+            "runtime_decision": _runtime_label(validation, profile),
+        },
     )
     slm_result = _call_slm_gateway(
         request.message,
@@ -127,6 +171,16 @@ def run_chat_workflow(
         memory_summary=memory_summary if memory_used else None,
         previous_turns=prior_turns,
     )
+    for delta in _response_deltas(assistant_response):
+        _emit_event(
+            event_sink,
+            "response_delta",
+            {
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "delta": delta,
+            },
+        )
 
     return ChatRunResponse(
         run_id=run_id,
@@ -584,6 +638,22 @@ def _rag_skip_reason(trace: list[dict[str, Any]]) -> str | None:
             reason = str(data["reason"])
             return None if reason == "project_context_relevant" else reason
     return None
+
+
+def _response_deltas(text: str, *, chunk_size: int = 80) -> list[str]:
+    if not text:
+        return []
+    return [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)]
+
+
+def _emit_event(
+    event_sink: Callable[[dict[str, Any]], None] | None,
+    event_type: str,
+    data: dict[str, Any],
+) -> None:
+    if event_sink is None:
+        return
+    event_sink({"event": event_type, "data": data})
 
 
 def _rag_trace(reason: str, detail: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -135,6 +135,19 @@ export interface ChatRunResponse {
   trace_summary: ChatTraceEntry[];
 }
 
+export interface ChatStreamEvent {
+  event:
+    | "run_started"
+    | "specialist_selected"
+    | "rag_completed"
+    | "safety_completed"
+    | "response_delta"
+    | "run_completed"
+    | "run_failed"
+    | string;
+  data: Record<string, unknown>;
+}
+
 export interface RuntimePlanValidationRequest {
   task: string;
   taskKind: TaskKind;
@@ -184,6 +197,10 @@ export interface AstraClient {
   ): Promise<SlmChatResponse>;
   chatWithContext(message: string, limit?: number): Promise<SlmChatResponse>;
   runChat(request: ChatRunRequest): Promise<ChatRunResponse>;
+  streamChat(
+    request: ChatRunRequest,
+    onEvent: (event: ChatStreamEvent) => void,
+  ): Promise<ChatRunResponse>;
   getChatRuns(limit?: number): Promise<ChatRunResponse[]>;
   getCompactTrace(jobId: string): Promise<CompactTraceResponse>;
   getSpecialistDashboard(): Promise<SpecialistDashboard>;
@@ -295,6 +312,48 @@ export class HttpAstraClient implements AstraClient {
 
   async runChat(request: ChatRunRequest) {
     return this.postJson<ChatRunResponse>("/chat/run", request);
+  }
+
+  async streamChat(
+    request: ChatRunRequest,
+    onEvent: (event: ChatStreamEvent) => void,
+  ) {
+    const response = await fetch(`${this.baseUrl}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    if (!response.body) throw new Error("Streaming response body was unavailable.");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completedRun: ChatRunResponse | null = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const event = JSON.parse(trimmed) as ChatStreamEvent;
+        onEvent(event);
+        if (event.event === "run_failed") {
+          throw new Error(readString(event.data.error, "Streaming chat failed."));
+        }
+        if (event.event === "run_completed") {
+          const run = asObject(event.data.run) as unknown as ChatRunResponse;
+          completedRun = run;
+        }
+      }
+      if (done) break;
+    }
+
+    if (!completedRun) throw new Error("Streaming chat ended before run completion.");
+    return completedRun;
   }
 
   async getChatRuns(limit = 30) {

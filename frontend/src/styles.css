@@ -275,6 +275,47 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.live-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.live-step {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px;
+  background: #fff;
+}
+
+.live-step span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.live-step small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.live-done svg {
+  color: var(--green);
+}
+
+.live-warning svg {
+  color: var(--amber);
+}
+
+.live-error svg {
+  color: var(--red);
+}
+
 .chat-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

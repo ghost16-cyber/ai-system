@@ -21,6 +21,7 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   HttpAstraClient,
+  type ChatStreamEvent,
   type ChatTraceEntry,
   type ChatRunResponse,
   type HealthData,
@@ -58,6 +59,13 @@ interface ChatMessage {
   text: string;
   createdAt: string;
   meta?: ChatRunResponse;
+}
+
+interface ChatProgressStep {
+  id: string;
+  label: string;
+  detail: string;
+  status: "active" | "done" | "warning" | "error";
 }
 
 interface SystemData {
@@ -115,6 +123,7 @@ function App() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [chatProgress, setChatProgress] = useState<ChatProgressStep[]>([]);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [systemLoading, setSystemLoading] = useState(true);
@@ -258,48 +267,115 @@ function App() {
     setChatInput("");
     setLastPrompt(prompt);
     setChatError(null);
+    setChatProgress([]);
     setChatLoading(true);
+    const request = {
+      message: prompt,
+      use_rag: settings.ragEnabled,
+      safety_mode: settings.safetyMode,
+      conversation_id: activeConversationId,
+    };
     const userMessage: ChatMessage = {
       id: newId("user"),
       role: "user",
       text: prompt,
       createdAt: new Date().toISOString(),
     };
-    setMessages((current) => [...current, userMessage]);
+    const assistantId = newId("assistant-stream");
+    const assistantMessage: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      text: "",
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((current) => [...current, userMessage, assistantMessage]);
 
     try {
-      const run = await client.runChat({
-        message: prompt,
-        use_rag: settings.ragEnabled,
-        safety_mode: settings.safetyMode,
-        conversation_id: activeConversationId,
+      let streamedText = "";
+      const run = await client.streamChat(request, (event) => {
+        if (event.event === "response_delta") {
+          const delta = readString(event.data.delta);
+          streamedText += delta;
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? { ...message, text: streamedText || "Astra is drafting the response..." }
+                : message,
+            ),
+          );
+          return;
+        }
+        const progress = progressFromStreamEvent(event);
+        if (progress) {
+          setChatProgress((current) => [...current, progress]);
+        }
+        if (event.event === "run_started") {
+          const conversationId = readString(event.data.conversation_id);
+          if (conversationId) setActiveConversationId(conversationId);
+        }
       });
       setActiveConversationId(run.conversation_id);
       const assistantText =
         readString(run.assistant_response) ||
         "Astra completed the request, but the backend did not return response text.";
-      const assistantMessage: ChatMessage = {
-        id: newId("assistant"),
-        role: "assistant",
-        text: assistantText,
-        createdAt: run.created_at,
-        meta: run,
-      };
-      setMessages((current) => [...current, assistantMessage]);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, text: assistantText, createdAt: run.created_at, meta: run }
+            : message,
+        ),
+      );
       setSelectedRunId(`chat:${run.run_id}`);
-      void refreshHistory();
-    } catch (error) {
-      const message = cleanError(error);
-      setChatError(message);
-      setMessages((current) => [
+      setChatProgress((current) => [
         ...current,
         {
-          id: newId("assistant-error"),
-          role: "assistant",
-          text: `I could not reach the live backend: ${message}`,
-          createdAt: new Date().toISOString(),
+          id: `completed-${run.run_id}`,
+          label: "Run completed",
+          detail: "Final response saved to chat history.",
+          status: "done",
         },
       ]);
+      void refreshHistory();
+    } catch (streamError) {
+      setChatProgress((current) => [
+        ...current,
+        {
+          id: `fallback-${Date.now()}`,
+          label: "Streaming fallback",
+          detail: `Live stream failed, using stable chat run: ${cleanError(streamError)}`,
+          status: "warning",
+        },
+      ]);
+      try {
+        const run = await client.runChat(request);
+        setActiveConversationId(run.conversation_id);
+        const assistantText =
+          readString(run.assistant_response) ||
+          "Astra completed the request, but the backend did not return response text.";
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? { ...message, text: assistantText, createdAt: run.created_at, meta: run }
+              : message,
+          ),
+        );
+        setSelectedRunId(`chat:${run.run_id}`);
+        void refreshHistory();
+      } catch (error) {
+        const message = cleanError(error);
+        setChatError(message);
+        setMessages((current) =>
+          current.map((item) =>
+            item.id === assistantId
+              ? {
+                  ...item,
+                  text: `I could not reach the live backend: ${message}`,
+                  createdAt: new Date().toISOString(),
+                }
+              : item,
+          ),
+        );
+      }
     } finally {
       setChatLoading(false);
     }
@@ -309,6 +385,7 @@ function App() {
     setActiveConversationId(null);
     setMessages([]);
     setChatError(null);
+    setChatProgress([]);
     setLastPrompt(null);
     setSelectedRunId(null);
   }
@@ -362,6 +439,7 @@ function App() {
             setInput={setChatInput}
             loading={chatLoading}
             error={chatError}
+            progress={chatProgress}
             lastPrompt={lastPrompt}
             onSubmit={() => void sendChat()}
             onRetry={() => lastPrompt && void sendChat(lastPrompt)}
@@ -414,6 +492,7 @@ function ChatPage({
   setInput,
   loading,
   error,
+  progress,
   lastPrompt,
   onSubmit,
   onRetry,
@@ -427,6 +506,7 @@ function ChatPage({
   setInput: (value: string) => void;
   loading: boolean;
   error: string | null;
+  progress: ChatProgressStep[];
   lastPrompt: string | null;
   onSubmit: () => void;
   onRetry: () => void;
@@ -477,9 +557,12 @@ function ChatPage({
           {loading && (
             <div className="message assistant">
               <div className="message-avatar">AI</div>
-              <div className="message-body loading-row">
-                <Activity size={16} className="spin" />
-                Calling backend, routing specialist, checking safety...
+              <div className="message-body">
+                <div className="loading-row">
+                  <Activity size={16} className="spin" />
+                  Calling backend, routing specialist, checking safety...
+                </div>
+                <LiveProgress steps={progress} />
               </div>
             </div>
           )}
@@ -1088,6 +1171,23 @@ function EmptyInline({ text }: { text: string }) {
   return <div className="empty-inline">{text}</div>;
 }
 
+function LiveProgress({ steps }: { steps: ChatProgressStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <div className="live-progress">
+      {steps.slice(-6).map((step) => (
+        <div key={step.id} className={`live-step live-${step.status}`}>
+          <CheckCircle2 size={14} />
+          <span>
+            <strong>{step.label}</strong>
+            <small>{step.detail}</small>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TraceTimeline({ events }: { events: TraceEvent[] }) {
   if (!events.length) return <EmptyInline text="No trace timeline available for this run." />;
   return (
@@ -1194,6 +1294,54 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
       detail: JSON.stringify(trace, null, 2),
     }))),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function progressFromStreamEvent(event: ChatStreamEvent): ChatProgressStep | null {
+  const id = `${event.event}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  if (event.event === "run_started") {
+    return {
+      id,
+      label: "Run started",
+      detail: readString(event.data.conversation_id, "Preparing conversation"),
+      status: "active",
+    };
+  }
+  if (event.event === "specialist_selected") {
+    return {
+      id,
+      label: "Specialist selected",
+      detail: `${readString(event.data.selected_specialist, "general_specialist")} / ${readString(event.data.intent, "unknown")}`,
+      status: "done",
+    };
+  }
+  if (event.event === "rag_completed") {
+    const used = event.data.rag_used === true;
+    return {
+      id,
+      label: "RAG completed",
+      detail: used
+        ? `Used ${readNumber(event.data.rag_context_count)} context item(s)`
+        : `Skipped: ${readString(event.data.rag_skip_reason, "not needed")}`,
+      status: used ? "done" : "warning",
+    };
+  }
+  if (event.event === "safety_completed") {
+    return {
+      id,
+      label: "Safety completed",
+      detail: `${readString(event.data.safety_decision, "unknown")} / ${readString(event.data.runtime_decision, "unknown")}`,
+      status: "done",
+    };
+  }
+  if (event.event === "run_failed") {
+    return {
+      id,
+      label: "Run failed",
+      detail: readString(event.data.error, "Streaming failed"),
+      status: "error",
+    };
+  }
+  return null;
 }
 
 function groupChatRuns(runs: ChatRunResponse[]) {
@@ -1303,6 +1451,10 @@ function cleanError(error: unknown) {
 
 function readString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function readNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function asObject(value: unknown): Record<string, unknown> {

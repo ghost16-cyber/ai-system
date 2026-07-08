@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import queue
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +12,7 @@ from uuid import uuid4
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
@@ -313,6 +317,59 @@ def create_app(
         )
         repository.store_chat_run(run)
         return run
+
+    @application.post("/chat/stream")
+    def chat_stream(request: ChatRunRequest) -> StreamingResponse:
+        previous_turns = (
+            repository.list_chat_runs_for_conversation(request.conversation_id)
+            if request.conversation_id
+            else []
+        )
+        events: queue.Queue[dict | object] = queue.Queue()
+        done = object()
+
+        def worker() -> None:
+            try:
+                run = run_chat_workflow(
+                    request,
+                    workspace_root=configured_workspace_root,
+                    previous_turns=previous_turns,
+                    event_sink=events.put,
+                )
+                repository.store_chat_run(run)
+                events.put(
+                    {
+                        "event": "run_completed",
+                        "data": {
+                            "run": run.model_dump(mode="json"),
+                            "trace_summary": run.trace_summary,
+                        },
+                    }
+                )
+            except Exception as error:
+                events.put(
+                    {
+                        "event": "run_failed",
+                        "data": {"error": str(error)},
+                    }
+                )
+            finally:
+                events.put(done)
+
+        def event_stream():
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            while True:
+                item = events.get()
+                if item is done:
+                    break
+                yield f"{json.dumps(item, default=str)}\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @application.get("/chat/runs", response_model=ChatRunsResponse)
     def chat_runs(limit: int = Query(default=20, ge=1, le=100)) -> ChatRunsResponse:

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
+
+
+def _ndjson_events(response) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in response.text.splitlines()
+        if line.strip()
+    ]
 
 
 def test_chat_run_returns_useful_backend_response(tmp_path: Path):
@@ -40,6 +49,123 @@ def test_chat_run_returns_useful_backend_response(tmp_path: Path):
     assert body["memory_summary"] is None
     assert body["trace_summary"]
     assert "No files were changed" in body["assistant_response"]
+
+
+def test_chat_stream_emits_ordered_workflow_events_and_final_summary(tmp_path: Path):
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/stream",
+            json={
+                "message": "Safely check this repo without applying patches.",
+                "use_rag": False,
+            },
+        )
+
+    assert response.status_code == 200
+    events = _ndjson_events(response)
+    event_names = [event["event"] for event in events]
+    assert event_names[:4] == [
+        "run_started",
+        "specialist_selected",
+        "rag_completed",
+        "safety_completed",
+    ]
+    assert "response_delta" in event_names
+    assert event_names[-1] == "run_completed"
+
+    completed = events[-1]["data"]["run"]
+    response_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["event"] == "response_delta"
+    )
+    assert completed["run_id"]
+    assert completed["conversation_id"]
+    assert completed["assistant_response"] == response_text
+    assert completed["rag_used"] is False
+    assert completed["rag_skip_reason"] == "disabled"
+    assert completed["trace_summary"]
+
+
+def test_chat_stream_saves_one_history_run(tmp_path: Path):
+    database_path = tmp_path / "app.db"
+    with TestClient(create_app(database_path, workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/stream",
+            json={"message": "Explain runtime safety", "use_rag": False},
+        )
+        runs = client.get("/chat/runs")
+
+    assert response.status_code == 200
+    events = _ndjson_events(response)
+    completed = events[-1]["data"]["run"]
+    assert runs.status_code == 200
+    items = runs.json()["items"]
+    assert len(items) == 1
+    assert items[0]["run_id"] == completed["run_id"]
+
+    with sqlite3.connect(database_path) as connection:
+        stored_count = connection.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0]
+    assert stored_count == 1
+
+
+def test_chat_stream_failure_reports_run_failed_and_chat_run_fallback_still_works(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from backend.app import main as main_module
+
+    original_workflow = main_module.run_chat_workflow
+
+    def stream_only_failure(*args, **kwargs):
+        if kwargs.get("event_sink") is not None:
+            raise RuntimeError("stream failed")
+        return original_workflow(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", stream_only_failure)
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        stream_response = client.post(
+            "/chat/stream",
+            json={"message": "Fallback please", "use_rag": False},
+        )
+        fallback_response = client.post(
+            "/chat/run",
+            json={"message": "Fallback please", "use_rag": False},
+        )
+        runs = client.get("/chat/runs")
+
+    assert stream_response.status_code == 200
+    events = _ndjson_events(stream_response)
+    assert events[-1]["event"] == "run_failed"
+    assert "stream failed" in events[-1]["data"]["error"]
+    assert fallback_response.status_code == 200
+    assert fallback_response.json()["assistant_response"]
+    assert len(runs.json()["items"]) == 1
+
+
+def test_chat_stream_continues_existing_conversation_with_memory(tmp_path: Path):
+    first_message = "Safely inspect the backend chat workflow."
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post(
+            "/chat/run",
+            json={"message": first_message, "use_rag": False},
+        )
+        response = client.post(
+            "/chat/stream",
+            json={
+                "message": "What did I ask first?",
+                "use_rag": False,
+                "conversation_id": first.json()["conversation_id"],
+            },
+        )
+
+    assert response.status_code == 200
+    events = _ndjson_events(response)
+    completed = events[-1]["data"]["run"]
+    assert completed["memory_used"] is True
+    assert first_message in completed["memory_summary"]
+    assert first_message in completed["assistant_response"]
 
 
 def test_chat_run_creates_new_conversation(tmp_path: Path):
