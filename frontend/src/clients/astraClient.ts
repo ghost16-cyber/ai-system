@@ -120,6 +120,7 @@ export interface ChatRunResponse {
   intent: string;
   confidence: number;
   rag_used: boolean;
+  rag_skip_reason: string | null;
   rag_context_count: number;
   runtime_decision: string;
   safety_decision: string;
@@ -128,6 +129,8 @@ export interface ChatRunResponse {
   slm_model: string | null;
   slm_fallback_reason: string | null;
   slm_latency_ms: number | null;
+  memory_used: boolean;
+  memory_summary: string | null;
   created_at: string;
   trace_summary: ChatTraceEntry[];
 }

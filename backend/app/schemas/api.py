@@ -92,6 +92,7 @@ class ChatRunResponse(BaseModel):
     intent: str
     confidence: float
     rag_used: bool
+    rag_skip_reason: str | None = None
     rag_context_count: int
     runtime_decision: str
     safety_decision: str
@@ -100,6 +101,8 @@ class ChatRunResponse(BaseModel):
     slm_model: str | None = None
     slm_fallback_reason: str | None = None
     slm_latency_ms: int | None = None
+    memory_used: bool = False
+    memory_summary: str | None = None
     created_at: datetime
     trace_summary: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -107,6 +110,37 @@ class ChatRunResponse(BaseModel):
 
 class ChatRunsResponse(BaseModel):
     items: list[ChatRunResponse]
+
+
+class ChatConversationSummary(BaseModel):
+    conversation_id: str
+    title: str
+    first_user_message: str
+    turn_count: int
+    latest_timestamp: datetime
+    latest_specialist: str
+    latest_rag_used: bool
+    latest_rag_skip_reason: str | None = None
+    latest_safety_decision: str
+    latest_runtime_decision: str
+    memory_summary: str | None = None
+
+
+class ChatConversationsResponse(BaseModel):
+    items: list[ChatConversationSummary]
+
+
+class ChatConversationDetail(BaseModel):
+    conversation_id: str
+    title: str
+    memory_summary: str | None = None
+    turns: list[ChatRunResponse]
+
+
+class ChatConversationDeleteResponse(BaseModel):
+    conversation_id: str
+    deleted: bool
+    deleted_turns: int
 
 
 PatchProposalStatus = Literal["proposed", "applied", "conflict"]

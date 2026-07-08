@@ -46,6 +46,9 @@ from backend.app.schemas.api import (
     AnalyzeProjectRequest,
     AnalyzeRequest,
     AnalyzeResponse,
+    ChatConversationDeleteResponse,
+    ChatConversationDetail,
+    ChatConversationsResponse,
     ChatRunRequest,
     ChatRunResponse,
     ChatRunsResponse,
@@ -298,9 +301,15 @@ def create_app(
 
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
+        previous_turns = (
+            repository.list_chat_runs_for_conversation(request.conversation_id)
+            if request.conversation_id
+            else []
+        )
         run = run_chat_workflow(
             request,
             workspace_root=configured_workspace_root,
+            previous_turns=previous_turns,
         )
         repository.store_chat_run(run)
         return run
@@ -308,6 +317,36 @@ def create_app(
     @application.get("/chat/runs", response_model=ChatRunsResponse)
     def chat_runs(limit: int = Query(default=20, ge=1, le=100)) -> ChatRunsResponse:
         return ChatRunsResponse(items=repository.list_chat_runs(limit=limit))
+
+    @application.get("/chat/conversations", response_model=ChatConversationsResponse)
+    def chat_conversations(
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> ChatConversationsResponse:
+        return ChatConversationsResponse(
+            items=repository.list_chat_conversations(limit=limit)
+        )
+
+    @application.get(
+        "/chat/conversations/{conversation_id}",
+        response_model=ChatConversationDetail,
+    )
+    def chat_conversation(conversation_id: str) -> ChatConversationDetail:
+        try:
+            return repository.get_chat_conversation(conversation_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @application.delete(
+        "/chat/conversations/{conversation_id}",
+        response_model=ChatConversationDeleteResponse,
+    )
+    def delete_chat_conversation(conversation_id: str) -> ChatConversationDeleteResponse:
+        deleted_turns = repository.delete_chat_conversation(conversation_id)
+        return ChatConversationDeleteResponse(
+            conversation_id=conversation_id,
+            deleted=deleted_turns > 0,
+            deleted_turns=deleted_turns,
+        )
 
     def build_patch_proposal(
         *,

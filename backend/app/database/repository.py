@@ -7,6 +7,8 @@ from pathlib import Path
 
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
+    ChatConversationDetail,
+    ChatConversationSummary,
     ChatRunResponse,
     FeedbackResponse,
     IssueResponse,
@@ -165,6 +167,7 @@ class AnalysisRepository:
                     intent TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     rag_used INTEGER NOT NULL,
+                    rag_skip_reason TEXT,
                     rag_context_count INTEGER NOT NULL,
                     runtime_decision TEXT NOT NULL,
                     safety_decision TEXT NOT NULL,
@@ -173,6 +176,8 @@ class AnalysisRepository:
                     slm_model TEXT,
                     slm_fallback_reason TEXT,
                     slm_latency_ms INTEGER,
+                    memory_used INTEGER NOT NULL DEFAULT 0,
+                    memory_summary TEXT,
                     created_at TEXT NOT NULL,
                     trace_summary_json TEXT NOT NULL
                 )
@@ -181,16 +186,27 @@ class AnalysisRepository:
             self._add_column_if_missing(
                 connection, "chat_runs", "used_real_slm", "INTEGER NOT NULL DEFAULT 0"
             )
+            self._add_column_if_missing(connection, "chat_runs", "rag_skip_reason", "TEXT")
             self._add_column_if_missing(
                 connection, "chat_runs", "slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"
             )
             self._add_column_if_missing(connection, "chat_runs", "slm_model", "TEXT")
             self._add_column_if_missing(connection, "chat_runs", "slm_fallback_reason", "TEXT")
             self._add_column_if_missing(connection, "chat_runs", "slm_latency_ms", "INTEGER")
+            self._add_column_if_missing(
+                connection, "chat_runs", "memory_used", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._add_column_if_missing(connection, "chat_runs", "memory_summary", "TEXT")
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
                 ON chat_runs (created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation
+                ON chat_runs (conversation_id, created_at ASC)
                 """
             )
 
@@ -318,6 +334,7 @@ class AnalysisRepository:
                     intent,
                     confidence,
                     rag_used,
+                    rag_skip_reason,
                     rag_context_count,
                     runtime_decision,
                     safety_decision,
@@ -326,9 +343,11 @@ class AnalysisRepository:
                     slm_model,
                     slm_fallback_reason,
                     slm_latency_ms,
+                    memory_used,
+                    memory_summary,
                     created_at,
                     trace_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -339,6 +358,7 @@ class AnalysisRepository:
                     run.intent,
                     run.confidence,
                     int(run.rag_used),
+                    run.rag_skip_reason,
                     run.rag_context_count,
                     run.runtime_decision,
                     run.safety_decision,
@@ -347,6 +367,8 @@ class AnalysisRepository:
                     run.slm_model,
                     run.slm_fallback_reason,
                     run.slm_latency_ms,
+                    int(run.memory_used),
+                    run.memory_summary,
                     run.created_at.isoformat(),
                     json.dumps(run.trace_summary, sort_keys=True),
                 ),
@@ -364,37 +386,144 @@ class AnalysisRepository:
                 (limit,),
             ).fetchall()
 
+        return [self._chat_run_from_row(row) for row in rows]
+
+    def list_chat_runs_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int | None = None,
+    ) -> list[ChatRunResponse]:
+        query = """
+            SELECT *
+            FROM chat_runs
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC
+        """
+        params: tuple[object, ...] = (conversation_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (conversation_id, limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._chat_run_from_row(row) for row in rows]
+
+    def list_chat_conversations(self, *, limit: int) -> list[ChatConversationSummary]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT
+                        *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY conversation_id
+                            ORDER BY created_at ASC
+                        ) AS first_rank,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY conversation_id
+                            ORDER BY created_at DESC
+                        ) AS latest_rank,
+                        COUNT(*) OVER (PARTITION BY conversation_id) AS turn_count
+                    FROM chat_runs
+                )
+                SELECT
+                    latest.conversation_id,
+                    first.user_message AS first_user_message,
+                    latest.turn_count,
+                    latest.created_at AS latest_timestamp,
+                    latest.selected_specialist AS latest_specialist,
+                    latest.rag_used AS latest_rag_used,
+                    latest.rag_skip_reason AS latest_rag_skip_reason,
+                    latest.safety_decision AS latest_safety_decision,
+                    latest.runtime_decision AS latest_runtime_decision,
+                    latest.memory_summary AS memory_summary
+                FROM ranked latest
+                JOIN ranked first
+                    ON first.conversation_id = latest.conversation_id
+                    AND first.first_rank = 1
+                WHERE latest.latest_rank = 1
+                ORDER BY latest.created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
         return [
-            ChatRunResponse(
-                run_id=str(row["run_id"]),
+            ChatConversationSummary(
                 conversation_id=str(row["conversation_id"]),
-                user_message=str(row["user_message"]),
-                assistant_response=str(row["assistant_response"]),
-                selected_specialist=str(row["selected_specialist"]),
-                intent=str(row["intent"]),
-                confidence=float(row["confidence"]),
-                rag_used=bool(row["rag_used"]),
-                rag_context_count=int(row["rag_context_count"]),
-                runtime_decision=str(row["runtime_decision"]),
-                safety_decision=str(row["safety_decision"]),
-                used_real_slm=bool(row["used_real_slm"]),
-                slm_provider=str(row["slm_provider"]),
-                slm_model=str(row["slm_model"]) if row["slm_model"] else None,
-                slm_fallback_reason=(
-                    str(row["slm_fallback_reason"])
-                    if row["slm_fallback_reason"]
+                title=_conversation_title(str(row["first_user_message"])),
+                first_user_message=str(row["first_user_message"]),
+                turn_count=int(row["turn_count"]),
+                latest_timestamp=row["latest_timestamp"],
+                latest_specialist=str(row["latest_specialist"]),
+                latest_rag_used=bool(row["latest_rag_used"]),
+                latest_rag_skip_reason=(
+                    str(row["latest_rag_skip_reason"])
+                    if row["latest_rag_skip_reason"]
                     else None
                 ),
-                slm_latency_ms=(
-                    int(row["slm_latency_ms"])
-                    if row["slm_latency_ms"] is not None
-                    else None
-                ),
-                created_at=row["created_at"],
-                trace_summary=json.loads(row["trace_summary_json"]),
+                latest_safety_decision=str(row["latest_safety_decision"]),
+                latest_runtime_decision=str(row["latest_runtime_decision"]),
+                memory_summary=str(row["memory_summary"]) if row["memory_summary"] else None,
             )
             for row in rows
         ]
+
+    def get_chat_conversation(self, conversation_id: str) -> ChatConversationDetail:
+        turns = self.list_chat_runs_for_conversation(conversation_id)
+        if not turns:
+            raise LookupError("Conversation not found.")
+        latest_summary = next(
+            (turn.memory_summary for turn in reversed(turns) if turn.memory_summary),
+            None,
+        )
+        return ChatConversationDetail(
+            conversation_id=conversation_id,
+            title=_conversation_title(turns[0].user_message),
+            memory_summary=latest_summary,
+            turns=turns,
+        )
+
+    def delete_chat_conversation(self, conversation_id: str) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM chat_runs WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+        return int(cursor.rowcount)
+
+    def _chat_run_from_row(self, row: sqlite3.Row) -> ChatRunResponse:
+        return ChatRunResponse(
+            run_id=str(row["run_id"]),
+            conversation_id=str(row["conversation_id"]),
+            user_message=str(row["user_message"]),
+            assistant_response=str(row["assistant_response"]),
+            selected_specialist=str(row["selected_specialist"]),
+            intent=str(row["intent"]),
+            confidence=float(row["confidence"]),
+            rag_used=bool(row["rag_used"]),
+            rag_skip_reason=str(row["rag_skip_reason"]) if row["rag_skip_reason"] else None,
+            rag_context_count=int(row["rag_context_count"]),
+            runtime_decision=str(row["runtime_decision"]),
+            safety_decision=str(row["safety_decision"]),
+            used_real_slm=bool(row["used_real_slm"]),
+            slm_provider=str(row["slm_provider"]),
+            slm_model=str(row["slm_model"]) if row["slm_model"] else None,
+            slm_fallback_reason=(
+                str(row["slm_fallback_reason"])
+                if row["slm_fallback_reason"]
+                else None
+            ),
+            slm_latency_ms=(
+                int(row["slm_latency_ms"])
+                if row["slm_latency_ms"] is not None
+                else None
+            ),
+            memory_used=bool(row["memory_used"]),
+            memory_summary=str(row["memory_summary"]) if row["memory_summary"] else None,
+            created_at=row["created_at"],
+            trace_summary=json.loads(row["trace_summary_json"]),
+        )
 
     def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:
         if not proposals:
@@ -719,3 +848,10 @@ class AnalysisRepository:
             suggestion_accepted=suggestion_accepted,
             created_at=created_at,
         )
+
+
+def _conversation_title(first_user_message: str) -> str:
+    title = " ".join(first_user_message.strip().split())
+    if not title:
+        return "Untitled conversation"
+    return title[:80]

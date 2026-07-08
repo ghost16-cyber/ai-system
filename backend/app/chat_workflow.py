@@ -59,10 +59,14 @@ def run_chat_workflow(
     request: ChatRunRequest,
     *,
     workspace_root: str | Path,
+    previous_turns: list[ChatRunResponse] | None = None,
 ) -> ChatRunResponse:
     created_at = datetime.now(timezone.utc)
     run_id = str(uuid4())
     conversation_id = request.conversation_id or str(uuid4())
+    prior_turns = previous_turns or []
+    memory_summary = _build_memory_summary(prior_turns)
+    memory_used = bool(memory_summary) and _should_use_memory(request.message, prior_turns)
     trace: list[dict[str, Any]] = [
         _trace(
             "accepted",
@@ -70,6 +74,23 @@ def run_chat_workflow(
             "Astra created one consolidated chat run for this message.",
         )
     ]
+    trace.append(
+        _trace(
+            "memory",
+            "Conversation memory used" if memory_used else "Conversation memory not used",
+            (
+                "Local conversation summary was attached to help answer this follow-up."
+                if memory_used
+                else "No useful prior conversation context was attached for this message."
+            ),
+            {
+                "conversation_id": conversation_id,
+                "previous_turn_count": len(prior_turns),
+                "memory_used": memory_used,
+            },
+            status="passed",
+        )
+    )
 
     route = _route_message(request.message, trace)
     rag_results = _retrieve_context(
@@ -92,6 +113,7 @@ def run_chat_workflow(
         validation=validation,
         profile=profile,
         safety_mode=request.safety_mode,
+        memory_summary=memory_summary if memory_used else None,
     )
     slm_response_for_text = slm_result if slm_result.get("used_real_slm") else None
     assistant_response = _assistant_response(
@@ -102,6 +124,8 @@ def run_chat_workflow(
         profile=profile,
         slm_response=slm_response_for_text,
         runtime_context=runtime_context,
+        memory_summary=memory_summary if memory_used else None,
+        previous_turns=prior_turns,
     )
 
     return ChatRunResponse(
@@ -113,6 +137,7 @@ def run_chat_workflow(
         intent=str(route.get("task_type") or classify_task(request.message)),
         confidence=_float(route.get("confidence"), 0.0),
         rag_used=bool(rag_results),
+        rag_skip_reason=_rag_skip_reason(trace),
         rag_context_count=len(rag_results),
         runtime_decision=_runtime_label(validation, profile),
         safety_decision=validation.decision,
@@ -133,6 +158,8 @@ def run_chat_workflow(
             if isinstance(slm_result.get("latency_ms"), int)
             else None
         ),
+        memory_used=memory_used,
+        memory_summary=memory_summary,
         created_at=created_at,
         trace_summary=trace,
     )
@@ -297,6 +324,7 @@ def _call_slm_gateway(
     validation,
     profile,
     safety_mode: str,
+    memory_summary: str | None,
 ) -> dict[str, Any]:
     prompt = build_chat_prompt(
         message,
@@ -304,6 +332,7 @@ def _call_slm_gateway(
         rag_results=rag_results,
         validation=validation,
         profile=profile,
+        memory_summary=memory_summary,
     )
     try:
         response = slm_gateway.chat_with_slm(
@@ -315,6 +344,7 @@ def _call_slm_gateway(
                 "runtime_decision": _runtime_label(validation, profile),
                 "safety_decision": validation.decision,
                 "safety_mode": safety_mode,
+                "conversation_memory": memory_summary,
             },
         )
     except Exception as error:
@@ -373,12 +403,19 @@ def build_chat_prompt(
     rag_results: list[dict[str, Any]],
     validation,
     profile,
+    memory_summary: str | None = None,
 ) -> str:
     capability_lines = "\n".join(f"- {line}" for line in ASTRA_CAPABILITY_SUMMARY)
     rag_block = (
         rag_context_service.compact_context(rag_results)
         if rag_results
         else "No RAG context is attached for this request."
+    )
+    memory_block = (
+        "Conversation context (local to this conversation; use only if it helps, and answer the latest user message first):\n"
+        f"{memory_summary}\n\n"
+        if memory_summary
+        else ""
     )
     return (
         "You are Astra, a local prototype assistant UI backed by this backend.\n"
@@ -396,6 +433,7 @@ def build_chat_prompt(
         f"- Runtime decision: {_runtime_label(validation, profile)}\n\n"
         "Optional RAG context:\n"
         f"{rag_block}\n\n"
+        f"{memory_block}"
         "User message:\n"
         f"{message}\n"
     )
@@ -410,9 +448,15 @@ def _assistant_response(
     profile,
     slm_response: dict[str, Any] | None,
     runtime_context,
+    memory_summary: str | None,
+    previous_turns: list[ChatRunResponse],
 ) -> str:
     if slm_response and slm_response.get("assistant_response"):
         return str(slm_response["assistant_response"])
+
+    memory_answer = _memory_followup_answer(message, previous_turns)
+    if memory_summary and memory_answer:
+        return memory_answer
 
     if _is_greeting(message):
         return "Hi. I can help inspect, explain, plan, or draft safe next steps for the Astra system."
@@ -444,6 +488,102 @@ def _assistant_response(
         f"No files were changed, no tools were executed from chat, and no destructive action was authorized."
         + (f" Detected runtime hardware: {gpu}." if gpu else "")
     )
+
+
+def _build_memory_summary(previous_turns: list[ChatRunResponse]) -> str | None:
+    if not previous_turns:
+        return None
+    selected_turns = previous_turns[-4:]
+    lines = [
+        f"Earlier turns in conversation: {len(previous_turns)}.",
+        f"First user message: {_safe_memory_text(previous_turns[0].user_message, 180)}",
+    ]
+    for index, turn in enumerate(selected_turns, start=1):
+        lines.append(
+            "Turn "
+            f"{index}: user asked '{_safe_memory_text(turn.user_message, 140)}'; "
+            f"Astra answered '{_safe_memory_text(turn.assistant_response, 180)}'; "
+            f"specialist={turn.selected_specialist}; intent={turn.intent}; "
+            f"rag={'used' if turn.rag_used else 'not used'}."
+        )
+    return _truncate(" ".join(lines), 1200)
+
+
+def _should_use_memory(message: str, previous_turns: list[ChatRunResponse]) -> bool:
+    if not previous_turns:
+        return False
+    lowered = message.strip().lower()
+    if _is_greeting(message):
+        return False
+    followup_terms = (
+        "again",
+        "also",
+        "continue",
+        "earlier",
+        "follow up",
+        "first",
+        "it",
+        "last",
+        "previous",
+        "same",
+        "second",
+        "that",
+        "them",
+        "this",
+        "those",
+        "what did i",
+        "what was",
+        "you said",
+    )
+    return any(term in lowered for term in followup_terms)
+
+
+def _memory_followup_answer(
+    message: str,
+    previous_turns: list[ChatRunResponse],
+) -> str | None:
+    if not previous_turns:
+        return None
+    lowered = message.lower()
+    if "what did i ask" in lowered or "first" in lowered and "ask" in lowered:
+        return (
+            "Earlier in this conversation, your first message was: "
+            f"{previous_turns[0].user_message}"
+        )
+    if "previous" in lowered or "earlier" in lowered or "last" in lowered:
+        latest = previous_turns[-1]
+        return (
+            "The previous turn was about: "
+            f"{latest.user_message} "
+            f"I answered with: {_truncate(latest.assistant_response, 260)}"
+        )
+    return None
+
+
+def _safe_memory_text(text: str, limit: int) -> str:
+    redacted = text
+    lowered = redacted.lower()
+    sensitive_terms = ("password", "token", "secret", "api key", "credential")
+    if any(term in lowered for term in sensitive_terms):
+        redacted = "[sensitive-looking content omitted from memory summary]"
+    return _truncate(" ".join(redacted.split()), limit)
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _rag_skip_reason(trace: list[dict[str, Any]]) -> str | None:
+    for item in trace:
+        if item.get("phase") != "rag":
+            continue
+        data = item.get("data")
+        if isinstance(data, dict) and data.get("reason"):
+            reason = str(data["reason"])
+            return None if reason == "project_context_relevant" else reason
+    return None
 
 
 def _rag_trace(reason: str, detail: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

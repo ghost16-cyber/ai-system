@@ -29,14 +29,149 @@ def test_chat_run_returns_useful_backend_response(tmp_path: Path):
     assert body["intent"]
     assert 0 <= body["confidence"] <= 1
     assert body["rag_used"] is False
+    assert body["rag_skip_reason"] == "disabled"
     assert body["rag_context_count"] == 0
     assert body["safety_decision"] in {"allow", "downgrade", "block"}
     assert body["runtime_decision"]
     assert body["used_real_slm"] is False
     assert body["slm_provider"] == "fallback"
     assert body["slm_fallback_reason"] == "ollama_unreachable"
+    assert body["memory_used"] is False
+    assert body["memory_summary"] is None
     assert body["trace_summary"]
     assert "No files were changed" in body["assistant_response"]
+
+
+def test_chat_run_creates_new_conversation(tmp_path: Path):
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/run",
+            json={"message": "Explain runtime safety", "use_rag": False},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["conversation_id"]
+    assert body["memory_used"] is False
+    assert body["memory_summary"] is None
+
+
+def test_chat_run_continues_existing_conversation_with_memory(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from backend.app import chat_workflow
+
+    captured_prompt = ""
+
+    def capture_slm(message, context):
+        nonlocal captured_prompt
+        captured_prompt = context["prompt"]
+        return {
+            "source": "fallback",
+            "provider": "fallback",
+            "used_real_slm": False,
+            "fallback_reason": "test_fallback",
+        }
+
+    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", capture_slm)
+
+    first_message = "Safely inspect the backend chat workflow."
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post(
+            "/chat/run",
+            json={"message": first_message, "use_rag": False},
+        )
+        conversation_id = first.json()["conversation_id"]
+        second = client.post(
+            "/chat/run",
+            json={
+                "message": "What did I ask first?",
+                "use_rag": False,
+                "conversation_id": conversation_id,
+            },
+        )
+
+    assert second.status_code == 200
+    body = second.json()
+    assert body["conversation_id"] == conversation_id
+    assert body["memory_used"] is True
+    assert first_message in body["memory_summary"]
+    assert first_message in body["assistant_response"]
+    assert "Conversation context" in captured_prompt
+
+
+def test_chat_run_without_conversation_id_starts_fresh_conversation(tmp_path: Path):
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post("/chat/run", json={"message": "First topic", "use_rag": False})
+        second = client.post("/chat/run", json={"message": "Second topic", "use_rag": False})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["conversation_id"] != second.json()["conversation_id"]
+    assert second.json()["memory_used"] is False
+
+
+def test_chat_conversation_listing_detail_and_deletion(tmp_path: Path):
+    database_path = tmp_path / "app.db"
+    with TestClient(create_app(database_path, workspace_root=tmp_path)) as client:
+        first = client.post("/chat/run", json={"message": "List this conversation", "use_rag": False})
+        conversation_id = first.json()["conversation_id"]
+        client.post(
+            "/chat/run",
+            json={
+                "message": "Continue that thought",
+                "use_rag": False,
+                "conversation_id": conversation_id,
+            },
+        )
+        listing = client.get("/chat/conversations")
+        detail = client.get(f"/chat/conversations/{conversation_id}")
+        deleted = client.delete(f"/chat/conversations/{conversation_id}")
+        detail_after_delete = client.get(f"/chat/conversations/{conversation_id}")
+
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["conversation_id"] == conversation_id
+    assert listing.json()["items"][0]["turn_count"] == 2
+    assert detail.status_code == 200
+    assert len(detail.json()["turns"]) == 2
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["deleted_turns"] == 2
+    assert detail_after_delete.status_code == 404
+
+
+def test_rag_gating_still_uses_latest_message_with_conversation_memory(
+    tmp_path: Path,
+):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "phase49.md").write_text(
+        "Phase 49 chat workflow should group one readable run per message.",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post(
+            "/chat/run",
+            json={"message": "What should Phase 49 chat history show?", "use_rag": True},
+        )
+        second = client.post(
+            "/chat/run",
+            json={
+                "message": "Can you say that again?",
+                "use_rag": True,
+                "conversation_id": first.json()["conversation_id"],
+            },
+        )
+
+    assert first.status_code == 200
+    assert first.json()["rag_used"] is True
+    assert second.status_code == 200
+    body = second.json()
+    assert body["memory_used"] is True
+    assert body["rag_used"] is False
+    assert body["rag_skip_reason"] == "low_relevance"
 
 
 def test_chat_run_uses_rag_context_when_enabled(tmp_path: Path):

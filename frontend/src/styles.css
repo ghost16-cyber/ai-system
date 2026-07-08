@@ -517,6 +517,49 @@ input:focus-visible {
   font-size: 14px;
 }
 
+.turn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.turn-detail {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-soft);
+}
+
+.turn-detail summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.turn-detail summary span {
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-detail summary small {
+  color: var(--faint);
+}
+
+.turn-detail .info-list {
+  margin-top: 12px;
+}
+
+.turn-detail p {
+  margin: 12px 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .trace-list {
   display: flex;
   flex-direction: column;

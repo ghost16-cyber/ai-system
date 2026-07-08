@@ -111,6 +111,7 @@ function App() {
   const [activePage, setActivePage] = useState<PageId>("chat");
   const [settings, setSettings] = useState<FrontendSettings>(loadSettings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -271,8 +272,9 @@ function App() {
         message: prompt,
         use_rag: settings.ragEnabled,
         safety_mode: settings.safetyMode,
-        conversation_id: null,
+        conversation_id: activeConversationId,
       });
+      setActiveConversationId(run.conversation_id);
       const assistantText =
         readString(run.assistant_response) ||
         "Astra completed the request, but the backend did not return response text.";
@@ -301,6 +303,14 @@ function App() {
     } finally {
       setChatLoading(false);
     }
+  }
+
+  function startNewChat() {
+    setActiveConversationId(null);
+    setMessages([]);
+    setChatError(null);
+    setLastPrompt(null);
+    setSelectedRunId(null);
   }
 
   function resetLocalState() {
@@ -355,6 +365,8 @@ function App() {
             lastPrompt={lastPrompt}
             onSubmit={() => void sendChat()}
             onRetry={() => lastPrompt && void sendChat(lastPrompt)}
+            onNewChat={startNewChat}
+            activeConversationId={activeConversationId}
             settings={settings}
             runtime={systemData?.runtime ?? null}
           />
@@ -405,6 +417,8 @@ function ChatPage({
   lastPrompt,
   onSubmit,
   onRetry,
+  onNewChat,
+  activeConversationId,
   settings,
   runtime,
 }: {
@@ -416,6 +430,8 @@ function ChatPage({
   lastPrompt: string | null;
   onSubmit: () => void;
   onRetry: () => void;
+  onNewChat: () => void;
+  activeConversationId: string | null;
   settings: FrontendSettings;
   runtime: RuntimeContext | null;
 }) {
@@ -427,11 +443,17 @@ function ChatPage({
   return (
     <section className="page-grid chat-grid">
       <div className="chat-panel">
-        <PageTitle
-          eyebrow="Chat"
-          title="Ask Astra"
-          detail="Live backend calls only. Chat runs in preview mode and does not apply patches, delete files, or execute destructive actions."
-        />
+        <div className="page-toolbar">
+          <PageTitle
+            eyebrow="Chat"
+            title="Ask Astra"
+            detail="Live backend calls only. Chat runs in preview mode and does not apply patches, delete files, or execute destructive actions."
+          />
+          <button className="secondary-button" onClick={onNewChat} disabled={loading}>
+            <MessageSquareText size={16} />
+            New chat
+          </button>
+        </div>
         <div className="message-list">
           {messages.length === 0 ? (
             <EmptyState
@@ -492,6 +514,7 @@ function ChatPage({
           items={[
             ["Safety mode", labelSafety(settings.safetyMode)],
             ["RAG", settings.ragEnabled ? "Enabled" : "Disabled"],
+            ["Conversation", activeConversationId ? activeConversationId.slice(0, 8) : "Fresh chat"],
             ["Specialist routing", settings.specialistRoutingEnabled ? "Enabled" : "Disabled"],
             ["Runtime", runtime ? `${runtime.machine.gpu || "CPU"} / ${runtime.machine.ramGb} GB RAM` : "Unavailable"],
           ]}
@@ -526,6 +549,11 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
         label={run.used_real_slm ? "SLM latency" : "Fallback reason"}
         value={run.used_real_slm ? `${run.slm_latency_ms ?? 0} ms` : run.slm_fallback_reason ?? "Unavailable"}
         tone={run.used_real_slm ? "green" : "amber"}
+      />
+      <Metric
+        label="Memory"
+        value={run.memory_used ? "used" : "not used"}
+        tone={run.memory_used ? "green" : "blue"}
       />
       <Metric label="Run ID" value={run.run_id ? run.run_id.slice(0, 8) : "Not returned"} />
       <div className="meta-reason">
@@ -656,9 +684,15 @@ function HistoryPage({
 }) {
   const items = buildHistoryItems(data);
   const selected = items.find((item) => item.id === selectedRunId) ?? items[0] ?? null;
+  const selectedConversationRuns =
+    selected?.kind === "Conversation"
+      ? (data?.chatRuns ?? [])
+          .filter((run) => `conversation:${run.conversation_id}` === selected.id)
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      : [];
   const selectedChatRun =
-    selected?.kind === "Chat"
-      ? data?.chatRuns.find((run) => `chat:${run.run_id}` === selected.id) ?? null
+    selectedConversationRuns.length > 0
+      ? selectedConversationRuns[selectedConversationRuns.length - 1]
       : null;
 
   useEffect(() => {
@@ -709,19 +743,60 @@ function HistoryPage({
                     ["Decision", selected.decision ?? "Unavailable"],
                     ...(selectedChatRun
                       ? [
+                          ["Conversation", selectedChatRun.conversation_id] as [string, string],
+                          ["Turns", String(selectedConversationRuns.length)] as [string, string],
                           ["Specialist", selectedChatRun.selected_specialist || "Not routed"] as [string, string],
                           ["Intent", `${selectedChatRun.intent || "unknown"} / ${Math.round((selectedChatRun.confidence ?? 0) * 100)}%`] as [string, string],
                           ["RAG", ragDisplay(selectedChatRun)] as [string, string],
+                          ["Memory", selectedChatRun.memory_used ? "used" : "not used"] as [string, string],
                           ["SLM", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_provider} / ${selectedChatRun.slm_model ?? "selected model"}` : `Fallback / ${selectedChatRun.slm_model ?? "no model"}`] as [string, string],
                           ["SLM detail", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_latency_ms ?? 0} ms` : selectedChatRun.slm_fallback_reason ?? "Unavailable"] as [string, string],
                         ]
                       : []),
                   ]}
                 />
+                {selectedConversationRuns.length > 0 && (
+                  <>
+                    <h3>Conversation turns</h3>
+                    <div className="turn-list">
+                      {selectedConversationRuns.map((turn, index) => (
+                        <details key={turn.run_id} className="turn-detail">
+                          <summary>
+                            <strong>Turn {index + 1}</strong>
+                            <span>{turn.user_message.slice(0, 90)}</span>
+                            <small>{formatAge(turn.created_at)}</small>
+                          </summary>
+                          <InfoList
+                            items={[
+                              ["Specialist", turn.selected_specialist || "Not routed"],
+                              ["RAG", ragDisplay(turn)],
+                              ["Memory", turn.memory_used ? "used" : "not used"],
+                              ["Safety/runtime", `${turn.safety_decision || "unknown"} / ${turn.runtime_decision || "unknown"}`],
+                            ]}
+                          />
+                          <p>{turn.assistant_response}</p>
+                          <details>
+                            <summary>Raw trace details</summary>
+                            <pre className="json-preview">
+                              {JSON.stringify(
+                                {
+                                  ...turn,
+                                  trace_summary: turn.trace_summary,
+                                },
+                                null,
+                                2,
+                              )}
+                            </pre>
+                          </details>
+                        </details>
+                      ))}
+                    </div>
+                  </>
+                )}
                 <h3>Trace timeline</h3>
                 <TraceTimeline
                   events={
-                    selected.kind === "Chat"
+                    selected.kind === "Conversation"
                       ? traceSummaryToEvents(selectedChatRun?.trace_summary ?? [])
                       : selectedTrace?.trace ?? []
                   }
@@ -1032,38 +1107,65 @@ function TraceTimeline({ events }: { events: TraceEvent[] }) {
 }
 
 function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
+  const conversationItems = Array.from(groupChatRuns(data?.chatRuns ?? []).entries()).map(
+    ([conversationId, turns]) => {
+      const sorted = [...turns].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      );
+      const first = sorted[0];
+      const latest = sorted[sorted.length - 1];
+      return {
+        id: `conversation:${conversationId}`,
+        title: first?.user_message.slice(0, 80) || "Chat conversation",
+        kind: "Conversation",
+        meta: `${sorted.length} turn${sorted.length === 1 ? "" : "s"}`,
+        preview: latest?.assistant_response.slice(0, 140),
+        createdAt: latest?.created_at ?? new Date().toISOString(),
+        decision: latest
+          ? `${latest.safety_decision || "unknown"} / ${latest.runtime_decision || "unknown"} / RAG ${latest.rag_used ? "used" : "not used"}`
+          : "Unavailable",
+        detail: JSON.stringify(
+          {
+            conversation_id: conversationId,
+            title: first?.user_message,
+            turn_count: sorted.length,
+            latest_timestamp: latest?.created_at,
+            latest_specialist: latest?.selected_specialist,
+            latest_rag_used: latest?.rag_used,
+            latest_rag_skip_reason: latest?.rag_skip_reason,
+            latest_safety_decision: latest?.safety_decision,
+            latest_runtime_decision: latest?.runtime_decision,
+            memory_summary: latest?.memory_summary,
+            turns: sorted.map((run) => ({
+              run_id: run.run_id,
+              user_message: run.user_message,
+              assistant_response: run.assistant_response,
+              selected_specialist: run.selected_specialist,
+              intent: run.intent,
+              confidence: run.confidence,
+              rag_used: run.rag_used,
+              rag_skip_reason: run.rag_skip_reason,
+              rag_context_count: run.rag_context_count,
+              memory_used: run.memory_used,
+              used_real_slm: run.used_real_slm,
+              slm_provider: run.slm_provider,
+              slm_model: run.slm_model,
+              slm_fallback_reason: run.slm_fallback_reason,
+              slm_latency_ms: run.slm_latency_ms,
+              safety_decision: run.safety_decision,
+              runtime_decision: run.runtime_decision,
+              created_at: run.created_at,
+            })),
+          },
+          null,
+          2,
+        ),
+      };
+    },
+  );
+
   return [
-    ...(data?.chatRuns ?? []).map((run) => ({
-      id: `chat:${run.run_id}`,
-      title: run.user_message.slice(0, 80) || "Chat run",
-      kind: "Chat",
-      meta: `${run.selected_specialist || "Not routed"} / ${Math.round((run.confidence ?? 0) * 100)}%`,
-      preview: run.assistant_response.slice(0, 140),
-      createdAt: run.created_at,
-      decision: `${run.safety_decision || "unknown"} / ${run.runtime_decision || "unknown"} / RAG ${run.rag_used ? "used" : "not used"}`,
-      detail: JSON.stringify(
-        {
-          user_message: run.user_message,
-          assistant_response: run.assistant_response,
-          selected_specialist: run.selected_specialist,
-          intent: run.intent,
-          confidence: run.confidence,
-          rag_used: run.rag_used,
-          rag_context_count: run.rag_context_count,
-          used_real_slm: run.used_real_slm,
-          slm_provider: run.slm_provider,
-          slm_model: run.slm_model,
-          slm_fallback_reason: run.slm_fallback_reason,
-          slm_latency_ms: run.slm_latency_ms,
-          safety_decision: run.safety_decision,
-          runtime_decision: run.runtime_decision,
-          conversation_id: run.conversation_id,
-          run_id: run.run_id,
-        },
-        null,
-        2,
-      ),
-    })),
+    ...conversationItems,
     ...(data?.jobs ?? []).map((job) => ({
       id: `job:${job.job_id}`,
       title: jobTitle(job),
@@ -1092,6 +1194,15 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
       detail: JSON.stringify(trace, null, 2),
     }))),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function groupChatRuns(runs: ChatRunResponse[]) {
+  const groups = new Map<string, ChatRunResponse[]>();
+  for (const run of runs) {
+    const conversationId = run.conversation_id || run.run_id;
+    groups.set(conversationId, [...(groups.get(conversationId) ?? []), run]);
+  }
+  return groups;
 }
 
 function looksDestructive(text: string) {
@@ -1127,6 +1238,11 @@ function labelSafety(mode: SafetyMode) {
 
 function ragDisplay(run: ChatRunResponse) {
   if (run.rag_used) return `Used (${run.rag_context_count ?? 0})`;
+  const directReason = readString(run.rag_skip_reason);
+  if (directReason === "greeting") return "Skipped: greeting";
+  if (directReason === "system_meta_question") return "Skipped: system/meta question";
+  if (directReason === "low_relevance") return "Skipped: low relevance";
+  if (directReason === "disabled") return "Skipped: disabled";
   const ragTrace = run.trace_summary?.find((entry) => entry.phase === "rag");
   const reason = readString(ragTrace?.data?.reason);
   if (reason === "greeting") return "Skipped: greeting";
