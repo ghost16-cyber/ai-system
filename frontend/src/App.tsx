@@ -128,6 +128,8 @@ function App() {
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [systemLoading, setSystemLoading] = useState(true);
   const [systemError, setSystemError] = useState<string | null>(null);
+  const [ragIndexLoading, setRagIndexLoading] = useState(false);
+  const [ragIndexNotice, setRagIndexNotice] = useState<string | null>(null);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -390,6 +392,22 @@ function App() {
     setSelectedRunId(null);
   }
 
+  async function rebuildRagIndex() {
+    setRagIndexLoading(true);
+    setRagIndexNotice(null);
+    try {
+      const result = await client.rebuildRagIndex();
+      setRagIndexNotice(
+        `Indexed ${result.indexed_files} file(s) into ${result.indexed_chunks} chunk(s).`,
+      );
+      await refreshSystem();
+    } catch (error) {
+      setRagIndexNotice(`Could not rebuild project index: ${cleanError(error)}`);
+    } finally {
+      setRagIndexLoading(false);
+    }
+  }
+
   function resetLocalState() {
     localStorage.removeItem(SETTINGS_KEY);
     setMessages([]);
@@ -455,7 +473,10 @@ function App() {
             loading={systemLoading}
             error={systemError}
             settings={settings}
+            ragIndexLoading={ragIndexLoading}
+            ragIndexNotice={ragIndexNotice}
             onRefresh={() => void refreshSystem()}
+            onRebuildRagIndex={() => void rebuildRagIndex()}
           />
         )}
         {activePage === "history" && (
@@ -612,6 +633,7 @@ function ChatPage({
 }
 
 function ChatResultMeta({ run }: { run: ChatRunResponse }) {
+  const sources = ragSources(run);
   return (
     <div className="result-meta">
       <Metric label="Specialist" value={run.selected_specialist || "Not routed"} />
@@ -639,6 +661,16 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
         tone={run.memory_used ? "green" : "blue"}
       />
       <Metric label="Run ID" value={run.run_id ? run.run_id.slice(0, 8) : "Not returned"} />
+      {sources.length > 0 && (
+        <div className="source-list">
+          <strong>RAG sources</strong>
+          {sources.map((source) => (
+            <span key={`${source.path}-${source.startLine}-${source.endLine}`}>
+              {formatSource(source)}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="meta-reason">
         <TraceTimeline events={traceSummaryToEvents(run.trace_summary ?? [])} />
       </div>
@@ -651,17 +683,24 @@ function SystemPage({
   loading,
   error,
   settings,
+  ragIndexLoading,
+  ragIndexNotice,
   onRefresh,
+  onRebuildRagIndex,
 }: {
   data: SystemData | null;
   loading: boolean;
   error: string | null;
   settings: FrontendSettings;
+  ragIndexLoading: boolean;
+  ragIndexNotice: string | null;
   onRefresh: () => void;
+  onRebuildRagIndex: () => void;
 }) {
   const runtime = data?.runtime;
   const selectedProfile = data?.selectedSlm?.profile ?? {};
   const modelCounts = data?.specialistDashboard?.models_by_status ?? {};
+  const projectIndex = data?.rag?.project_index;
 
   return (
     <section className="page-stack">
@@ -712,7 +751,7 @@ function SystemPage({
               ["Gateway model", data?.slmStatus?.configured_model || data?.slmStatus?.selected_model || readString(selectedProfile.model_name) || "Unavailable"],
               ["Profiles", data?.slmProfiles ? String(data.slmProfiles.count) : "Unavailable"],
               ["RAG status", data?.rag?.status ?? "Unavailable"],
-              ["Indexed files", data?.rag ? String(data.rag.indexed_file_count) : "Unavailable"],
+              ["Legacy indexed files", data?.rag ? String(data.rag.indexed_file_count) : "Unavailable"],
             ]}
           />
         </section>
@@ -729,6 +768,30 @@ function SystemPage({
           />
         </section>
       </div>
+      <section className="panel">
+        <div className="panel-title-row">
+          <PanelTitle icon={Database} title="Project RAG index" />
+          <button className="secondary-button" onClick={onRebuildRagIndex} disabled={ragIndexLoading}>
+            {ragIndexLoading ? <Activity size={16} className="spin" /> : <RefreshCw size={16} />}
+            Rebuild project index
+          </button>
+        </div>
+        {ragIndexNotice && (
+          <Notice
+            tone={ragIndexNotice.startsWith("Could not") ? "amber" : "blue"}
+            text={ragIndexNotice}
+          />
+        )}
+        <InfoList
+          items={[
+            ["Index status", projectIndex?.exists ? "Ready" : projectIndex?.status ?? "Missing"],
+            ["Root", projectIndex?.root ?? data?.rag?.project_root ?? "Unavailable"],
+            ["Indexed files", String(projectIndex?.indexed_files ?? data?.rag?.project_index_file_count ?? 0)],
+            ["Indexed chunks", String(projectIndex?.indexed_chunks ?? data?.rag?.project_index_chunk_count ?? 0)],
+            ["Last indexed", projectIndex?.created_at ? formatDate(projectIndex.created_at) : "Not indexed yet"],
+          ]}
+        />
+      </section>
       <section className="panel">
         <PanelTitle icon={Wrench} title="Registered tools" />
         {data?.tools.length ? (
@@ -857,6 +920,16 @@ function HistoryPage({
                               ["Safety/runtime", `${turn.safety_decision || "unknown"} / ${turn.runtime_decision || "unknown"}`],
                             ]}
                           />
+                          {ragSources(turn).length > 0 && (
+                            <div className="source-list">
+                              <strong>RAG sources</strong>
+                              {ragSources(turn).map((source) => (
+                                <span key={`${source.path}-${source.startLine}-${source.endLine}`}>
+                                  {formatSource(source)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                           <p>{turn.assistant_response}</p>
                           <details>
                             <summary>Raw trace details</summary>
@@ -1246,6 +1319,7 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
               rag_used: run.rag_used,
               rag_skip_reason: run.rag_skip_reason,
               rag_context_count: run.rag_context_count,
+              rag_sources: ragSources(run).map(formatSource),
               memory_used: run.memory_used,
               used_real_slm: run.used_real_slm,
               slm_provider: run.slm_provider,
@@ -1398,6 +1472,29 @@ function ragDisplay(run: ChatRunResponse) {
   if (reason === "low_relevance") return "Skipped: low relevance";
   if (reason === "disabled") return "Skipped: disabled";
   return "Skipped";
+}
+
+function ragSources(run: ChatRunResponse) {
+  const ragTrace = run.trace_summary?.find((entry) => entry.phase === "rag");
+  const data = asObject(ragTrace?.data);
+  const sources = Array.isArray(data.sources) ? data.sources : [];
+  return sources
+    .map((source) => {
+      const raw = asObject(source);
+      return {
+        path: readString(raw.path),
+        startLine: readNumber(raw.start_line, 0),
+        endLine: readNumber(raw.end_line, 0),
+      };
+    })
+    .filter((source) => source.path);
+}
+
+function formatSource(source: { path: string; startLine: number; endLine: number }) {
+  if (source.startLine > 0 && source.endLine > 0) {
+    return `${source.path}:${source.startLine}-${source.endLine}`;
+  }
+  return source.path;
 }
 
 function traceSummaryToEvents(entries: ChatTraceEntry[]): TraceEvent[] {

@@ -111,4 +111,143 @@ def test_rag_search_handles_empty_index_safely(tmp_path: Path):
 
     assert search.status_code == 200
     assert search.json()["results"] == []
+    assert search.json()["status"] == "index_missing"
     assert search.json()["runtime_authorized"] is False
+
+
+def test_project_rag_index_creation_and_status(tmp_path: Path):
+    (tmp_path / "app.py").write_text("def project_answer():\n    return 'rag indexing'\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Project RAG indexing notes.", encoding="utf-8")
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post("/rag/index")
+        status = client.get("/rag/index/status")
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["indexed_files"] == 2
+    assert body["indexed_chunks"] == 2
+    assert body["root"] == str(tmp_path.resolve())
+    assert (tmp_path / "data" / "rag" / "project_index.json").exists()
+    assert status.status_code == 200
+    assert status.json()["exists"] is True
+    assert status.json()["indexed_files"] == 2
+
+
+def test_project_rag_index_uses_astra_project_root_env(tmp_path: Path, monkeypatch):
+    project_root = tmp_path / "project"
+    app_root = tmp_path / "app"
+    project_root.mkdir()
+    app_root.mkdir()
+    (project_root / "project.py").write_text("def env_selected_root():\n    return True\n", encoding="utf-8")
+    (app_root / "ignored.py").write_text("def ignored_root():\n    return True\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRA_PROJECT_ROOT", str(project_root))
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=app_root)) as client:
+        created = client.post("/rag/index")
+        files = client.get("/rag/files")
+
+    assert created.status_code == 200
+    assert created.json()["root"] == str(project_root.resolve())
+    assert [item["path"] for item in files.json()["items"]] == ["project.py"]
+
+
+def test_project_rag_index_excludes_noisy_and_unsafe_paths(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("def safe_code():\n    return 'indexed'\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "bad.js").write_text("const secret = 'noise';", encoding="utf-8")
+    (tmp_path / ".env").write_text("TOKEN=do-not-index", encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text('{"name": "noise"}', encoding="utf-8")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "weights.json").write_text('{"noise": true}', encoding="utf-8")
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        client.post("/rag/index")
+        files = client.get("/rag/files")
+        search = client.post("/rag/search", json={"query": "noise token", "limit": 10})
+
+    paths = [item["path"] for item in files.json()["items"]]
+    assert paths == ["src/main.py"]
+    assert "do-not-index" not in str(search.json())
+    assert "node_modules" not in str(search.json())
+    assert "package-lock" not in str(search.json())
+    assert "models" not in str(search.json())
+
+
+def test_project_rag_index_indexes_allowed_extensions(tmp_path: Path):
+    allowed = {
+        "a.py": "python marker",
+        "b.ts": "typescript marker",
+        "c.tsx": "tsx marker",
+        "d.js": "javascript marker",
+        "e.jsx": "jsx marker",
+        "f.json": '{"json": "marker"}',
+        "g.md": "markdown marker",
+        "h.txt": "text marker",
+        "i.css": ".class { color: red; }",
+        "j.html": "<main>html marker</main>",
+        "k.toml": 'name = "toml marker"',
+        "l.yaml": "yaml: marker",
+        "m.yml": "yml: marker",
+    }
+    for name, text in allowed.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    (tmp_path / "skip.bin").write_bytes(b"marker")
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post("/rag/index")
+        files = client.get("/rag/files")
+
+    paths = {item["path"] for item in files.json()["items"]}
+    assert created.json()["indexed_files"] == len(allowed)
+    assert paths == set(allowed)
+    assert "skip.bin" not in paths
+
+
+def test_project_rag_search_returns_path_and_line_numbers(tmp_path: Path):
+    lines = [f"line {index}" for index in range(1, 121)]
+    lines[87] = "phase fifty two project indexing target"
+    (tmp_path / "guide.md").write_text("\n".join(lines), encoding="utf-8")
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        client.post("/rag/index")
+        search = client.post(
+            "/rag/search",
+            json={"query": "project indexing target", "limit": 3},
+        )
+
+    assert search.status_code == 200
+    body = search.json()
+    assert body["status"] == "ready"
+    assert body["results"]
+    top = body["results"][0]
+    assert top["path"] == "guide.md"
+    assert top["start_line"] <= 88 <= top["end_line"]
+    assert "project indexing target" in top["snippet"]
+
+
+def test_chat_workflow_uses_project_index_and_stores_one_run(tmp_path: Path):
+    database_path = tmp_path / "app.db"
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "phase52.md").write_text(
+        "Phase 52 project indexing should provide path and line aware snippets.",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(database_path, workspace_root=tmp_path)) as client:
+        client.post("/rag/index")
+        response = client.post(
+            "/chat/run",
+            json={"message": "What should Phase 52 project indexing provide?", "use_rag": True},
+        )
+        runs = client.get("/chat/runs")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rag_used"] is True
+    assert body["rag_context_count"] == 1
+    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
+    assert rag_trace["data"]["sources"][0]["path"] == "docs/phase52.md"
+    assert rag_trace["data"]["sources"][0]["start_line"] == 1
+    assert len(runs.json()["items"]) == 1

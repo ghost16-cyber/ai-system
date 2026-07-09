@@ -69,11 +69,35 @@ export interface RagStatusResponse {
   status: string;
   workspace_root: string;
   indexed_file_count: number;
+  project_index?: RagProjectIndexStatus;
+  project_index_exists?: boolean;
+  project_index_file_count?: number;
+  project_index_chunk_count?: number;
+  project_index_created_at?: string | null;
+  project_root?: string;
   source_roots: string[];
   safe_extensions: string[];
   exclusions: string[];
   advisory_only: boolean;
   tools_executed: boolean;
+}
+
+export interface RagProjectIndexStatus {
+  exists: boolean;
+  status: string;
+  root: string;
+  created_at: string | null;
+  indexed_files: number;
+  indexed_chunks: number;
+  skipped_files?: number;
+}
+
+export interface RagProjectIndexBuildResponse {
+  root: string;
+  created_at: string;
+  indexed_files: number;
+  indexed_chunks: number;
+  skipped_files: number;
 }
 
 export interface SlmChatResponse {
@@ -191,6 +215,8 @@ export interface AstraClient {
   getSlmStatus(): Promise<SlmStatusResponse>;
   selectSlmProfile(profileId: string): Promise<Record<string, unknown>>;
   getRagStatus(): Promise<RagStatusResponse>;
+  rebuildRagIndex(): Promise<RagProjectIndexBuildResponse>;
+  getRagIndexStatus(): Promise<RagProjectIndexStatus>;
   chatWithSlm(
     message: string,
     context?: Record<string, unknown>,
@@ -294,6 +320,14 @@ export class HttpAstraClient implements AstraClient {
 
   async getRagStatus() {
     return this.getJson<RagStatusResponse>("/rag/status");
+  }
+
+  async rebuildRagIndex() {
+    return this.postJson<RagProjectIndexBuildResponse>("/rag/index", {});
+  }
+
+  async getRagIndexStatus() {
+    return this.getJson<RagProjectIndexStatus>("/rag/index/status");
   }
 
   async chatWithSlm(message: string, context: Record<string, unknown> = {}) {

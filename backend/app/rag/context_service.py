@@ -4,6 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from backend.app.rag.project_indexer import (
+    SAFE_PROJECT_EXTENSIONS,
+    build_project_index,
+    list_indexed_files,
+    project_index_status,
+    search_project_index,
+)
 
 SAFE_EXTENSIONS = {".md", ".txt", ".json", ".py"}
 EXCLUDED_PARTS = {
@@ -24,12 +31,19 @@ DEFAULT_SOURCE_DIRS = ("docs", "system information", "backend/app/specialists")
 def rag_status(workspace_root: str | Path) -> dict[str, Any]:
     root = Path(workspace_root).resolve()
     files = list(_iter_safe_files(root))
+    project_status = project_index_status(root)
     return {
         "status": "ready",
         "workspace_root": str(root),
         "indexed_file_count": len(files),
+        "project_index": project_status,
+        "project_index_exists": project_status["exists"],
+        "project_index_file_count": project_status["indexed_files"],
+        "project_index_chunk_count": project_status["indexed_chunks"],
+        "project_index_created_at": project_status["created_at"],
+        "project_root": project_status["root"],
         "source_roots": list(DEFAULT_SOURCE_DIRS),
-        "safe_extensions": sorted(SAFE_EXTENSIONS),
+        "safe_extensions": sorted(SAFE_PROJECT_EXTENSIONS),
         "exclusions": sorted(EXCLUDED_PARTS),
         "advisory_only": True,
         "tools_executed": False,
@@ -46,6 +60,15 @@ def rag_search(
     source_filter: str | None = None,
 ) -> dict[str, Any]:
     root = Path(workspace_root).resolve()
+    project_results = search_project_index(
+        root,
+        query=query,
+        limit=limit,
+        source_filter=source_filter,
+    )
+    if project_results["status"] == "ready":
+        return project_results
+
     terms = [term for term in query.lower().split() if len(term) > 2]
     results: list[dict[str, Any]] = []
     for path in _iter_safe_files(root):
@@ -74,6 +97,8 @@ def rag_search(
     results = sorted(results, key=lambda item: item["score"], reverse=True)[: max(0, min(limit, 20))]
     return {
         "query": query,
+        "status": project_results["status"],
+        "root": project_results["root"],
         "results": results,
         "count": len(results),
         "advisory_only": True,
@@ -83,13 +108,37 @@ def rag_search(
     }
 
 
+def rag_build_project_index(workspace_root: str | Path) -> dict[str, Any]:
+    return build_project_index(workspace_root)
+
+
+def rag_project_index_status(workspace_root: str | Path) -> dict[str, Any]:
+    return project_index_status(workspace_root)
+
+
+def rag_indexed_files(workspace_root: str | Path) -> dict[str, Any]:
+    return list_indexed_files(workspace_root)
+
+
 def compact_context(results: list[dict[str, Any]], max_chars: int = 1600) -> str:
     chunks = [
-        f"{item.get('path')}: {item.get('snippet')}"
+        _context_label(item)
         for item in results
         if item.get("snippet")
     ]
     return "\n".join(chunks)[:max_chars]
+
+
+def _context_label(item: dict[str, Any]) -> str:
+    path = item.get("path")
+    start_line = item.get("start_line")
+    end_line = item.get("end_line")
+    location = (
+        f"{path}:{start_line}-{end_line}"
+        if start_line is not None and end_line is not None
+        else str(path)
+    )
+    return f"{location}: {item.get('snippet')}"
 
 
 def _iter_safe_files(root: Path):

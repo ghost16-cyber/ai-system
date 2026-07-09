@@ -300,6 +300,15 @@ def _retrieve_context(
                     "retrieved_count": len(results),
                     "rejected_count": rejected,
                     "reason": "project_context_relevant",
+                    "sources": [
+                        {
+                            "path": item.get("path"),
+                            "start_line": item.get("start_line"),
+                            "end_line": item.get("end_line"),
+                            "score": item.get("score"),
+                        }
+                        for item in filtered
+                    ],
                 },
             )
         )

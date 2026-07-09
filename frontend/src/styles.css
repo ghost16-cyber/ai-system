@@ -400,6 +400,32 @@ input:focus-visible {
   font-size: 13px;
 }
 
+.source-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.source-list strong {
+  width: 100%;
+  font-size: 12px;
+}
+
+.source-list span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  overflow-wrap: anywhere;
+}
+
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -458,6 +484,18 @@ input:focus-visible {
   align-items: center;
   gap: 9px;
   margin-bottom: 14px;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-title-row .panel-title {
+  margin-bottom: 0;
 }
 
 .panel-title h2 {

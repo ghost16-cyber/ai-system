@@ -42,7 +42,14 @@ from backend.app.local_runtime import (
     get_runtime_research_manifest,
     validate_task_plan,
 )
-from backend.app.rag.context_service import compact_context, rag_search, rag_status
+from backend.app.rag.context_service import (
+    compact_context,
+    rag_build_project_index,
+    rag_indexed_files,
+    rag_project_index_status,
+    rag_search,
+    rag_status,
+)
 from backend.app.orchestrator.approvals import approve_pending_patch
 from backend.app.orchestrator.policy import PolicyError
 from backend.app.schemas.api import (
@@ -269,6 +276,18 @@ def create_app(
     @application.get("/rag/status")
     def local_rag_status() -> dict:
         return rag_status(configured_workspace_root)
+
+    @application.post("/rag/index")
+    def local_rag_index() -> dict:
+        return rag_build_project_index(configured_workspace_root)
+
+    @application.get("/rag/index/status")
+    def local_rag_index_status() -> dict:
+        return rag_project_index_status(configured_workspace_root)
+
+    @application.get("/rag/files")
+    def local_rag_files() -> dict:
+        return rag_indexed_files(configured_workspace_root)
 
     @application.post("/rag/search")
     def local_rag_search(request: RAGSearchRequest) -> dict:
