@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -227,6 +228,80 @@ def test_project_rag_search_returns_path_and_line_numbers(tmp_path: Path):
     assert "project indexing target" in top["snippet"]
 
 
+def test_rag_evaluation_requires_project_index(tmp_path: Path):
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        status = client.get("/rag/evaluation/status")
+        evaluation = client.post("/rag/evaluate", json={})
+
+    assert status.status_code == 200
+    assert status.json()["index_exists"] is False
+    assert status.json()["evaluation_case_count"] >= 3
+    assert evaluation.status_code == 200
+    body = evaluation.json()
+    assert body["status"] == "index_missing"
+    assert body["index_exists"] is False
+    assert body["total_cases"] == 0
+    assert "requires an existing project index" in body["message"]
+
+
+def test_rag_evaluation_returns_metrics_and_path_hits(tmp_path: Path):
+    target = tmp_path / "backend" / "app" / "rag"
+    target.mkdir(parents=True)
+    (target / "project_indexer.py").write_text(
+        "def build_project_index():\n"
+        "    return 'project RAG indexing implemented here'\n\n"
+        "def search_project_index():\n"
+        "    return 'project index search'\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        client.post("/rag/index")
+        evaluation = client.post(
+            "/rag/evaluate",
+            json={"selected_cases": ["project-rag-indexing"]},
+        )
+
+    assert evaluation.status_code == 200
+    body = evaluation.json()
+    assert body["status"] == "ready"
+    assert body["total_cases"] == 1
+    assert body["passed_cases"] == 1
+    assert body["failed_cases"] == 0
+    assert body["path_hit_rate"] == 1.0
+    assert body["average_top_score"] > 0
+    assert body["average_sources_returned"] >= 1
+    case = body["cases"][0]
+    assert case["passed"] is True
+    assert case["expected_paths"] == ["backend/app/rag/project_indexer.py"]
+    assert "backend/app/rag/project_indexer.py" in case["returned_paths"]
+    assert case["missing_expected_paths"] == []
+
+
+def test_rag_evaluation_persists_latest_result(tmp_path: Path):
+    target = tmp_path / "backend" / "app" / "rag"
+    target.mkdir(parents=True)
+    (target / "project_indexer.py").write_text(
+        "build_project_index search_project_index project RAG indexing",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        client.post("/rag/index")
+        evaluation = client.post(
+            "/rag/evaluate",
+            json={"selected_cases": ["project-rag-indexing"]},
+        )
+        status = client.get("/rag/evaluation/status")
+
+    persisted_path = tmp_path / "data" / "rag" / "latest_evaluation.json"
+    assert persisted_path.exists()
+    persisted = json.loads(persisted_path.read_text(encoding="utf-8"))
+    assert persisted["created_at"] == evaluation.json()["created_at"]
+    assert persisted["passed_cases"] == 1
+    assert status.json()["latest_evaluation"]["created_at"] == evaluation.json()["created_at"]
+
+
 def test_chat_workflow_uses_project_index_and_stores_one_run(tmp_path: Path):
     database_path = tmp_path / "app.db"
     (tmp_path / "docs").mkdir()
@@ -247,7 +322,16 @@ def test_chat_workflow_uses_project_index_and_stores_one_run(tmp_path: Path):
     body = response.json()
     assert body["rag_used"] is True
     assert body["rag_context_count"] == 1
+    assert body["grounding_status"] == "grounded"
+    assert body["source_count"] == 1
+    assert body["source_paths"] == ["docs/phase52.md"]
+    assert body["rag_sources"][0]["path"] == "docs/phase52.md"
+    assert body["rag_sources"][0]["start_line"] == 1
+    assert body["rag_sources"][0]["score"] > 0
     rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
     assert rag_trace["data"]["sources"][0]["path"] == "docs/phase52.md"
     assert rag_trace["data"]["sources"][0]["start_line"] == 1
-    assert len(runs.json()["items"]) == 1
+    items = runs.json()["items"]
+    assert len(items) == 1
+    assert items[0]["run_id"] == body["run_id"]
+    assert items[0]["grounding_status"] == "grounded"

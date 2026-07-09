@@ -169,6 +169,10 @@ class AnalysisRepository:
                     rag_used INTEGER NOT NULL,
                     rag_skip_reason TEXT,
                     rag_context_count INTEGER NOT NULL,
+                    rag_sources_json TEXT NOT NULL DEFAULT '[]',
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    source_paths_json TEXT NOT NULL DEFAULT '[]',
+                    grounding_status TEXT NOT NULL DEFAULT 'none',
                     runtime_decision TEXT NOT NULL,
                     safety_decision TEXT NOT NULL,
                     used_real_slm INTEGER NOT NULL DEFAULT 0,
@@ -187,6 +191,18 @@ class AnalysisRepository:
                 connection, "chat_runs", "used_real_slm", "INTEGER NOT NULL DEFAULT 0"
             )
             self._add_column_if_missing(connection, "chat_runs", "rag_skip_reason", "TEXT")
+            self._add_column_if_missing(
+                connection, "chat_runs", "rag_sources_json", "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "source_count", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "source_paths_json", "TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "grounding_status", "TEXT NOT NULL DEFAULT 'none'"
+            )
             self._add_column_if_missing(
                 connection, "chat_runs", "slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"
             )
@@ -336,6 +352,10 @@ class AnalysisRepository:
                     rag_used,
                     rag_skip_reason,
                     rag_context_count,
+                    rag_sources_json,
+                    source_count,
+                    source_paths_json,
+                    grounding_status,
                     runtime_decision,
                     safety_decision,
                     used_real_slm,
@@ -347,7 +367,7 @@ class AnalysisRepository:
                     memory_summary,
                     created_at,
                     trace_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -360,6 +380,18 @@ class AnalysisRepository:
                     int(run.rag_used),
                     run.rag_skip_reason,
                     run.rag_context_count,
+                    json.dumps(
+                        [
+                            source.model_dump(mode="json")
+                            if hasattr(source, "model_dump")
+                            else source
+                            for source in run.rag_sources
+                        ],
+                        sort_keys=True,
+                    ),
+                    run.source_count,
+                    json.dumps(run.source_paths, sort_keys=True),
+                    run.grounding_status,
                     run.runtime_decision,
                     run.safety_decision,
                     int(run.used_real_slm),
@@ -504,6 +536,18 @@ class AnalysisRepository:
             rag_used=bool(row["rag_used"]),
             rag_skip_reason=str(row["rag_skip_reason"]) if row["rag_skip_reason"] else None,
             rag_context_count=int(row["rag_context_count"]),
+            rag_sources=_json_list(row["rag_sources_json"]),
+            source_count=int(row["source_count"]),
+            source_paths=[
+                str(item)
+                for item in _json_list(row["source_paths_json"])
+                if isinstance(item, str)
+            ],
+            grounding_status=(
+                str(row["grounding_status"])
+                if row["grounding_status"] in {"grounded", "weak", "none"}
+                else "none"
+            ),
             runtime_decision=str(row["runtime_decision"]),
             safety_decision=str(row["safety_decision"]),
             used_real_slm=bool(row["used_real_slm"]),
@@ -855,3 +899,13 @@ def _conversation_title(first_user_message: str) -> str:
     if not title:
         return "Untitled conversation"
     return title[:80]
+
+
+def _json_list(raw: object) -> list:
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []

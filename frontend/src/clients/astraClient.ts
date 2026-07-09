@@ -100,6 +100,44 @@ export interface RagProjectIndexBuildResponse {
   skipped_files: number;
 }
 
+export interface RagEvaluationCaseDetail {
+  case_id: string;
+  query: string;
+  category: string;
+  description: string;
+  expected_paths: string[];
+  expected_terms?: string[];
+  returned_paths: string[];
+  passed: boolean;
+  score: number;
+  missing_expected_paths: string[];
+  expected_terms_found?: boolean;
+  sources_returned?: number;
+}
+
+export interface RagEvaluationResult {
+  status: string;
+  index_exists: boolean;
+  created_at?: string;
+  total_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  path_hit_rate: number;
+  average_top_score: number;
+  average_sources_returned: number;
+  cases: RagEvaluationCaseDetail[];
+  message?: string;
+}
+
+export interface RagEvaluationStatusResponse {
+  status: string;
+  index_exists: boolean;
+  evaluation_case_count: number;
+  evaluation_cases?: Array<Record<string, unknown>>;
+  latest_evaluation: RagEvaluationResult | null;
+  latest_evaluation_path?: string;
+}
+
 export interface SlmChatResponse {
   message: string;
   assistant_response: string;
@@ -146,6 +184,15 @@ export interface ChatRunResponse {
   rag_used: boolean;
   rag_skip_reason: string | null;
   rag_context_count: number;
+  rag_sources?: Array<{
+    path: string;
+    start_line: number | null;
+    end_line: number | null;
+    score: number;
+  }>;
+  source_count?: number;
+  source_paths?: string[];
+  grounding_status?: "grounded" | "weak" | "none";
   runtime_decision: string;
   safety_decision: string;
   used_real_slm: boolean;
@@ -217,6 +264,8 @@ export interface AstraClient {
   getRagStatus(): Promise<RagStatusResponse>;
   rebuildRagIndex(): Promise<RagProjectIndexBuildResponse>;
   getRagIndexStatus(): Promise<RagProjectIndexStatus>;
+  getRagEvaluationStatus(): Promise<RagEvaluationStatusResponse>;
+  runRagEvaluation(selectedCases?: string[]): Promise<RagEvaluationResult>;
   chatWithSlm(
     message: string,
     context?: Record<string, unknown>,
@@ -328,6 +377,16 @@ export class HttpAstraClient implements AstraClient {
 
   async getRagIndexStatus() {
     return this.getJson<RagProjectIndexStatus>("/rag/index/status");
+  }
+
+  async getRagEvaluationStatus() {
+    return this.getJson<RagEvaluationStatusResponse>("/rag/evaluation/status");
+  }
+
+  async runRagEvaluation(selectedCases: string[] = []) {
+    return this.postJson<RagEvaluationResult>("/rag/evaluate", {
+      selected_cases: selectedCases,
+    });
   }
 
   async chatWithSlm(message: string, context: Record<string, unknown> = {}) {

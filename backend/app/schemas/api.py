@@ -83,6 +83,13 @@ class ChatRunRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class RagSourceMetadata(BaseModel):
+    path: str
+    start_line: int | None = None
+    end_line: int | None = None
+    score: float = 0.0
+
+
 class ChatRunResponse(BaseModel):
     run_id: str
     conversation_id: str
@@ -94,6 +101,10 @@ class ChatRunResponse(BaseModel):
     rag_used: bool
     rag_skip_reason: str | None = None
     rag_context_count: int
+    rag_sources: list[RagSourceMetadata] = Field(default_factory=list)
+    source_count: int = 0
+    source_paths: list[str] = Field(default_factory=list)
+    grounding_status: Literal["grounded", "weak", "none"] = "none"
     runtime_decision: str
     safety_decision: str
     used_real_slm: bool = False

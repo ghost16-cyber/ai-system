@@ -50,6 +50,10 @@ from backend.app.rag.context_service import (
     rag_search,
     rag_status,
 )
+from backend.app.rag.evaluation import (
+    evaluate_project_rag,
+    rag_evaluation_status,
+)
 from backend.app.orchestrator.approvals import approve_pending_patch
 from backend.app.orchestrator.policy import PolicyError
 from backend.app.schemas.api import (
@@ -111,6 +115,10 @@ class RAGSearchRequest(BaseModel):
     query: str = ""
     limit: int = Field(default=5, ge=0, le=20)
     source_filter: str | None = None
+
+
+class RAGEvaluationRequest(BaseModel):
+    selected_cases: list[str] = Field(default_factory=list)
 
 
 class SLMChatWithContextRequest(BaseModel):
@@ -297,6 +305,17 @@ def create_app(
             limit=request.limit,
             source_filter=request.source_filter,
         )
+
+    @application.post("/rag/evaluate")
+    def local_rag_evaluate(request: RAGEvaluationRequest | None = None) -> dict:
+        return evaluate_project_rag(
+            configured_workspace_root,
+            selected_cases=request.selected_cases if request else None,
+        )
+
+    @application.get("/rag/evaluation/status")
+    def local_rag_evaluation_status() -> dict:
+        return rag_evaluation_status(configured_workspace_root)
 
     @application.post("/slm/chat-with-context")
     def slm_chat_with_context(request: SLMChatWithContextRequest) -> dict:

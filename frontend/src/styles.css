@@ -494,6 +494,13 @@ input:focus-visible {
   margin-bottom: 14px;
 }
 
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .panel-title-row .panel-title {
   margin-bottom: 0;
 }
@@ -558,6 +565,45 @@ input:focus-visible {
 .tool-chip span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.evaluation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.evaluation-case {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-soft);
+}
+
+.evaluation-case summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.evaluation-case summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.evaluation-case.passed {
+  border-color: #b8d8c9;
+}
+
+.evaluation-case.failed {
+  border-color: #e4bbb7;
+}
+
+.evaluation-case .info-list {
+  margin-top: 10px;
 }
 
 .history-list {
@@ -865,9 +911,15 @@ input:focus-visible {
   }
 
   .page-toolbar,
-  .settings-actions {
+  .settings-actions,
+  .panel-title-row,
+  .evaluation-case summary {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .button-row {
+    justify-content: stretch;
   }
 
   .overview-grid,

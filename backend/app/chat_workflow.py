@@ -182,6 +182,11 @@ def run_chat_workflow(
             },
         )
 
+    grounding_metadata = _grounding_metadata(
+        rag_requested=request.use_rag,
+        rag_results=rag_results,
+        trace=trace,
+    )
     return ChatRunResponse(
         run_id=run_id,
         conversation_id=conversation_id,
@@ -193,6 +198,10 @@ def run_chat_workflow(
         rag_used=bool(rag_results),
         rag_skip_reason=_rag_skip_reason(trace),
         rag_context_count=len(rag_results),
+        rag_sources=grounding_metadata["rag_sources"],
+        source_count=grounding_metadata["source_count"],
+        source_paths=grounding_metadata["source_paths"],
+        grounding_status=grounding_metadata["grounding_status"],
         runtime_decision=_runtime_label(validation, profile),
         safety_decision=validation.decision,
         used_real_slm=bool(slm_result.get("used_real_slm")),
@@ -649,6 +658,42 @@ def _rag_skip_reason(trace: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _grounding_metadata(
+    *,
+    rag_requested: bool,
+    rag_results: list[dict[str, Any]],
+    trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    sources = [
+        {
+            "path": str(item.get("path") or ""),
+            "start_line": _optional_int(item.get("start_line")),
+            "end_line": _optional_int(item.get("end_line")),
+            "score": _float_unbounded(item.get("score"), 0.0),
+        }
+        for item in rag_results
+        if item.get("path")
+    ]
+    positive_sources = [item for item in sources if item["score"] > 0]
+    source_paths = _unique_ordered(
+        str(item["path"]) for item in sources if item.get("path")
+    )
+    rag_reason = _rag_skip_reason(trace)
+    rag_ran_with_low_or_empty_sources = rag_reason == "low_relevance"
+    if positive_sources:
+        grounding_status = "grounded"
+    elif rag_requested and rag_ran_with_low_or_empty_sources:
+        grounding_status = "weak"
+    else:
+        grounding_status = "none"
+    return {
+        "rag_sources": sources,
+        "source_count": len(sources),
+        "source_paths": source_paths,
+        "grounding_status": grounding_status,
+    }
+
+
 def _response_deltas(text: str, *, chunk_size: int = 80) -> list[str]:
     if not text:
         return []
@@ -856,3 +901,28 @@ def _float(value: Any, fallback: float = 0.0) -> float:
     if isinstance(value, (int, float)):
         return max(0.0, min(1.0, float(value)))
     return fallback
+
+
+def _float_unbounded(value: Any, fallback: float = 0.0) -> float:
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    return fallback
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def _unique_ordered(values) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique

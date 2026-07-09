@@ -25,6 +25,7 @@ import {
   type ChatTraceEntry,
   type ChatRunResponse,
   type HealthData,
+  type RagEvaluationStatusResponse,
   type RagStatusResponse,
   type RawHistoryItem,
   type RawJob,
@@ -75,6 +76,7 @@ interface SystemData {
   slmProfiles: SlmProfilesResponse | null;
   slmStatus: SlmStatusResponse | null;
   rag: RagStatusResponse | null;
+  ragEvaluation: RagEvaluationStatusResponse | null;
   specialistDashboard: SpecialistDashboard | null;
   specialistModels: SpecialistModelsResponse | null;
   tools: RawTool[];
@@ -130,6 +132,8 @@ function App() {
   const [systemError, setSystemError] = useState<string | null>(null);
   const [ragIndexLoading, setRagIndexLoading] = useState(false);
   const [ragIndexNotice, setRagIndexNotice] = useState<string | null>(null);
+  const [ragEvaluationLoading, setRagEvaluationLoading] = useState(false);
+  const [ragEvaluationNotice, setRagEvaluationNotice] = useState<string | null>(null);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -156,6 +160,7 @@ function App() {
       slmProfiles,
       slmStatus,
       rag,
+      ragEvaluation,
       specialistDashboard,
       specialistModels,
       tools,
@@ -166,6 +171,7 @@ function App() {
       settle(client.getSlmProfiles()),
       settle(client.getSlmStatus()),
       settle(client.getRagStatus()),
+      settle(client.getRagEvaluationStatus()),
       settle(client.getSpecialistDashboard()),
       settle(client.getSpecialistModels()),
       settle(client.getTools()),
@@ -178,6 +184,7 @@ function App() {
       slmProfiles: slmProfiles.value,
       slmStatus: slmStatus.value,
       rag: rag.value,
+      ragEvaluation: ragEvaluation.value,
       specialistDashboard: specialistDashboard.value,
       specialistModels: specialistModels.value,
       tools: tools.value ?? [],
@@ -190,6 +197,7 @@ function App() {
       slmProfiles.error,
       slmStatus.error,
       rag.error,
+      ragEvaluation.error,
       specialistDashboard.error,
       specialistModels.error,
       tools.error,
@@ -408,6 +416,26 @@ function App() {
     }
   }
 
+  async function runRagEvaluation() {
+    setRagEvaluationLoading(true);
+    setRagEvaluationNotice(null);
+    try {
+      const result = await client.runRagEvaluation();
+      if (result.status === "index_missing") {
+        setRagEvaluationNotice(result.message ?? "Build the project index before running evaluation.");
+      } else {
+        setRagEvaluationNotice(
+          `RAG evaluation finished: ${result.passed_cases}/${result.total_cases} case(s) passed.`,
+        );
+      }
+      await refreshSystem();
+    } catch (error) {
+      setRagEvaluationNotice(`Could not run RAG evaluation: ${cleanError(error)}`);
+    } finally {
+      setRagEvaluationLoading(false);
+    }
+  }
+
   function resetLocalState() {
     localStorage.removeItem(SETTINGS_KEY);
     setMessages([]);
@@ -475,8 +503,11 @@ function App() {
             settings={settings}
             ragIndexLoading={ragIndexLoading}
             ragIndexNotice={ragIndexNotice}
+            ragEvaluationLoading={ragEvaluationLoading}
+            ragEvaluationNotice={ragEvaluationNotice}
             onRefresh={() => void refreshSystem()}
             onRebuildRagIndex={() => void rebuildRagIndex()}
+            onRunRagEvaluation={() => void runRagEvaluation()}
           />
         )}
         {activePage === "history" && (
@@ -643,6 +674,12 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
         value={ragDisplay(run)}
         tone={run.rag_used ? "green" : "blue"}
       />
+      <Metric
+        label="Grounding"
+        value={groundingDisplay(run)}
+        tone={groundingTone(run.grounding_status)}
+      />
+      <Metric label="Sources" value={String(run.source_count ?? sources.length)} />
       <Metric label="Safety" value={run.safety_decision || "unknown"} tone={decisionTone(run.safety_decision)} />
       <Metric label="Runtime" value={run.runtime_decision || "unknown"} />
       <Metric
@@ -685,8 +722,11 @@ function SystemPage({
   settings,
   ragIndexLoading,
   ragIndexNotice,
+  ragEvaluationLoading,
+  ragEvaluationNotice,
   onRefresh,
   onRebuildRagIndex,
+  onRunRagEvaluation,
 }: {
   data: SystemData | null;
   loading: boolean;
@@ -694,13 +734,17 @@ function SystemPage({
   settings: FrontendSettings;
   ragIndexLoading: boolean;
   ragIndexNotice: string | null;
+  ragEvaluationLoading: boolean;
+  ragEvaluationNotice: string | null;
   onRefresh: () => void;
   onRebuildRagIndex: () => void;
+  onRunRagEvaluation: () => void;
 }) {
   const runtime = data?.runtime;
   const selectedProfile = data?.selectedSlm?.profile ?? {};
   const modelCounts = data?.specialistDashboard?.models_by_status ?? {};
   const projectIndex = data?.rag?.project_index;
+  const evaluation = data?.ragEvaluation?.latest_evaluation ?? null;
 
   return (
     <section className="page-stack">
@@ -771,15 +815,31 @@ function SystemPage({
       <section className="panel">
         <div className="panel-title-row">
           <PanelTitle icon={Database} title="Project RAG index" />
-          <button className="secondary-button" onClick={onRebuildRagIndex} disabled={ragIndexLoading}>
-            {ragIndexLoading ? <Activity size={16} className="spin" /> : <RefreshCw size={16} />}
-            Rebuild project index
-          </button>
+          <div className="button-row">
+            <button className="secondary-button" onClick={onRebuildRagIndex} disabled={ragIndexLoading}>
+              {ragIndexLoading ? <Activity size={16} className="spin" /> : <RefreshCw size={16} />}
+              Rebuild project index
+            </button>
+            <button
+              className="secondary-button"
+              onClick={onRunRagEvaluation}
+              disabled={ragEvaluationLoading}
+            >
+              {ragEvaluationLoading ? <Activity size={16} className="spin" /> : <CheckCircle2 size={16} />}
+              Run RAG evaluation
+            </button>
+          </div>
         </div>
         {ragIndexNotice && (
           <Notice
             tone={ragIndexNotice.startsWith("Could not") ? "amber" : "blue"}
             text={ragIndexNotice}
+          />
+        )}
+        {ragEvaluationNotice && (
+          <Notice
+            tone={ragEvaluationNotice.startsWith("Could not") || ragEvaluationNotice.includes("Build the project index") ? "amber" : "blue"}
+            text={ragEvaluationNotice}
           />
         )}
         <InfoList
@@ -789,8 +849,32 @@ function SystemPage({
             ["Indexed files", String(projectIndex?.indexed_files ?? data?.rag?.project_index_file_count ?? 0)],
             ["Indexed chunks", String(projectIndex?.indexed_chunks ?? data?.rag?.project_index_chunk_count ?? 0)],
             ["Last indexed", projectIndex?.created_at ? formatDate(projectIndex.created_at) : "Not indexed yet"],
+            ["Evaluation cases", String(data?.ragEvaluation?.evaluation_case_count ?? 0)],
+            ["Latest path hit rate", evaluation ? `${Math.round(evaluation.path_hit_rate * 100)}%` : "Not run yet"],
+            ["Latest pass rate", evaluation ? `${evaluation.passed_cases}/${evaluation.total_cases}` : "Not run yet"],
           ]}
         />
+        {evaluation?.cases?.length ? (
+          <div className="evaluation-list">
+            {evaluation.cases.map((item) => (
+              <details key={item.case_id} className={`evaluation-case ${item.passed ? "passed" : "failed"}`}>
+                <summary>
+                  <strong>{item.passed ? "Passed" : "Failed"}: {item.query}</strong>
+                  <span>{item.category} / score {item.score}</span>
+                </summary>
+                <InfoList
+                  items={[
+                    ["Expected paths", item.expected_paths.join(", ") || "None"],
+                    ["Returned paths", item.returned_paths.join(", ") || "None"],
+                    ["Missing paths", item.missing_expected_paths.join(", ") || "None"],
+                  ]}
+                />
+              </details>
+            ))}
+          </div>
+        ) : (
+          <EmptyInline text="No RAG evaluation has been run yet." />
+        )}
       </section>
       <section className="panel">
         <PanelTitle icon={Wrench} title="Registered tools" />
@@ -894,6 +978,8 @@ function HistoryPage({
                           ["Specialist", selectedChatRun.selected_specialist || "Not routed"] as [string, string],
                           ["Intent", `${selectedChatRun.intent || "unknown"} / ${Math.round((selectedChatRun.confidence ?? 0) * 100)}%`] as [string, string],
                           ["RAG", ragDisplay(selectedChatRun)] as [string, string],
+                          ["Grounding", groundingDisplay(selectedChatRun)] as [string, string],
+                          ["Source count", String(selectedChatRun.source_count ?? ragSources(selectedChatRun).length)] as [string, string],
                           ["Memory", selectedChatRun.memory_used ? "used" : "not used"] as [string, string],
                           ["SLM", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_provider} / ${selectedChatRun.slm_model ?? "selected model"}` : `Fallback / ${selectedChatRun.slm_model ?? "no model"}`] as [string, string],
                           ["SLM detail", selectedChatRun.used_real_slm ? `${selectedChatRun.slm_latency_ms ?? 0} ms` : selectedChatRun.slm_fallback_reason ?? "Unavailable"] as [string, string],
@@ -916,6 +1002,8 @@ function HistoryPage({
                             items={[
                               ["Specialist", turn.selected_specialist || "Not routed"],
                               ["RAG", ragDisplay(turn)],
+                              ["Grounding", groundingDisplay(turn)],
+                              ["Source count", String(turn.source_count ?? ragSources(turn).length)],
                               ["Memory", turn.memory_used ? "used" : "not used"],
                               ["Safety/runtime", `${turn.safety_decision || "unknown"} / ${turn.runtime_decision || "unknown"}`],
                             ]}
@@ -1306,6 +1394,9 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
             latest_specialist: latest?.selected_specialist,
             latest_rag_used: latest?.rag_used,
             latest_rag_skip_reason: latest?.rag_skip_reason,
+            latest_grounding_status: latest?.grounding_status ?? "none",
+            latest_source_count: latest?.source_count ?? 0,
+            latest_source_paths: latest?.source_paths ?? [],
             latest_safety_decision: latest?.safety_decision,
             latest_runtime_decision: latest?.runtime_decision,
             memory_summary: latest?.memory_summary,
@@ -1319,6 +1410,9 @@ function buildHistoryItems(data: HistoryData | null): HistoryItem[] {
               rag_used: run.rag_used,
               rag_skip_reason: run.rag_skip_reason,
               rag_context_count: run.rag_context_count,
+              grounding_status: run.grounding_status ?? "none",
+              source_count: run.source_count ?? 0,
+              source_paths: run.source_paths ?? [],
               rag_sources: ragSources(run).map(formatSource),
               memory_used: run.memory_used,
               used_real_slm: run.used_real_slm,
@@ -1475,6 +1569,16 @@ function ragDisplay(run: ChatRunResponse) {
 }
 
 function ragSources(run: ChatRunResponse) {
+  if (Array.isArray(run.rag_sources) && run.rag_sources.length > 0) {
+    return run.rag_sources
+      .map((source) => ({
+        path: readString(source.path),
+        startLine: readNumber(source.start_line, 0),
+        endLine: readNumber(source.end_line, 0),
+        score: readNumber(source.score, 0),
+      }))
+      .filter((source) => source.path);
+  }
   const ragTrace = run.trace_summary?.find((entry) => entry.phase === "rag");
   const data = asObject(ragTrace?.data);
   const sources = Array.isArray(data.sources) ? data.sources : [];
@@ -1485,16 +1589,30 @@ function ragSources(run: ChatRunResponse) {
         path: readString(raw.path),
         startLine: readNumber(raw.start_line, 0),
         endLine: readNumber(raw.end_line, 0),
+        score: readNumber(raw.score, 0),
       };
     })
     .filter((source) => source.path);
 }
 
-function formatSource(source: { path: string; startLine: number; endLine: number }) {
+function formatSource(source: { path: string; startLine: number; endLine: number; score?: number }) {
+  const score = source.score && source.score > 0 ? ` · ${source.score.toFixed(2)}` : "";
   if (source.startLine > 0 && source.endLine > 0) {
-    return `${source.path}:${source.startLine}-${source.endLine}`;
+    return `${source.path}:${source.startLine}-${source.endLine}${score}`;
   }
-  return source.path;
+  return `${source.path}${score}`;
+}
+
+function groundingDisplay(run: ChatRunResponse) {
+  if (run.grounding_status === "grounded") return "grounded";
+  if (run.grounding_status === "weak") return "weak";
+  return "none";
+}
+
+function groundingTone(status: ChatRunResponse["grounding_status"]) {
+  if (status === "grounded") return "green";
+  if (status === "weak") return "amber";
+  return "blue";
 }
 
 function traceSummaryToEvents(entries: ChatTraceEntry[]): TraceEvent[] {
