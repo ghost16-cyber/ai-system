@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ClipboardCheck,
   Clock3,
   Cpu,
   Database,
@@ -21,10 +22,16 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   HttpAstraClient,
+  type AssignmentCopilotRequest,
+  type AssignmentCopilotResult,
+  type AssignmentCodeWriteResult,
+  type AssignmentDatasetMapping,
+  type AssignmentManifestWriteResult,
   type ChatStreamEvent,
   type ChatTraceEntry,
   type ChatRunResponse,
   type HealthData,
+  type IntelligenceDashboardResponse,
   type RagEvaluationStatusResponse,
   type RagStatusResponse,
   type RawHistoryItem,
@@ -33,6 +40,12 @@ import {
   type SelectedSlmResponse,
   type SlmProfilesResponse,
   type SlmStatusResponse,
+  type TrainingDatasetStatus,
+  type TrainingExample,
+  type TrainingLabel,
+  type TrainingLabelRequest,
+  type TrainingExamplesResponse,
+  type UsefulnessRating,
 } from "./clients/astraClient";
 import type {
   CompactTraceResponse,
@@ -43,8 +56,9 @@ import type {
   TraceEvent,
 } from "./types/contracts";
 
-type PageId = "chat" | "system" | "history" | "settings";
+type PageId = "chat" | "assignments" | "system" | "history" | "settings";
 type SafetyMode = "read_only" | "confirm";
+type AssignmentSelection = "all" | "1" | "2" | "3";
 
 interface FrontendSettings {
   apiUrl: string;
@@ -77,8 +91,11 @@ interface SystemData {
   slmStatus: SlmStatusResponse | null;
   rag: RagStatusResponse | null;
   ragEvaluation: RagEvaluationStatusResponse | null;
+  trainingStatus: TrainingDatasetStatus | null;
+  trainingExamples: TrainingExamplesResponse | null;
   specialistDashboard: SpecialistDashboard | null;
   specialistModels: SpecialistModelsResponse | null;
+  intelligenceDashboard: IntelligenceDashboardResponse | null;
   tools: RawTool[];
 }
 
@@ -112,6 +129,7 @@ const defaultSettings: FrontendSettings = {
 
 const pages: Array<{ id: PageId; label: string; icon: typeof MessageSquareText }> = [
   { id: "chat", label: "Chat", icon: MessageSquareText },
+  { id: "assignments", label: "Assignments", icon: ClipboardCheck },
   { id: "system", label: "System", icon: Cpu },
   { id: "history", label: "History", icon: History },
   { id: "settings", label: "Settings", icon: Settings },
@@ -134,12 +152,29 @@ function App() {
   const [ragIndexNotice, setRagIndexNotice] = useState<string | null>(null);
   const [ragEvaluationLoading, setRagEvaluationLoading] = useState(false);
   const [ragEvaluationNotice, setRagEvaluationNotice] = useState<string | null>(null);
+  const [trainingNotice, setTrainingNotice] = useState<string | null>(null);
+  const [trainingActionLoading, setTrainingActionLoading] = useState(false);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedTrace, setSelectedTrace] = useState<CompactTraceResponse | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [assignmentText, setAssignmentText] = useState("");
+  const [assignmentPath, setAssignmentPath] = useState("");
+  const [assignmentSelection, setAssignmentSelection] = useState<AssignmentSelection>("all");
+  const [assignmentWorkspacePath, setAssignmentWorkspacePath] = useState("");
+  const [assignmentDatasetPath, setAssignmentDatasetPath] = useState("");
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const [assignmentResult, setAssignmentResult] = useState<AssignmentCopilotResult | null>(null);
+  const [assignmentExportLoading, setAssignmentExportLoading] = useState(false);
+  const [assignmentExportNotice, setAssignmentExportNotice] = useState<string | null>(null);
+  const [assignmentCreateLoading, setAssignmentCreateLoading] = useState(false);
+  const [assignmentOverwrite, setAssignmentOverwrite] = useState(false);
+  const [assignmentCodeWriteResult, setAssignmentCodeWriteResult] = useState<AssignmentCodeWriteResult | null>(null);
+  const [assignmentManifestWriteResult, setAssignmentManifestWriteResult] = useState<AssignmentManifestWriteResult | null>(null);
+  const [assignmentDatasetMapping, setAssignmentDatasetMapping] = useState<AssignmentDatasetMapping | null>(null);
 
   const client = useMemo(
     () => new HttpAstraClient(settings.apiUrl),
@@ -161,8 +196,11 @@ function App() {
       slmStatus,
       rag,
       ragEvaluation,
+      trainingStatus,
+      trainingExamples,
       specialistDashboard,
       specialistModels,
+      intelligenceDashboard,
       tools,
     ] = await Promise.all([
       settle(client.getHealth()),
@@ -172,8 +210,11 @@ function App() {
       settle(client.getSlmStatus()),
       settle(client.getRagStatus()),
       settle(client.getRagEvaluationStatus()),
+      settle(client.getTrainingDatasetStatus()),
+      settle(client.getTrainingExamples(8)),
       settle(client.getSpecialistDashboard()),
       settle(client.getSpecialistModels()),
+      settle(client.getIntelligenceDashboard()),
       settle(client.getTools()),
     ]);
 
@@ -185,8 +226,11 @@ function App() {
       slmStatus: slmStatus.value,
       rag: rag.value,
       ragEvaluation: ragEvaluation.value,
+      trainingStatus: trainingStatus.value,
+      trainingExamples: trainingExamples.value,
       specialistDashboard: specialistDashboard.value,
       specialistModels: specialistModels.value,
+      intelligenceDashboard: intelligenceDashboard.value,
       tools: tools.value ?? [],
     });
 
@@ -198,8 +242,11 @@ function App() {
       slmStatus.error,
       rag.error,
       ragEvaluation.error,
+      trainingStatus.error,
+      trainingExamples.error,
       specialistDashboard.error,
       specialistModels.error,
+      intelligenceDashboard.error,
       tools.error,
     ].find(Boolean);
     setSystemError(firstError ?? null);
@@ -436,12 +483,163 @@ function App() {
     }
   }
 
+  async function labelTrainingExample(exampleId: string, request: TrainingLabelRequest) {
+    setTrainingActionLoading(true);
+    setTrainingNotice(null);
+    try {
+      const result = await client.labelTrainingExample(exampleId, request);
+      setTrainingNotice(`Updated ${result.example.label_status} label for ${result.example.id.slice(0, 12)}.`);
+      await refreshSystem();
+    } catch (error) {
+      setTrainingNotice(`Could not update training example: ${cleanError(error)}`);
+    } finally {
+      setTrainingActionLoading(false);
+    }
+  }
+
+  async function exportTrainingDataset(format: "jsonl" | "csv") {
+    setTrainingActionLoading(true);
+    setTrainingNotice(null);
+    try {
+      const result = await client.exportTrainingDataset(format);
+      setTrainingNotice(`Exported ${result.row_count} reviewed example(s) to ${result.path}.`);
+      await refreshSystem();
+    } catch (error) {
+      setTrainingNotice(`Could not export training dataset: ${cleanError(error)}`);
+    } finally {
+      setTrainingActionLoading(false);
+    }
+  }
+
   function resetLocalState() {
     localStorage.removeItem(SETTINGS_KEY);
     setMessages([]);
     setSelectedRunId(null);
     setSettings(defaultSettings);
     setSettingsNotice("Frontend settings and the visible chat transcript were reset.");
+  }
+
+  async function runAssignmentCopilot() {
+    const text = assignmentText.trim();
+    const path = assignmentPath.trim();
+    if (!text && !path) {
+      setAssignmentError("Paste assignment text or provide a local document path.");
+      return;
+    }
+    setAssignmentLoading(true);
+    setAssignmentError(null);
+    const request: AssignmentCopilotRequest = {
+      selected_assignment: assignmentSelection,
+    };
+    if (text) request.text = text;
+    if (path) request.path = path;
+    if (assignmentWorkspacePath.trim()) {
+      request.workspace_path = assignmentWorkspacePath.trim();
+    }
+    if (assignmentDatasetPath.trim()) {
+      request.dataset_path = assignmentDatasetPath.trim();
+    }
+    try {
+      const result = await client.runAssignmentCopilot(request);
+      setAssignmentResult(result);
+      setAssignmentCodeWriteResult(null);
+      setAssignmentManifestWriteResult(null);
+      setAssignmentExportNotice(null);
+      if (result.dataset_profile) {
+        setAssignmentDatasetMapping(await client.mapAssignmentDataset({ dataset_profile: result.dataset_profile }));
+      } else {
+        setAssignmentDatasetMapping(null);
+      }
+    } catch (error) {
+      setAssignmentError(assignmentFriendlyError(error, { documentPath: path, datasetPath: assignmentDatasetPath.trim(), workspacePath: assignmentWorkspacePath.trim() }));
+    } finally {
+      setAssignmentLoading(false);
+    }
+  }
+
+  async function exportAssignmentReportPackage() {
+    const text = assignmentText.trim();
+    const path = assignmentPath.trim();
+    if (!text && !path) {
+      setAssignmentExportNotice("Paste assignment text or provide a document path before exporting.");
+      return;
+    }
+    setAssignmentExportLoading(true);
+    setAssignmentExportNotice(null);
+    try {
+      const result = await client.exportAssignmentReport({
+        text: text || undefined,
+        path: path || undefined,
+        assignment_number: assignmentSelection === "all" ? 1 : Number(assignmentSelection),
+        workspace_path: assignmentWorkspacePath.trim() || undefined,
+        report_folder: "report_package",
+        overwrite: false,
+      });
+      setAssignmentExportNotice(
+        `Report package: ${result.created_files.length} created, ${result.skipped_files.length} skipped in ${result.output_directory}.`,
+      );
+    } catch (error) {
+      setAssignmentExportNotice(assignmentFriendlyError(error, { documentPath: path, workspacePath: assignmentWorkspacePath.trim() }));
+    } finally {
+      setAssignmentExportLoading(false);
+    }
+  }
+
+  async function createAssignmentStarterFiles() {
+    if (!assignmentResult) {
+      setAssignmentExportNotice("Run Assignment Copilot before creating starter files.");
+      return;
+    }
+    if (!assignmentWorkspacePath.trim()) {
+      setAssignmentExportNotice("Provide an approved workspace path before creating starter files.");
+      return;
+    }
+    setAssignmentCreateLoading(true);
+    setAssignmentExportNotice(null);
+    try {
+      const result = await client.writeAssignmentCode({
+        workspace_path: assignmentWorkspacePath.trim(),
+        blueprints: assignmentResult.code_blueprints ?? [],
+        overwrite: assignmentOverwrite,
+      });
+      setAssignmentCodeWriteResult(result);
+      setAssignmentExportNotice(
+        `Starter files: ${result.created_files.length} created, ${result.skipped_files.length} skipped, ${result.refused_files.length} refused.`,
+      );
+    } catch (error) {
+      setAssignmentExportNotice(assignmentFriendlyError(error, { workspacePath: assignmentWorkspacePath.trim(), datasetPath: assignmentDatasetPath.trim() }));
+    } finally {
+      setAssignmentCreateLoading(false);
+    }
+  }
+
+  async function writeAssignmentManifestFile() {
+    if (!assignmentResult) {
+      setAssignmentExportNotice("Run Assignment Copilot before writing a manifest.");
+      return;
+    }
+    if (!assignmentWorkspacePath.trim()) {
+      setAssignmentExportNotice("Provide an approved workspace path before writing a manifest.");
+      return;
+    }
+    setAssignmentCreateLoading(true);
+    setAssignmentExportNotice(null);
+    try {
+      const result = await client.writeAssignmentManifest({
+        workspace_path: assignmentWorkspacePath.trim(),
+        copilot_result: assignmentResult,
+        assignment_number: assignmentSelection === "all" ? 1 : Number(assignmentSelection),
+        dataset_path: assignmentDatasetPath.trim() || undefined,
+        document_path: assignmentPath.trim() || undefined,
+        overwrite: assignmentOverwrite,
+      });
+      setAssignmentManifestWriteResult(result);
+      setAssignmentExportNotice(result.written ? `Manifest written to ${result.manifest_path}.` : "Manifest was not written.");
+    } catch (error) {
+      setAssignmentExportNotice(assignmentFriendlyError(error, { workspacePath: assignmentWorkspacePath.trim() }));
+    } finally {
+      setAssignmentCreateLoading(false);
+    }
   }
 
   return (
@@ -495,6 +693,35 @@ function App() {
             runtime={systemData?.runtime ?? null}
           />
         )}
+        {activePage === "assignments" && (
+          <AssignmentCopilotPage
+            text={assignmentText}
+            setText={setAssignmentText}
+            path={assignmentPath}
+            setPath={setAssignmentPath}
+            selection={assignmentSelection}
+            setSelection={setAssignmentSelection}
+            workspacePath={assignmentWorkspacePath}
+            setWorkspacePath={setAssignmentWorkspacePath}
+            datasetPath={assignmentDatasetPath}
+            setDatasetPath={setAssignmentDatasetPath}
+            loading={assignmentLoading}
+            error={assignmentError}
+            result={assignmentResult}
+            exportLoading={assignmentExportLoading}
+            exportNotice={assignmentExportNotice}
+            createLoading={assignmentCreateLoading}
+            overwrite={assignmentOverwrite}
+            setOverwrite={setAssignmentOverwrite}
+            codeWriteResult={assignmentCodeWriteResult}
+            manifestWriteResult={assignmentManifestWriteResult}
+            datasetMapping={assignmentDatasetMapping}
+            onSubmit={() => void runAssignmentCopilot()}
+            onExport={() => void exportAssignmentReportPackage()}
+            onCreateStarterFiles={() => void createAssignmentStarterFiles()}
+            onWriteManifest={() => void writeAssignmentManifestFile()}
+          />
+        )}
         {activePage === "system" && (
           <SystemPage
             data={systemData}
@@ -505,9 +732,13 @@ function App() {
             ragIndexNotice={ragIndexNotice}
             ragEvaluationLoading={ragEvaluationLoading}
             ragEvaluationNotice={ragEvaluationNotice}
+            trainingNotice={trainingNotice}
+            trainingActionLoading={trainingActionLoading}
             onRefresh={() => void refreshSystem()}
             onRebuildRagIndex={() => void rebuildRagIndex()}
             onRunRagEvaluation={() => void runRagEvaluation()}
+            onLabelTrainingExample={(exampleId, request) => void labelTrainingExample(exampleId, request)}
+            onExportTrainingDataset={(format) => void exportTrainingDataset(format)}
           />
         )}
         {activePage === "history" && (
@@ -715,6 +946,533 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
   );
 }
 
+function AssignmentCopilotPage({
+  text,
+  setText,
+  path,
+  setPath,
+  selection,
+  setSelection,
+  workspacePath,
+  setWorkspacePath,
+  datasetPath,
+  setDatasetPath,
+  loading,
+  error,
+  result,
+  exportLoading,
+  exportNotice,
+  createLoading,
+  overwrite,
+  setOverwrite,
+  codeWriteResult,
+  manifestWriteResult,
+  datasetMapping,
+  onSubmit,
+  onExport,
+  onCreateStarterFiles,
+  onWriteManifest,
+}: {
+  text: string;
+  setText: (value: string) => void;
+  path: string;
+  setPath: (value: string) => void;
+  selection: AssignmentSelection;
+  setSelection: (value: AssignmentSelection) => void;
+  workspacePath: string;
+  setWorkspacePath: (value: string) => void;
+  datasetPath: string;
+  setDatasetPath: (value: string) => void;
+  loading: boolean;
+  error: string | null;
+  result: AssignmentCopilotResult | null;
+  exportLoading: boolean;
+  exportNotice: string | null;
+  createLoading: boolean;
+  overwrite: boolean;
+  setOverwrite: (value: boolean) => void;
+  codeWriteResult: AssignmentCodeWriteResult | null;
+  manifestWriteResult: AssignmentManifestWriteResult | null;
+  datasetMapping: AssignmentDatasetMapping | null;
+  onSubmit: () => void;
+  onExport: () => void;
+  onCreateStarterFiles: () => void;
+  onWriteManifest: () => void;
+}) {
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    onSubmit();
+  }
+
+  const summary = asObject(result?.parsed_document_summary);
+  const tasks = (result?.extracted_assignment_sections ?? []).flatMap((section) =>
+    readObjectArray(asObject(section).tasks).map((task) => ({
+      assignment: readString(asObject(section).title, "Assignment"),
+      title: readString(task.title, "Task"),
+      output: readString(task.required_output, "Completed evidence"),
+    })),
+  );
+  const planItems = readObjectArray(asObject(result?.action_plan).checklist);
+  const starterFiles = (result?.recommended_starter_files ?? []).flatMap((plan) =>
+    readObjectArray(asObject(plan).files).map((file) => ({
+      assignment: String(readNumber(asObject(plan).assignment_number)),
+      path: readString(file.file_path),
+      purpose: readString(file.purpose),
+    })),
+  );
+  const evidenceItems = readObjectArray(asObject(result?.evidence_checklist).items);
+  const evidenceSummary = asObject(asObject(result?.evidence_checklist).summary);
+  const evidenceByAssignment = groupObjectsByString(evidenceItems, "assignment_name");
+  const evidenceTypeCounts = asObject(evidenceSummary.by_evidence_type);
+  const reportMarkdown = readString(asObject(result?.report_draft).markdown);
+  const datasetProfile = asObject(result?.dataset_profile);
+  const suitability = asObject(datasetProfile.suitability);
+  const workspacePlans = result?.workspace_build_plans ?? [];
+  const runbooks = result?.runbooks ?? [];
+  const codeBlueprints = (result?.code_blueprints ?? []).flatMap((set) =>
+    readObjectArray(asObject(set).blueprints),
+  );
+  const analysisQuestions = (result?.analysis_plans ?? []).flatMap((plan) =>
+    readObjectArray(asObject(plan).questions),
+  );
+  const dashboardSpecs = result?.dashboard_specs ?? [];
+  const finalReadiness = asObject(result?.final_readiness);
+  const generatedFileTree = codeBlueprints.map((blueprint) => readString(blueprint.file_path, "Blueprint file"));
+  const controlledWriteCompleted = Boolean(
+    codeWriteResult?.created_files.length ||
+    codeWriteResult?.skipped_files.length ||
+    manifestWriteResult?.written ||
+    manifestWriteResult?.skipped,
+  );
+
+  return (
+    <section className="page-stack">
+      <PageTitle
+        eyebrow="Assignment Copilot"
+        title="Plan, evidence, report, and readiness"
+        detail="Paste an assignment brief or provide a local document path. Astra produces structured guidance only: no commands are run and no files are written."
+      />
+
+      <form className="panel copilot-form" onSubmit={submit}>
+        <div className="form-grid">
+          <label>
+            Assignment text
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder="Paste the Big Data assignment brief here..."
+            />
+          </label>
+          <div className="form-stack">
+            <label>
+              Local document path
+              <input
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+                placeholder="assignment.md or docs/brief.docx"
+              />
+              <span className="helper-text">Supports .txt, .md, and .docx. On WSL, Windows files should use /mnt/c/...</span>
+            </label>
+            <label>
+              Assignment
+              <select
+                value={selection}
+                onChange={(event) => setSelection(event.target.value as AssignmentSelection)}
+              >
+                <option value="all">All assignments</option>
+                <option value="1">Assignment 1</option>
+                <option value="2">Assignment 2</option>
+                <option value="3">Assignment 3</option>
+              </select>
+            </label>
+            <label>
+              Workspace path
+              <input
+                value={workspacePath}
+                onChange={(event) => setWorkspacePath(event.target.value)}
+                placeholder="Optional, relative to backend workspace"
+              />
+              <span className="helper-text">Use an assignment workspace folder; no commands are run from here.</span>
+            </label>
+            <label>
+              Dataset path
+              <input
+                value={datasetPath}
+                onChange={(event) => setDatasetPath(event.target.value)}
+                placeholder="Optional, e.g. data/events.csv or data/events.tsv"
+              />
+              <span className="helper-text">Supports .csv, .txt, and .tsv with comma, semicolon, tab, or pipe delimiters.</span>
+            </label>
+            <button className="primary-button" type="submit" disabled={loading}>
+              <ClipboardCheck size={16} />
+              {loading ? "Running..." : "Run copilot analysis"}
+            </button>
+          </div>
+        </div>
+        {error && <Notice tone="amber" text={error} />}
+        {exportNotice && <Notice tone="blue" text={exportNotice} />}
+      </form>
+
+      {!result && !loading && (
+        <EmptyState
+          icon={ClipboardCheck}
+          title="No assignment analysis yet"
+          detail="Run the copilot to generate the action plan, starter files, evidence checklist, report draft, and marking readiness."
+        />
+      )}
+
+      {result && (
+        <>
+          <div className="overview-grid">
+            <StatusCard
+              icon={ClipboardCheck}
+              title="Document"
+              value={readString(summary.title, "Assignment brief")}
+              detail={`${readNumber(summary.section_count)} section(s) detected`}
+              tone="neutral"
+            />
+            <StatusCard
+              icon={CheckCircle2}
+              title="Evidence"
+              value={`${readNumber(evidenceSummary.missing_count)} missing`}
+              detail={`${readNumber(evidenceSummary.total_required)} required item(s)`}
+              tone={readNumber(evidenceSummary.missing_count) ? "amber" : "green"}
+            />
+            <StatusCard
+              icon={Wrench}
+              title="Safety"
+              value={controlledWriteCompleted ? "Controlled write completed" : result.tools_executed ? "Executed" : "Guidance only"}
+              detail={controlledWriteCompleted ? "No commands executed" : result.files_written ? "Files written" : "No files written"}
+              tone={result.tools_executed || result.files_written ? "red" : "green"}
+            />
+            <StatusCard
+              icon={Sparkles}
+              title="Next step"
+              value="Recommended"
+              detail={result.next_recommended_step}
+              tone="green"
+            />
+          </div>
+
+          <section className="panel">
+            <div className="panel-title-row">
+              <PanelTitle icon={Wrench} title="Controlled Creation" />
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={(event) => setOverwrite(event.target.checked)}
+                />
+                Overwrite existing files
+              </label>
+            </div>
+            <div className="notice subtle">
+              <ShieldCheck size={16} />
+              Astra can write starter files, report package files, and a manifest only after you click a button. No commands are executed and no credentials are generated.
+            </div>
+            <div className="button-row">
+              <button className="secondary-button" onClick={onCreateStarterFiles} disabled={createLoading || !workspacePath.trim()}>
+                {createLoading ? <Activity size={16} className="spin" /> : <Wrench size={16} />}
+                Create starter files
+              </button>
+              <button className="secondary-button" onClick={onExport} disabled={exportLoading || !workspacePath.trim()}>
+                {exportLoading ? <Activity size={16} className="spin" /> : <ClipboardCheck size={16} />}
+                Write report package
+              </button>
+              <button className="secondary-button" onClick={onWriteManifest} disabled={createLoading || !workspacePath.trim()}>
+                {createLoading ? <Activity size={16} className="spin" /> : <Database size={16} />}
+                Write manifest
+              </button>
+            </div>
+            {!workspacePath.trim() && <EmptyInline text="Enter an approved workspace path before creating files." />}
+            <section className="two-column creation-details">
+              <div>
+                <h3 className="section-subtitle">Generated file tree</h3>
+                <div className="compact-list">
+                  {generatedFileTree.map((file) => (
+                    <div key={file}>
+                      <strong>{file}</strong>
+                      <span>Blueprint starter file</span>
+                    </div>
+                  ))}
+                  {!generatedFileTree.length && <EmptyInline text="Run analysis to see generated files." />}
+                </div>
+              </div>
+              <div>
+                <h3 className="section-subtitle">Dataset mapping</h3>
+                {datasetMapping ? (
+                  <InfoList
+                    items={[
+                      ["Timestamp", mappingColumn(datasetMapping.timestamp_column)],
+                      ["Primary numeric", mappingColumn(datasetMapping.primary_numeric_indicator)],
+                      ["Category/filter", mappingColumn(datasetMapping.category_grouping_column)],
+                      ["Threshold idea", datasetMapping.classification_threshold_idea],
+                      ["Spark columns", datasetMapping.spark_aggregation_columns.join(", ") || "Placeholders"],
+                      ["Snowflake tables", datasetMapping.snowflake_table_names.join(", ")],
+                      ["Redis keys", datasetMapping.redis_key_patterns.join(", ")],
+                    ]}
+                  />
+                ) : (
+                  <EmptyInline text="Add a dataset path and run analysis to see mapping suggestions." />
+                )}
+              </div>
+            </section>
+            {codeWriteResult && (
+              <CreationResult
+                title="Starter file result"
+                created={codeWriteResult.created_files}
+                skipped={codeWriteResult.skipped_files}
+                refused={codeWriteResult.refused_files}
+                warnings={codeWriteResult.warnings}
+                nextSteps={codeWriteResult.next_manual_steps}
+              />
+            )}
+            {manifestWriteResult && (
+              <InfoList
+                items={[
+                  ["Manifest", manifestWriteResult.written ? "written" : manifestWriteResult.skipped ? "skipped" : "not written"],
+                  ["Path", manifestWriteResult.manifest_path],
+                  ["Overwrite", manifestWriteResult.overwrite ? "true" : "false"],
+                  ["Warnings", manifestWriteResult.warnings.join(", ") || "None"],
+                ]}
+              />
+            )}
+          </section>
+
+          <section className="panel">
+            <PanelTitle icon={ClipboardCheck} title="Assignment Tasks" />
+            <div className="compact-list">
+              {tasks.map((task, index) => (
+                <div key={`${task.assignment}-${task.title}-${index}`}>
+                  <strong>{task.title}</strong>
+                  <span>{task.assignment} / {task.output}</span>
+                </div>
+              ))}
+              {!tasks.length && <EmptyInline text="No tasks detected." />}
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={Wrench} title="Generated Action Plan" />
+              <div className="compact-list">
+                {planItems.slice(0, 10).map((item, index) => (
+                  <div key={`${readString(item.task_id)}-${index}`}>
+                    <strong>{readString(item.title, "Checklist item")}</strong>
+                    <span>{readString(item.group)} / {readString(item.status, "todo")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="panel">
+              <PanelTitle icon={Database} title="Starter Files" />
+              <div className="compact-list">
+                {starterFiles.map((file) => (
+                  <div key={`${file.assignment}-${file.path}`}>
+                    <strong>{file.path}</strong>
+                    <span>Assignment {file.assignment} / {file.purpose}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={ShieldCheck} title="Evidence Checklist" />
+              <div className="mini-metrics">
+                {Object.entries(evidenceTypeCounts).map(([type, count]) => (
+                  <Metric key={type} label={type} value={String(count)} />
+                ))}
+              </div>
+              <div className="compact-list">
+                {Object.entries(evidenceByAssignment).map(([assignment, items]) => (
+                  <div key={assignment}>
+                    <strong>{assignment}</strong>
+                    <span>{items.length} evidence item(s)</span>
+                    <div className="nested-evidence">
+                      {items.slice(0, 4).map((item) => (
+                        <span key={readString(item.evidence_id)}>
+                          {readString(item.title, "Evidence")} / {readString(item.evidence_type)} / {readString(item.status)}
+                        </span>
+                      ))}
+                      {items.length > 4 && <em>{items.length - 4} more item(s)</em>}
+                    </div>
+                  </div>
+                ))}
+                {!evidenceItems.length && <EmptyInline text="No evidence items returned." />}
+              </div>
+            </div>
+            <div className="panel">
+              <PanelTitle icon={Send} title="Safe Commands" />
+              <div className="compact-list">
+                {result.safe_next_commands.map((command) => (
+                  <div key={readString(command.command)}>
+                    <strong>{readString(command.command)}</strong>
+                    <span>{readString(command.risk_level)} risk / {readString(command.purpose)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={Database} title="Dataset Suitability" />
+              {result.dataset_profile ? (
+                <div className="compact-list">
+                  <div>
+                    <strong>{readString(datasetProfile.dataset_path, "Dataset")}</strong>
+                    <span>
+                      {readNumber(datasetProfile.row_count_estimate)} row estimate / {readNumber(datasetProfile.column_count)} columns
+                    </span>
+                  </div>
+                  <div>
+                    <strong>Recommended use</strong>
+                    <span>{readString(suitability.recommended_assignment_use, "none")}</span>
+                  </div>
+                  <div>
+                    <strong>Checks</strong>
+                    <span>
+                      A1 {readBoolean(suitability.assignment_1_suitable) ? "yes" : "no"} / A2 {readBoolean(suitability.assignment_2_suitable) ? "yes" : "no"} / A3 {readBoolean(suitability.assignment_3_suitable) ? "yes" : "no"}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <EmptyInline text="Add a dataset path before running analysis to see suitability checks." />
+              )}
+            </div>
+            <div className="panel">
+              <PanelTitle icon={Wrench} title="Workspace Build Plan" />
+              <div className="compact-list">
+                {workspacePlans.map((plan) => {
+                  const entry = asObject(plan);
+                  const files = readObjectArray(entry.files_to_create);
+                  return (
+                    <div key={readString(entry.assignment_name)}>
+                      <strong>{readString(entry.assignment_name, "Assignment")}</strong>
+                      <span>{files.length} file(s) to create / {readString(entry.dataset_copy_or_reference_plan)}</span>
+                    </div>
+                  );
+                })}
+                {!workspacePlans.length && <EmptyInline text="No workspace build plan returned." />}
+              </div>
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={Activity} title="Marking Readiness" />
+              <div className="compact-list">
+                {result.marking_readiness.map((item) => {
+                  const entry = asObject(item);
+                  const missing = readStringArray(entry.missing_critical_items);
+                  return (
+                    <div key={readString(entry.assignment_name)}>
+                      <strong>{readString(entry.assignment_name, "Assignment")}</strong>
+                      <span>
+                        Estimated ready: {readNumber(entry.estimated_ready_marks)} / {readNumber(entry.total_marks_available)} marks
+                      </span>
+                      {missing.length > 0 && <em>Missing: {missing.slice(0, 3).join(", ")}</em>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="panel">
+              <PanelTitle icon={MessageSquareText} title="Report Outline" />
+              <pre className="report-preview">{reportMarkdown.slice(0, 2600)}</pre>
+              <button className="secondary-button export-button" onClick={onExport} disabled={exportLoading}>
+                <ClipboardCheck size={16} />
+                {exportLoading ? "Exporting..." : "Export markdown package"}
+              </button>
+            </div>
+          </section>
+
+          <section className="panel">
+            <PanelTitle icon={Clock3} title="Runbook" />
+            <div className="compact-list">
+              {runbooks.flatMap((runbook) =>
+                readObjectArray(asObject(runbook).steps).slice(0, 6).map((step) => (
+                  <div key={`${readString(asObject(runbook).title)}-${readString(step.step_id)}`}>
+                    <strong>{readString(step.title, "Runbook step")}</strong>
+                    <span>{readString(step.expected_result)}{readString(step.screenshot_to_take) ? ` / Screenshot: ${readString(step.screenshot_to_take)}` : ""}</span>
+                  </div>
+                )),
+              )}
+              {!runbooks.length && <EmptyInline text="No runbook returned." />}
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={Wrench} title="Code Blueprints" />
+              <div className="compact-list">
+                {codeBlueprints.slice(0, 10).map((blueprint) => (
+                  <div key={readString(blueprint.file_path)}>
+                    <strong>{readString(blueprint.file_path, "Blueprint file")}</strong>
+                    <span>{readString(blueprint.technology_area)} / {readString(blueprint.purpose)}</span>
+                  </div>
+                ))}
+                {!codeBlueprints.length && <EmptyInline text="No code blueprints returned." />}
+              </div>
+            </div>
+            <div className="panel">
+              <PanelTitle icon={MessageSquareText} title="Business Questions" />
+              <div className="compact-list">
+                {analysisQuestions.slice(0, 10).map((question) => (
+                  <div key={readString(question.question_id)}>
+                    <strong>{readString(question.question, "Analysis question")}</strong>
+                    <span>{readString(question.method)} / {readString(question.suggested_logic)}</span>
+                  </div>
+                ))}
+                {!analysisQuestions.length && <EmptyInline text="No analysis plan returned." />}
+              </div>
+            </div>
+          </section>
+
+          <section className="two-column">
+            <div className="panel">
+              <PanelTitle icon={Database} title="Dashboard Specification" />
+              <div className="compact-list">
+                {dashboardSpecs.map((spec) => {
+                  const entry = asObject(spec);
+                  return (
+                    <div key={readString(entry.dashboard_title)}>
+                      <strong>{readString(entry.dashboard_title, "Dashboard")}</strong>
+                      <span>{readString(entry.dashboard_type)} / {readString(entry.data_source)}</span>
+                    </div>
+                  );
+                })}
+                {!dashboardSpecs.length && <EmptyInline text="No dashboard specification returned." />}
+              </div>
+            </div>
+            <div className="panel">
+              <PanelTitle icon={CheckCircle2} title="Final Readiness" />
+              {result.final_readiness ? (
+                <div className="compact-list">
+                  <div>
+                    <strong>{readString(finalReadiness.readiness_level, "in_progress")}</strong>
+                    <span>{readString(finalReadiness.next_best_action)}</span>
+                  </div>
+                  {readStringArray(finalReadiness.missing_blockers).map((blocker) => (
+                    <div key={blocker}>
+                      <strong>Missing blocker</strong>
+                      <span>{blocker}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyInline text="No final readiness report returned." />
+              )}
+            </div>
+          </section>
+        </>
+      )}
+    </section>
+  );
+}
+
 function SystemPage({
   data,
   loading,
@@ -724,9 +1482,13 @@ function SystemPage({
   ragIndexNotice,
   ragEvaluationLoading,
   ragEvaluationNotice,
+  trainingNotice,
+  trainingActionLoading,
   onRefresh,
   onRebuildRagIndex,
   onRunRagEvaluation,
+  onLabelTrainingExample,
+  onExportTrainingDataset,
 }: {
   data: SystemData | null;
   loading: boolean;
@@ -736,15 +1498,29 @@ function SystemPage({
   ragIndexNotice: string | null;
   ragEvaluationLoading: boolean;
   ragEvaluationNotice: string | null;
+  trainingNotice: string | null;
+  trainingActionLoading: boolean;
   onRefresh: () => void;
   onRebuildRagIndex: () => void;
   onRunRagEvaluation: () => void;
+  onLabelTrainingExample: (exampleId: string, request: TrainingLabelRequest) => void;
+  onExportTrainingDataset: (format: "jsonl" | "csv") => void;
 }) {
   const runtime = data?.runtime;
   const selectedProfile = data?.selectedSlm?.profile ?? {};
   const modelCounts = data?.specialistDashboard?.models_by_status ?? {};
   const projectIndex = data?.rag?.project_index;
   const evaluation = data?.ragEvaluation?.latest_evaluation ?? null;
+  const trainingStatus = data?.trainingStatus;
+  const trainingExamples = data?.trainingExamples?.items ?? [];
+  const intelligence = data?.intelligenceDashboard;
+  const intelligenceComponents = readObjectArray(intelligence?.components);
+  const workerRoles = readObjectArray(intelligence?.worker_roles);
+  const decisionTraces = readObjectArray(intelligence?.decision_traces);
+  const intelligencePolicy = asObject(intelligence?.policy);
+  const modelSummary = asObject(intelligence?.model_evaluation_summary);
+  const policyRules = readObjectArray(intelligencePolicy.rules);
+  const modelRows = readObjectArray(modelSummary.models);
 
   return (
     <section className="page-stack">
@@ -812,6 +1588,88 @@ function SystemPage({
           />
         </section>
       </div>
+      <section className="panel">
+        <PanelTitle icon={ShieldCheck} title="Intelligence Placement" />
+        <div className="mini-metrics">
+          <Metric label="Components" value={String(intelligenceComponents.length)} />
+          <Metric label="Policy" value={readString(intelligencePolicy.version, "Unavailable")} />
+          <Metric label="Worker roles" value={String(workerRoles.length)} />
+          <Metric label="Decision traces" value={String(decisionTraces.length)} />
+        </div>
+        <div className="two-column">
+          <div>
+            <h3 className="section-subtitle">Components</h3>
+            <div className="compact-list">
+              {intelligenceComponents.slice(0, 8).map((component) => (
+                <div key={readString(component.component_id)}>
+                  <strong>{readString(component.component_id, "component")}</strong>
+                  <span>{readString(component.role, "advisory")} / {readString(component.purpose)}</span>
+                </div>
+              ))}
+              {!intelligenceComponents.length && <EmptyInline text="No intelligence registry returned." />}
+            </div>
+          </div>
+          <div>
+            <h3 className="section-subtitle">Policy</h3>
+            <div className="compact-list">
+              {policyRules.slice(0, 6).map((rule) => (
+                <div key={readString(rule.rule_id)}>
+                  <strong>{readString(rule.authority, "authority")}</strong>
+                  <span>{readString(rule.statement)}</span>
+                </div>
+              ))}
+              {!policyRules.length && <EmptyInline text="No model placement policy returned." />}
+            </div>
+          </div>
+        </div>
+        <div className="two-column">
+          <div>
+            <h3 className="section-subtitle">Worker roles</h3>
+            <div className="compact-list">
+              {workerRoles.slice(0, 6).map((role) => (
+                <div key={readString(role.role_id)}>
+                  <strong>{readString(role.role_id, "worker")}</strong>
+                  <span>{readString(role.purpose)} / audit {readString(role.audit_event_type)}</span>
+                </div>
+              ))}
+              {!workerRoles.length && <EmptyInline text="No worker role registry returned." />}
+            </div>
+          </div>
+          <div>
+            <h3 className="section-subtitle">Model evaluation summary</h3>
+            <InfoList
+              items={[
+                ["Model statuses", formatDistribution(asNumberRecord(modelSummary.counts_by_status))],
+                ["Fallback count", String(readNumber(modelSummary.fallback_count))],
+                ["Low confidence count", String(readNumber(modelSummary.low_confidence_count))],
+                ["Models authorize safety", readBoolean(asObject(intelligence?.auditability).models_authorize_safety) ? "Yes" : "No"],
+              ]}
+            />
+            {modelRows.slice(0, 4).map((model) => (
+              <div className="inline-record" key={readString(model.model_id)}>
+                <strong>{readString(model.specialist, "model")}</strong>
+                <span>{readString(model.status)} / {readString(model.used_for)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <h3 className="section-subtitle">Recent decision traces</h3>
+        <div className="compact-list">
+          {decisionTraces.slice(0, 5).map((trace) => {
+            const rag = asObject(trace.rag);
+            const slm = asObject(trace.slm);
+            return (
+              <div key={readString(trace.trace_id)}>
+                <strong>{readString(trace.selected_specialist, "Specialist")}</strong>
+                <span>
+                  RAG {readBoolean(rag.used) ? "used" : "skipped"} / SLM {readBoolean(slm.used) ? "used" : "skipped"} / safety {readString(trace.final_safety_status, "unknown")}
+                </span>
+              </div>
+            );
+          })}
+          {!decisionTraces.length && <EmptyInline text="No recent decision traces yet." />}
+        </div>
+      </section>
       <section className="panel">
         <div className="panel-title-row">
           <PanelTitle icon={Database} title="Project RAG index" />
@@ -889,6 +1747,60 @@ function SystemPage({
           </div>
         ) : (
           <EmptyInline text="No tools loaded." />
+        )}
+      </section>
+      <section className="panel">
+        <div className="panel-title-row">
+          <PanelTitle icon={Database} title="Training dataset" />
+          <div className="button-row">
+            <button
+              className="secondary-button"
+              onClick={() => onExportTrainingDataset("jsonl")}
+              disabled={trainingActionLoading}
+            >
+              {trainingActionLoading ? <Activity size={16} className="spin" /> : <Database size={16} />}
+              Export JSONL
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => onExportTrainingDataset("csv")}
+              disabled={trainingActionLoading}
+            >
+              {trainingActionLoading ? <Activity size={16} className="spin" /> : <Database size={16} />}
+              Export CSV
+            </button>
+          </div>
+        </div>
+        {trainingNotice && (
+          <Notice
+            tone={trainingNotice.startsWith("Could not") ? "amber" : "blue"}
+            text={trainingNotice}
+          />
+        )}
+        <InfoList
+          items={[
+            ["Total examples", String(trainingStatus?.total_examples ?? 0)],
+            ["Labeled examples", String(trainingStatus?.labeled_count ?? 0)],
+            ["Unlabeled examples", String(trainingStatus?.unlabeled_count ?? 0)],
+            ["Label distribution", formatDistribution(trainingStatus?.label_distribution ?? {})],
+            ["Last updated", trainingStatus?.last_updated ? formatDate(trainingStatus.last_updated) : "Not logged yet"],
+            ["Storage path", trainingStatus?.storage_path ?? "Unavailable"],
+          ]}
+        />
+        <h3 className="section-subtitle">Recent examples</h3>
+        {trainingExamples.length ? (
+          <div className="training-example-list">
+            {trainingExamples.map((example) => (
+              <TrainingExampleReview
+                key={example.id}
+                example={example}
+                disabled={trainingActionLoading}
+                onSubmit={onLabelTrainingExample}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyInline text="No training examples collected yet. Completed chats will appear here automatically." />
         )}
       </section>
     </section>
@@ -1054,6 +1966,144 @@ function HistoryPage({
         </div>
       )}
     </section>
+  );
+}
+
+const trainingLabels: TrainingLabel[] = [
+  "general",
+  "code",
+  "rag",
+  "runtime",
+  "safety",
+  "training",
+  "frontend",
+  "backend",
+  "debugging",
+  "testing",
+  "unknown",
+];
+
+function TrainingExampleReview({
+  example,
+  disabled,
+  onSubmit,
+}: {
+  example: TrainingExample;
+  disabled: boolean;
+  onSubmit: (exampleId: string, request: TrainingLabelRequest) => void;
+}) {
+  const [label, setLabel] = useState<TrainingLabel>(
+    example.final_label ?? example.corrected_label ?? example.suggested_label ?? "unknown",
+  );
+  const [usefulness, setUsefulness] = useState<UsefulnessRating | "">(
+    example.usefulness_rating ?? "",
+  );
+  const [notes, setNotes] = useState(example.notes ?? "");
+
+  useEffect(() => {
+    setLabel(example.final_label ?? example.corrected_label ?? example.suggested_label ?? "unknown");
+    setUsefulness(example.usefulness_rating ?? "");
+    setNotes(example.notes ?? "");
+  }, [example]);
+
+  const baseRequest = {
+    usefulness_rating: usefulness || null,
+    notes: notes.trim() || null,
+  };
+
+  return (
+    <details className="training-example">
+      <summary>
+        <span>
+          <strong>{example.suggested_label ?? "unknown"}</strong>
+          <small>{example.label_status} / {example.source}</small>
+        </span>
+        <em>{example.user_message.slice(0, 120)}</em>
+      </summary>
+      <InfoList
+        items={[
+          ["Suggested label", example.suggested_label ?? "None"],
+          ["Final label", example.final_label ?? "None"],
+          ["Route", `${example.routed_specialist ?? "unknown"} / ${example.routed_task_type ?? "unknown"}`],
+          ["RAG", example.rag_used ? `used / ${example.grounding_status ?? "unknown"}` : "not used"],
+          ["Sources", example.source_paths.join(", ") || "None"],
+          ["Created", formatDate(example.created_at)],
+        ]}
+      />
+      <p>{example.user_message}</p>
+      {example.assistant_response && <p className="training-response">{example.assistant_response}</p>}
+      <div className="training-review-controls">
+        <label className="field">
+          <span>Correct label</span>
+          <select value={label} onChange={(event) => setLabel(event.target.value as TrainingLabel)}>
+            {trainingLabels.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Usefulness</span>
+          <select
+            value={usefulness}
+            onChange={(event) => setUsefulness(event.target.value as UsefulnessRating | "")}
+          >
+            <option value="">Unrated</option>
+            <option value="good">good</option>
+            <option value="okay">okay</option>
+            <option value="bad">bad</option>
+          </select>
+        </label>
+        <label className="field training-notes">
+          <span>Notes</span>
+          <input
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Short review note"
+          />
+        </label>
+      </div>
+      <div className="button-row training-actions">
+        <button
+          className="secondary-button"
+          disabled={disabled}
+          onClick={() =>
+            onSubmit(example.id, {
+              ...baseRequest,
+              label_status: "confirmed",
+            })
+          }
+        >
+          Confirm
+        </button>
+        <button
+          className="secondary-button"
+          disabled={disabled}
+          onClick={() =>
+            onSubmit(example.id, {
+              ...baseRequest,
+              corrected_label: label,
+              label_status: "corrected",
+            })
+          }
+        >
+          Correct
+        </button>
+        <button
+          className="danger-button"
+          disabled={disabled}
+          onClick={() =>
+            onSubmit(example.id, {
+              ...baseRequest,
+              label_status: "rejected",
+            })
+          }
+        >
+          Reject
+        </button>
+      </div>
+    </details>
   );
 }
 
@@ -1277,6 +2327,37 @@ function InfoList({ items }: { items: Array<[string, string]> }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+function CreationResult({
+  title,
+  created,
+  skipped,
+  refused,
+  warnings,
+  nextSteps,
+}: {
+  title: string;
+  created: string[];
+  skipped: string[];
+  refused: string[];
+  warnings: string[];
+  nextSteps: string[];
+}) {
+  return (
+    <div className="creation-result">
+      <h3 className="section-subtitle">{title}</h3>
+      <InfoList
+        items={[
+          ["Created", created.join(", ") || "None"],
+          ["Skipped", skipped.join(", ") || "None"],
+          ["Refused", refused.join(", ") || "None"],
+          ["Warnings", warnings.join(", ") || "None"],
+          ["Next manual steps", nextSteps.join(" | ") || "Review generated files before running anything."],
+        ]}
+      />
+    </div>
   );
 }
 
@@ -1603,6 +2684,12 @@ function formatSource(source: { path: string; startLine: number; endLine: number
   return `${source.path}${score}`;
 }
 
+function formatDistribution(distribution: Record<string, number>) {
+  const entries = Object.entries(distribution);
+  if (!entries.length) return "None";
+  return entries.map(([label, count]) => `${label}: ${count}`).join(", ");
+}
+
 function groundingDisplay(run: ChatRunResponse) {
   if (run.grounding_status === "grounded") return "grounded";
   if (run.grounding_status === "weak") return "weak";
@@ -1664,18 +2751,108 @@ function cleanError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function assignmentFriendlyError(
+  error: unknown,
+  paths: { documentPath?: string; datasetPath?: string; workspacePath?: string } = {},
+) {
+  const raw = cleanError(error);
+  const detail = extractErrorDetail(raw);
+  const lowered = detail.toLowerCase();
+  const candidatePath = paths.datasetPath || paths.documentPath || paths.workspacePath || "";
+  const wslSuggestion = windowsPathToWsl(candidatePath);
+
+  if (wslSuggestion) {
+    return `Windows path detected. Try the WSL path instead: ${wslSuggestion}`;
+  }
+  if (lowered.includes("python-docx is required")) {
+    return "python-docx is required to parse .docx files. Install python-docx or paste the assignment text.";
+  }
+  if (lowered.includes("must point to a file") || lowered.includes("path is a folder")) {
+    return "That path points to a folder. For datasets, choose the actual .csv, .txt, or .tsv file. For assignments, choose the .txt, .md, or .docx document.";
+  }
+  if (lowered.includes("outside the allowed workspace root") || lowered.includes("workspace root")) {
+    return "That file is outside Astra's allowed workspace. Copy it into assignment_inputs or assignment_workspaces, or use an allowed workspace path.";
+  }
+  if (lowered.includes("unsupported dataset") || lowered.includes("supported extensions: .csv")) {
+    return "Unsupported dataset type. Use a .csv, .txt, or .tsv file.";
+  }
+  if (lowered.includes("not found")) {
+    return `File not found. Check the path and, on WSL, use /mnt/c/... for Windows files. Details: ${detail}`;
+  }
+  return `Assignment Copilot could not continue: ${detail}`;
+}
+
+function extractErrorDetail(message: string) {
+  try {
+    const parsed = JSON.parse(message) as unknown;
+    const detail = asObject(parsed).detail;
+    return typeof detail === "string" ? detail : message;
+  } catch {
+    return message;
+  }
+}
+
+function windowsPathToWsl(value: string) {
+  const match = /^([a-zA-Z]):[\\/](.*)$/.exec(value.trim());
+  if (!match) return "";
+  return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, "/")}`;
+}
+
+function mappingColumn(value: Record<string, unknown>) {
+  const column = readString(value.column, "Placeholder");
+  const reason = readString(value.reason);
+  return reason ? `${column} - ${reason}` : column;
+}
+
 function readString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function readNumber(value: unknown, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function readBoolean(value: unknown): boolean {
+  return value === true;
+}
+
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function readObjectArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+        .map((item) => item as Record<string, unknown>)
+    : [];
+}
+
+function asNumberRecord(value: unknown): Record<string, number> {
+  const object = asObject(value);
+  return Object.fromEntries(
+    Object.entries(object)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+  );
+}
+
+function groupObjectsByString(
+  items: Array<Record<string, unknown>>,
+  key: string,
+): Record<string, Array<Record<string, unknown>>> {
+  return items.reduce<Record<string, Array<Record<string, unknown>>>>((groups, item) => {
+    const group = readString(item[key], "General");
+    groups[group] = [...(groups[group] ?? []), item];
+    return groups;
+  }, {});
 }
 
 function newId(prefix: string) {

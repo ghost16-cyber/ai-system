@@ -206,6 +206,173 @@ export interface ChatRunResponse {
   trace_summary: ChatTraceEntry[];
 }
 
+export type TrainingLabel =
+  | "general"
+  | "code"
+  | "rag"
+  | "runtime"
+  | "safety"
+  | "training"
+  | "frontend"
+  | "backend"
+  | "debugging"
+  | "testing"
+  | "unknown";
+
+export type TrainingLabelStatus =
+  | "unlabeled"
+  | "suggested"
+  | "confirmed"
+  | "corrected"
+  | "rejected";
+
+export type UsefulnessRating = "good" | "okay" | "bad";
+
+export interface TrainingExample {
+  id: string;
+  created_at: string;
+  updated_at?: string | null;
+  source: "chat_run" | "manual" | "imported";
+  chat_run_id?: string | null;
+  user_message: string;
+  assistant_response?: string | null;
+  routed_task_type?: string | null;
+  routed_specialist?: string | null;
+  routing_confidence?: number | null;
+  rag_used: boolean;
+  rag_skip_reason?: string | null;
+  grounding_status?: string | null;
+  source_paths: string[];
+  safety_status?: string | null;
+  suggested_label?: TrainingLabel | null;
+  corrected_label?: TrainingLabel | null;
+  final_label?: TrainingLabel | null;
+  label_status: TrainingLabelStatus;
+  usefulness_rating?: UsefulnessRating | null;
+  notes?: string | null;
+}
+
+export interface TrainingDatasetStatus {
+  total_examples: number;
+  labeled_count: number;
+  unlabeled_count: number;
+  label_distribution: Record<string, number>;
+  label_status_distribution: Record<string, number>;
+  storage_path: string;
+  last_updated: string | null;
+}
+
+export interface TrainingExamplesResponse {
+  items: TrainingExample[];
+  count: number;
+  total_matching: number;
+  storage_path: string;
+}
+
+export interface TrainingLabelRequest {
+  corrected_label?: TrainingLabel | null;
+  label_status: TrainingLabelStatus;
+  usefulness_rating?: UsefulnessRating | null;
+  notes?: string | null;
+}
+
+export interface TrainingExportResponse {
+  path: string;
+  row_count: number;
+  label_distribution: Record<string, number>;
+  format: "jsonl" | "csv";
+}
+
+export interface AssignmentCopilotRequest {
+  text?: string;
+  path?: string;
+  selected_assignment?: "all" | "1" | "2" | "3";
+  workspace_path?: string;
+  dataset_path?: string;
+  project_metadata?: Record<string, unknown>;
+}
+
+export interface AssignmentCopilotResult {
+  parsed_document_summary: Record<string, unknown>;
+  extracted_assignment_sections: Array<Record<string, unknown>>;
+  action_plan: Record<string, unknown>;
+  recommended_starter_files: Array<Record<string, unknown>>;
+  evidence_checklist: Record<string, unknown>;
+  safe_next_commands: Array<Record<string, unknown>>;
+  report_draft: Record<string, unknown>;
+  report_skeleton?: Record<string, unknown> | null;
+  task_breakdown?: Record<string, unknown> | null;
+  marking_readiness: Array<Record<string, unknown>>;
+  next_recommended_step: string;
+  workspace_inspection?: Record<string, unknown> | null;
+  dataset_profile?: Record<string, unknown> | null;
+  workspace_build_plans?: Array<Record<string, unknown>>;
+  runbooks?: Array<Record<string, unknown>>;
+  code_blueprints?: Array<Record<string, unknown>>;
+  analysis_plans?: Array<Record<string, unknown>>;
+  dashboard_specs?: Array<Record<string, unknown>>;
+  final_readiness?: Record<string, unknown> | null;
+  tools_executed: boolean;
+  files_written: boolean;
+  training_performed: boolean;
+}
+
+export interface AssignmentReportExportRequest {
+  text?: string;
+  path?: string;
+  brief?: Record<string, unknown>;
+  assignment_number?: number;
+  workspace_path?: string;
+  report_folder?: string;
+  overwrite?: boolean;
+}
+
+export interface AssignmentReportExportResult {
+  output_directory: string;
+  created_files: string[];
+  skipped_files: string[];
+  refused_files: string[];
+  overwrite: boolean;
+  warnings: string[];
+}
+
+export interface AssignmentCodeWriteResult {
+  workspace_path: string;
+  created_files: string[];
+  skipped_files: string[];
+  refused_files: string[];
+  warnings: string[];
+  next_manual_steps: string[];
+  overwrite: boolean;
+  commands_executed: boolean;
+  credentials_written: boolean;
+}
+
+export interface AssignmentDatasetMapping {
+  dataset_path?: string | null;
+  timestamp_column: Record<string, unknown>;
+  primary_numeric_indicator: Record<string, unknown>;
+  secondary_numeric_fields: Array<Record<string, unknown>>;
+  category_grouping_column: Record<string, unknown>;
+  classification_threshold_idea: string;
+  dashboard_filter_column: Record<string, unknown>;
+  spark_aggregation_columns: string[];
+  snowflake_table_names: string[];
+  redis_key_patterns: string[];
+  warnings: string[];
+  placeholders_used: boolean;
+}
+
+export interface AssignmentManifestWriteResult {
+  workspace_path: string;
+  manifest_path: string;
+  written: boolean;
+  skipped: boolean;
+  refused: boolean;
+  warnings: string[];
+  overwrite: boolean;
+}
+
 export interface ChatStreamEvent {
   event:
     | "run_started"
@@ -240,6 +407,16 @@ export interface SlmStatusResponse {
   provider: string;
   reachable: boolean;
   available_models: string[];
+}
+
+export interface IntelligenceDashboardResponse {
+  components: Array<Record<string, unknown>>;
+  policy: Record<string, unknown>;
+  worker_roles: Array<Record<string, unknown>>;
+  worker_status: Record<string, unknown>;
+  model_evaluation_summary: Record<string, unknown>;
+  decision_traces: Array<Record<string, unknown>>;
+  auditability: Record<string, unknown>;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -277,6 +454,15 @@ export interface AstraClient {
     onEvent: (event: ChatStreamEvent) => void,
   ): Promise<ChatRunResponse>;
   getChatRuns(limit?: number): Promise<ChatRunResponse[]>;
+  getTrainingDatasetStatus(): Promise<TrainingDatasetStatus>;
+  getTrainingExamples(limit?: number): Promise<TrainingExamplesResponse>;
+  labelTrainingExample(exampleId: string, request: TrainingLabelRequest): Promise<{ updated: boolean; example: TrainingExample }>;
+  exportTrainingDataset(format: "jsonl" | "csv"): Promise<TrainingExportResponse>;
+  runAssignmentCopilot(request: AssignmentCopilotRequest): Promise<AssignmentCopilotResult>;
+  exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
+  writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
+  mapAssignmentDataset(request: Record<string, unknown>): Promise<AssignmentDatasetMapping>;
+  writeAssignmentManifest(request: Record<string, unknown>): Promise<AssignmentManifestWriteResult>;
   getCompactTrace(jobId: string): Promise<CompactTraceResponse>;
   getSpecialistDashboard(): Promise<SpecialistDashboard>;
   getSpecialistModels(): Promise<SpecialistModelsResponse>;
@@ -286,6 +472,7 @@ export interface AstraClient {
   runSpecialistModelAction(modelId: string, action: "promote" | "deactivate" | "reject" | "rollback"): Promise<Record<string, unknown>>;
   getSpecialistModelReport(modelId: string): Promise<Record<string, unknown>>;
   getSpecialistModelAudit(modelId: string): Promise<Record<string, unknown>>;
+  getIntelligenceDashboard(): Promise<IntelligenceDashboardResponse>;
 }
 
 export class HttpAstraClient implements AstraClient {
@@ -456,6 +643,47 @@ export class HttpAstraClient implements AstraClient {
     return Array.isArray(response.items) ? response.items : [];
   }
 
+  async getTrainingDatasetStatus() {
+    return this.getJson<TrainingDatasetStatus>("/training/dataset/status");
+  }
+
+  async getTrainingExamples(limit = 8) {
+    return this.getJson<TrainingExamplesResponse>(
+      `/training/examples?limit=${encodeURIComponent(String(limit))}`,
+    );
+  }
+
+  async labelTrainingExample(exampleId: string, request: TrainingLabelRequest) {
+    return this.postJson<{ updated: boolean; example: TrainingExample }>(
+      `/training/examples/${encodeURIComponent(exampleId)}/label`,
+      request,
+    );
+  }
+
+  async exportTrainingDataset(format: "jsonl" | "csv") {
+    return this.postJson<TrainingExportResponse>("/training/export", { format });
+  }
+
+  async runAssignmentCopilot(request: AssignmentCopilotRequest) {
+    return this.postJson<AssignmentCopilotResult>("/assignments/copilot/run", request);
+  }
+
+  async exportAssignmentReport(request: AssignmentReportExportRequest) {
+    return this.postJson<AssignmentReportExportResult>("/assignments/report/export", request);
+  }
+
+  async writeAssignmentCode(request: Record<string, unknown>) {
+    return this.postJson<AssignmentCodeWriteResult>("/assignments/code/write", request);
+  }
+
+  async mapAssignmentDataset(request: Record<string, unknown>) {
+    return this.postJson<AssignmentDatasetMapping>("/assignments/dataset/map", request);
+  }
+
+  async writeAssignmentManifest(request: Record<string, unknown>) {
+    return this.postJson<AssignmentManifestWriteResult>("/assignments/manifest/write", request);
+  }
+
   async getCompactTrace(jobId: string) {
     return this.getJson<CompactTraceResponse>(
       `/jobs/${encodeURIComponent(jobId)}/trace/compact`,
@@ -502,6 +730,10 @@ export class HttpAstraClient implements AstraClient {
     return this.getJson<Record<string, unknown>>(
       `/specialists/models/${encodeURIComponent(modelId)}/audit`,
     );
+  }
+
+  async getIntelligenceDashboard() {
+    return this.getJson<IntelligenceDashboardResponse>("/intelligence/dashboard");
   }
 
   private async getJson<T>(path: string): Promise<T> {

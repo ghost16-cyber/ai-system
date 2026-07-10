@@ -546,6 +546,163 @@ input:focus-visible {
   gap: 10px;
 }
 
+.copilot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr);
+  gap: 14px;
+}
+
+.form-grid label,
+.form-stack label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.form-grid textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.form-grid textarea,
+.form-grid input,
+.form-grid select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: #fff;
+  color: var(--text);
+}
+
+.helper-text {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.creation-details {
+  margin-top: 12px;
+}
+
+.creation-result {
+  margin-top: 12px;
+}
+
+.inline-record {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.inline-record strong,
+.inline-record span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.inline-record span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.compact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.compact-list > div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px;
+  background: var(--surface-soft);
+}
+
+.compact-list strong,
+.compact-list span,
+.compact-list em {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.compact-list span,
+.compact-list em {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mini-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mini-metrics .metric {
+  min-width: 112px;
+  flex: 1 1 112px;
+}
+
+.nested-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.nested-evidence span {
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+}
+
+.report-preview {
+  max-height: 420px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  background: #fbfcfb;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.export-button {
+  margin-top: 10px;
+}
+
 .tool-chip {
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -604,6 +761,77 @@ input:focus-visible {
 
 .evaluation-case .info-list {
   margin-top: 10px;
+}
+
+.section-subtitle {
+  margin: 18px 0 10px;
+  font-size: 14px;
+}
+
+.training-example-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.training-example {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-soft);
+}
+
+.training-example summary {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.training-example summary span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.training-example summary small,
+.training-example summary em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.training-example summary em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-example .info-list {
+  margin-top: 12px;
+}
+
+.training-example p {
+  margin: 12px 0 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.training-response {
+  color: var(--muted);
+}
+
+.training-review-controls {
+  display: grid;
+  grid-template-columns: 180px 160px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.training-actions {
+  margin-top: 10px;
+  justify-content: flex-start;
 }
 
 .history-list {
@@ -894,7 +1122,8 @@ input:focus-visible {
   .chat-grid,
   .two-column,
   .history-layout,
-  .settings-grid {
+  .settings-grid,
+  .training-review-controls {
     grid-template-columns: 1fr;
   }
 
@@ -913,7 +1142,8 @@ input:focus-visible {
   .page-toolbar,
   .settings-actions,
   .panel-title-row,
-  .evaluation-case summary {
+  .evaluation-case summary,
+  .training-example summary {
     align-items: stretch;
     flex-direction: column;
   }

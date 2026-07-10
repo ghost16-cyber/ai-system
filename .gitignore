@@ -23,3 +23,37 @@ model_offload/
 
 # Local/generated specialist data
 data/specialists/
+astra_corpus/
+# Local assignment datasets / large input files
+assignment_inputs/
+*.parquet
+*.snappy.parquet
+
+# Local RAG corpus data
+astra_corpus/
+*.db
+*.sqlite
+.venv*/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Local generated/corpus/runtime files
+data/python programming/
+models/specialists/
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+.venv*/
+
+# Local generated/corpus/runtime files
+data/python programming/
+models/specialists/
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+.venv*/

@@ -1,0 +1,198 @@
+id,created_at,source,chat_run_id,user_message,assistant_response,routed_task_type,routed_specialist,routing_confidence,suggested_label,corrected_label,final_label,label_status,usefulness_rating,notes
+intent-example-5c95177f5717,2026-07-09T08:29:28.830187Z,chat_run,9c57f70b-82fb-4317-841e-053956be567d,"Hi Astra, what can you do?","Astra can route a chat request to a specialist such as code, RAG, runtime, safety, or training. It can use read-only RAG over safe local project files when the question needs project context. It can check backend/runtime health, selected SLM profile, RAG status, tools, jobs, and recent runs.",general,general_specialist,0.35,general,general,general,corrected,good,Starter router dataset reviewed manually.
+intent-example-e929f2ea6a31,2026-07-09T08:29:45.970378Z,chat_run,a3d0986d-ba04-45aa-9201-7bf6491050e8,Explain your main features in simple words.,"Astra is a local prototype assistant that can route chat requests to various specialists such as code, RAG, runtime, safety, or training. It uses read-only RAG over safe local project files when the question needs project context. Astra checks backend/runtime health, selected SLM profile, RAG status, tools, jobs, and recent runs. It explains, inspects, and drafts safe plans; destructive actions remain blocked or require explicit confirmation.",general,general_specialist,0.35,general,general,general,corrected,good,Starter router dataset reviewed manually.
+intent-example-b097f83cab88,2026-07-09T08:29:54.163460Z,chat_run,c2c9d8bd-355d-4c3e-b425-c4f40a83ee72,What is the current system status?,"The current system status is as follows:
+
+1. **Specialist**: general_specialist
+2. **Intent**: general
+3. **Confidence**: 35%
+4. **Safety Decision**: allow
+5. **Runtime Decision**: ollama/cuda
+
+This information provides a snapshot of the system's current state, including the selected specialist, intent, confidence level, safety decision, and runtime environment.",general,general_specialist,0.35,general,general,general,corrected,good,Starter router dataset reviewed manually.
+intent-example-ef363fec9d0a,2026-07-09T08:30:18.038249Z,chat_run,731c9529-f9c4-417a-96c2-36bfbc0d6a4c,Explain how the chat workflow works using the project files.,"The chat workflow in Astra involves routing a question to a specialist such as code, RAG, runtime, safety, or training based on the user's intent and confidence. The selected specialist is general_specialist, with an intent of general and a confidence of 35%. The safety decision is allow, and the runtime decision is ollama/cuda.
+
+The workflow begins by routing the question to the general_specialist. The specialist then analyzes the project files to understand the machine it is running on before making a decision about which tools, models, or execution settings to use. The goal of this analysis is not just hardware reporting, but to give the SLM practical machine context.
+
+The specialist uses read-only RAG over safe local project files when the question needs project context. This ensures that the SLM has access to the necessary information without exposing sensitive data.
+
+Once the specialist has made a decision about which tools and settings to use, it is passed on to the appropriate specialist for further processing. The workflow continues until the question is resolved or closed.
+
+The chat workflow in Astra is designed to ensure that the SLM has the necessary context to make informed decisions and provide accurate responses.",general,general_specialist,0.35,rag,rag,rag,corrected,good,Starter router dataset reviewed manually.
+intent-example-bf5076a5974b,2026-07-09T08:30:36.666892Z,chat_run,04684707-f342-4f22-9ffb-4d96da7a3c7e,Where is project RAG indexing implemented?,"The project RAG indexing is implemented in the `local_runtime_intelligence.md` file, specifically in the section titled ""Next Steps"". The relevant code snippet is:
+
+```markdown
+## Next Steps - Add project/script analyzers that detect batch size, image size, AMP usage, model family, and DataLoader settings.
+```
+
+This indicates that the RAG indexing functionality is part of a larger system for analyzing and understanding Python scripts.",rag,rag_specialist,0.65,rag,rag,rag,corrected,good,Starter router dataset reviewed manually.
+intent-example-4075a6f6918b,2026-07-09T08:30:54.502693Z,chat_run,0befe054-e586-49a5-a18e-cde0c0ac2078,Find the files related to RAG evaluation.,The files related to RAG evaluation are located in the `backend/app/local_runtime` directory.,rag,rag_specialist,0.65,rag,rag,rag,corrected,good,Starter router dataset reviewed manually.
+intent-example-dc59c44229a9,2026-07-09T08:31:36.037981Z,chat_run,737169d7-a6ce-4cb1-bc1f-d793e7b02dfa,Explain the FastAPI endpoints used for chat.,"Astra uses FastAPI endpoints to handle chat requests. The endpoints include `/chat` for sending messages and receiving responses, `/health` for checking backend/runtime health, and `/tools` for listing available tools.",general,general_specialist,0.35,backend,backend,backend,corrected,good,Starter router dataset reviewed manually.
+intent-example-1eb18459e905,2026-07-09T08:31:55.866329Z,chat_run,502e0042-24b4-4049-8e0e-e3b681c879db,Where are chat runs stored in the backend?,Chat runs are stored in the `backend/app/local_runtime/` directory.,general,general_specialist,0.35,backend,backend,backend,corrected,good,Starter router dataset reviewed manually.
+intent-example-645565dcc100,2026-07-09T08:32:09.184460Z,chat_run,fa14a01b-2acd-45fa-b7b5-773f9c47603b,Explain the backend training dataset endpoints.,"The backend training dataset endpoints allow you to interact with and manage datasets used in training specialist models. You can load, validate, approve, archive, list, register, and evaluate datasets. The `load_jsonl_dataset` function is used to load JSONL formatted datasets, while the `validate_dataset_row` function checks if a dataset row meets certain criteria. The `register_dataset` function allows you to add new datasets to the system, and the `list_datasets` function provides a list of all available datasets.",training,training_specialist,0.65,training,backend,backend,corrected,good,Starter router dataset reviewed manually.
+intent-example-104a2abad3f1,2026-07-09T08:32:24.803612Z,chat_run,7ef29079-3320-4d01-b5c1-67f89024ff22,Explain how the System page displays RAG status.,"The System page in Astra displays the current state of the RAG pipeline, including whether it is running or paused. It provides information about the number of active jobs, the status of each job, and any errors that may be occurring. The system also shows the health of the backend and runtime, as well as the selected SLM profile and tools.",rag,rag_specialist,0.65,rag,frontend,frontend,corrected,good,Starter router dataset reviewed manually.
+intent-example-a8673ab70df8,2026-07-09T08:32:46.902484Z,chat_run,0152e84d-cadd-462e-8656-6984a8c23cfa,Where is the Training Dataset card implemented in the frontend?,The Training Dataset card is implemented in the `frontend/src/components/TrainingDatasetCard.js` file.,training,training_specialist,0.65,training,frontend,frontend,corrected,good,Starter router dataset reviewed manually.
+intent-example-5708ac5345ef,2026-07-09T08:32:55.224064Z,chat_run,6e986901-2d81-4fa9-bd8c-904b958c7ca9,Explain how the Chat page shows RAG metadata.,"The Chat page in Astra displays RAG metadata to provide context about the machine it is running on before the SLM chooses tools, models, or execution settings. This includes hardware reporting, AI/coding tools installed, laptop capabilities, task safety settings, and when Astra should prefer RAG, quantization, CPU fallback, or cloud GPU.",rag,rag_specialist,0.65,rag,frontend,frontend,corrected,good,Starter router dataset reviewed manually.
+intent-example-06a22ae46d24,2026-07-09T08:33:17.324668Z,chat_run,1b032438-a677-4e77-b31f-8031355162c7,Which tests were added for RAG indexing?,The tests added for RAG indexing are located in the `training/scripts` directory.,rag,rag_specialist,0.65,rag,testing,testing,corrected,good,Starter router dataset reviewed manually.
+intent-example-5344ab99e1fa,2026-07-09T08:33:32.619112Z,chat_run,81c66f72-189f-40a7-b1c4-1e73f2f593bc,How do I run the backend test suite?,"To run the backend test suite, you can follow these steps:
+
+1. Navigate to the root directory of your project.
+2. Run the following command in your terminal:
+   ```bash
+   python training/scripts/run_tests.py
+   ```
+
+This command will execute all the tests defined in the `training/scripts` directory, ensuring that your backend is functioning correctly.",general,general_specialist,0.35,testing,testing,testing,corrected,good,Starter router dataset reviewed manually.
+intent-example-db2c0b18a7c3,2026-07-09T08:33:52.533590Z,chat_run,f89efbf9-5bfb-407e-a65a-36e7c2be2364,Explain what npm lint and vite build check.,"NPM lint checks for errors in JavaScript code, while Vite builds the project by compiling TypeScript files into JavaScript.",code_quality,code_quality_specialist,0.65,testing,testing,testing,corrected,good,Starter router dataset reviewed manually.
+intent-example-06a33d9ac2b6,2026-07-09T08:34:07.568653Z,chat_run,07ca9b90-4d4c-4763-a1b7-94b4d48b515a,The frontend cannot connect to the backend. What should I check?,"Check the backend health, selected SLM profile, RAG status, tools, jobs, and recent runs.",general,general_specialist,0.35,frontend,debugging,debugging,corrected,good,Starter router dataset reviewed manually.
+intent-example-fdb9d02559a6,2026-07-09T08:34:20.055261Z,chat_run,c68469ef-4d30-4911-935c-ecdd64e868d8,The RAG index is missing. How do I fix it?,"To fix the missing RAG index, you can follow these steps:
+
+1. Navigate to the root directory of your project.
+2. Run the following command in your terminal:
+   ```bash python train...```
+
+This will trigger the backend test suite, which should include tests for RAG indexing. If the RAG index is still missing after running the tests, you may need to manually create or update the RAG index files.",bug_triage,bug_triage_specialist,0.65,rag,debugging,debugging,corrected,good,Starter router dataset reviewed manually.
+intent-example-9c7741913801,2026-07-09T08:34:40.899555Z,chat_run,1e3ed2be-2b4b-4b9e-95fd-d3ffdd543698,The chat stream failed. What should I inspect first?,"To inspect the chat stream failure, you should check the backend health, selected SLM profile, RAG status, tools, jobs, and recent runs. This will help identify any issues that might be causing the failure.",bug_triage,bug_triage_specialist,0.65,unknown,debugging,debugging,corrected,okay,Starter router dataset reviewed manually.
+intent-example-b6f66579aa29,2026-07-09T08:34:58.335536Z,chat_run,60d3ba5f-7e15-4bba-aba4-0014c7ab435c,When should we train the router model?,"To train the router model, you should follow these steps:
+
+1. **Check Backend and Runtime Health**: Ensure that your backend and runtime services are healthy by checking their status. This can be done through the Astra dashboard or API calls.
+
+2. **Select SLM Profile**: Choose the appropriate SLM profile for training. The SLM profile determines the hardware resources (CPU, GPU) allocated to the training process.
+
+3. **RAG Status and Tools**: Verify that RAG is enabled and accessible within your project context. If not, you may need to enable it or provide the necessary permissions.
+
+4. **Recent Runs**: Review the recent runs of the router model to ensure there are no ongoing issues. This can be done through the Astra dashboard or API calls.
+
+5. **Training Configuration**: Configure the training parameters such as batch size, number of epochs, learning rate, and other relevant settings.
+
+6. **Start Training**: Once all checks are passed, initiate the training process by calling the appropriate API endpoint in your code.
+
+7. **Monitor and Adjust**: Monitor the training progress and adjust the configuration if necessary based on performance metrics or feedback from the model.
+
+By following these steps, you can ensure a smooth and successful training of the router model within your Astra environment.",training,training_specialist,0.65,training,training,training,corrected,good,Starter router dataset reviewed manually.
+intent-example-cade2b3dd67a,2026-07-09T08:35:20.686310Z,chat_run,77187912-6cb3-41db-b4b6-0d26a51c43b0,What data is needed to train the intent router?,"To train the intent router, you would need the following data:
+
+1. **Training Data**: A large dataset of labeled examples where each example includes a question and its corresponding intent.
+2. **Intent Labels**: The labels that correspond to each question in the training data.
+3. **Model Architecture**: The architecture of the model used for training, including the number of layers, hidden units, and other hyperparameters.
+4. **Training Parameters**: The parameters such as learning rate, batch size, epochs, and others that control the training process.
+5. **Data Preprocessing Scripts**: Any scripts or functions used to preprocess the data before training, such as tokenization, padding, and normalization.
+
+This data is essential for the intent router to learn how to recognize and classify different intents based on the input questions.",training,training_specialist,0.65,training,training,training,corrected,good,Starter router dataset reviewed manually.
+intent-example-d58eac6a76b3,2026-07-09T08:35:33.346210Z,chat_run,5c87a64f-bc1a-4f81-b0b3-8a5d909558c0,Explain how confirmed training examples will be exported.,"Confirmed training examples will be exported to a designated directory within the project. The export process involves copying the relevant files from the training data directory to the specified export directory, ensuring that all necessary metadata and configurations are preserved. This ensures that the training data is properly organized and ready for further analysis or use in other projects.",training,training_specialist,0.65,training,training,training,corrected,good,Starter router dataset reviewed manually.
+intent-example-dabcf2f5150e,2026-07-09T09:22:21.110504Z,chat_run,ea46557c-729c-481f-b1fa-d398405c1ddc,Write a simple Python function that validates a training label.,"```python
+def validate_training_label(label):
+    # Basic validation to ensure the label is not empty and contains only alphanumeric characters
+    if not label or not label.isalnum():
+        return False
+    return True
+```
+
+This function checks if the input `label` is a non-empty string containing only alphanumeric characters. It returns `True` if the label passes the validation, otherwise it returns `False`.",training,training_specialist,0.65,training,,training,confirmed,good,
+intent-example-fc009a26e83c,2026-07-09T09:22:33.881319Z,chat_run,2bc23d26-0b75-4ed0-ae18-314e88cfff28,Explain this TypeScript state update pattern in simple words.,"Certainly! Here's a simple explanation of the TypeScript state update pattern:
+
+In TypeScript, state management is crucial for keeping track of the application's data and ensuring consistency. The state update pattern helps in updating the state in a controlled manner, which prevents unexpected behavior.
+
+### Key Concepts:
+1. **State**: Represents the current state of the application.
+2. **Action**: An object that describes what needs to be done (e.g., `updateUser`, `addProduct`).
+3. **Reducer**: A pure function that takes the current state and an action, and returns a new state.
+
+### Example:
+Let's consider a simple example where we have a user management system. We want to update a user's name.
+
+#### Initial State
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+const initialState = {
+  users: [
+    { id: 1, name: 'John Doe' },
+    { id: 2, name: 'Jane Smith' }
+  ]
+};
+```
+
+#### Action
+```typescript
+type UpdateUserAction = {
+  type: 'UPDATE_USER';
+  payload: { userId: number; newName: string };
+};
+
+const updateUser = (state: User[], action: UpdateUserAction): User[] => {
+  return state.map(user =>
+    user.id === action.payload.userId ? { ...user, name: action.payload.newName } : user
+  );
+};
+```
+
+#### Reducer
+```typescript
+const rootReducer = (state: User[], action: any): User[] => {
+  switch (action.type) {
+    case 'UPDATE_USER':
+      return updateUser(state, action);
+    default:
+      return state;
+  }
+};
+```
+
+### Usage:
+```typescript
+// Initial state
+const initialState = {
+  users: [
+    { id: 1, name: 'John Doe' },
+    { id: 2, name: 'Jane Smith' }
+ ",code_quality,code_quality_specialist,0.65,general,,general,confirmed,good,
+intent-example-b2a926060c28,2026-07-09T09:23:03.548992Z,chat_run,6a95bbc6-2af3-4e23-8f1e-2ddd69064160,Refactor a small function so it is cleaner and easier to test.,"```python def clean_and_test_function(input_data): # Clean up input data by removing unnecessary characters if not input_data or not isinstance(input_data, str):... # Test the cleaned function with various inputs to ensure correctness...
+```
+
+Explanation:
+- The `clean_and_test_function` takes an input `input_data`.
+- It first checks if the input is a string and not empty. If not, it returns an error message.
+- If the input is valid, it proceeds to clean up the data by removing any unnecessary characters (e.g., spaces, punctuation).
+- Finally, it tests the cleaned function with various inputs to ensure its correctness.",code_quality,code_quality_specialist,0.65,testing,,testing,confirmed,,
+intent-example-79cb275ad62f,2026-07-09T09:23:08.397186Z,chat_run,ab6872aa-d9f1-46e9-85cb-e7876cfa8932,How can I check whether CUDA is available for Astra?,"To check if CUDA is available for Astra, you can use the following command:
+
+```bash
+nvidia-smi
+```
+
+This command will display information about your NVIDIA GPU(s), including whether CUDA is installed and its version. If CUDA is not installed or is not enabled on your system, this command will indicate that CUDA is not available for Astra.",runtime,runtime_specialist,0.65,runtime,,runtime,confirmed,good,
+intent-example-c5082077dd16,2026-07-09T09:23:13.992726Z,chat_run,c0f3302d-df5d-4489-88b6-1cbbbdf77d09,What should I inspect if Ollama is offline?,"If Ollama is offline, you can inspect the following:
+
+1. **Check Ollama Status**: Verify that Ollama is running by checking its status on the server or through the API endpoint provided by your backend.
+
+2. **Review Logs**: Look at the logs for any errors or warnings related to Ollama. This can provide insights into why it might be offline.
+
+3. **Check Network Connectivity**: Ensure that there are no network issues preventing Ollama from accessing its resources, such as GPU acceleration if needed.
+
+4. **Restart Ollama**: If you suspect that Ollama is not running correctly, try restarting the service.
+
+5. **Verify Configuration**: Double-check your configuration files to ensure that all necessary settings for Ollama are correct and up-to-date.
+
+6. **Check Dependencies**: Ensure that all dependencies required by Ollama are installed and functioning properly.
+
+By following these steps, you can diagnose and resolve any issues preventing Ollama from running effectively.",general,general_specialist,0.35,runtime,,runtime,confirmed,good,
+intent-example-f287970717b2,2026-07-09T09:23:36.088808Z,chat_run,0a962616-c41d-405b-8953-a6b6f5674465,Explain how SLM runtime profile selection works.,"SLM (System Learning Model) runtime profiles are used to determine which tools, models, and execution settings Astra should use for a given task. The selection process involves several steps:
+
+1. **Intent Analysis**: ASLM uses natural language processing (NLP) techniques to analyze the user's question or request. This helps in understanding the context and intent behind the query.
+
+2. **Hardware Assessment**: SLM evaluates the available hardware resources on the machine where Astra is running. It considers factors such as CPU, GPU, RAM, storage, and network speed.
+
+3. **Tool Availability**: SLM checks if the required AI/coding tools are installed on the machine. This includes libraries like TensorFlow, PyTorch, JAX, etc., which are essential for various tasks.
+
+4. **Task Safety**: SLM evaluates the safety of the task based on predefined rules and constraints. It ensures that the task can be executed safely without causing any unintended consequences.
+
+5. **RAG Status**: If RAG (Relevance Assisted Generation) is enabled, SLM checks if it is available and configured correctly. RAG allows Astra to generate text responses based on relevant information from external sources.
+
+6. **SLM Profile Selection**: Based on the analysis of the user's intent, hardware resources, tool availability, task safety, and RAG status, SLM selects the most appropriate runtime profile. This profile includes the tools, models, execution settings, and any additional configurations required for the task.
+
+7. **Configuration and Execution**: The selected runtime profile is then used to configure Astra an",runtime,runtime_specialist,0.65,runtime,,runtime,confirmed,good,
+intent-example-cea96183fb5b,2026-07-09T09:24:00.125329Z,chat_run,085b260c-d4ca-431d-a9ea-05a1c2089e15,Why should Astra not execute arbitrary shell commands automatically?,Astra does not execute arbitrary shell commands automatically because it is designed to be safe and secure. The system has a strict policy that prevents the execution of any command unless explicitly allowed or confirmed by the user. This ensures that Astra remains within its designated capabilities and does not compromise the integrity of the system or its users.,general,general_specialist,0.35,general,,general,confirmed,good,
