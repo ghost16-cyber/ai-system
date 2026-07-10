@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.app.rag.corpus_eligibility import apply_index_eligibility
+
 
 DEFAULT_CORPUS_ROOT = Path("astra_corpus")
 
@@ -222,6 +224,11 @@ def scan_corpus(root: str | Path = DEFAULT_CORPUS_ROOT) -> dict[str, Any]:
             "ignored_type_counts": {},
             "largest_files": [],
             "estimated_chunk_count": 0,
+            "estimated_index_chunk_count": 0,
+            "indexable_files": 0,
+            "index_skipped_files": 0,
+            "indexable_type_counts": {},
+            "index_skip_reason_counts": {},
             "files": [],
         }
 
@@ -243,6 +250,11 @@ def scan_corpus(root: str | Path = DEFAULT_CORPUS_ROOT) -> dict[str, Any]:
     accepted_type_counts = Counter(record.extension for record in accepted_records)
     ignored_type_counts = Counter(record.extension for record in ignored_records)
 
+    eligibility = apply_index_eligibility(
+        [asdict(record) for record in records],
+        chunk_target_bytes=CHUNK_TARGET_BYTES,
+    )
+
     largest_files = sorted(
         records,
         key=lambda record: record.size_bytes,
@@ -260,5 +272,14 @@ def scan_corpus(root: str | Path = DEFAULT_CORPUS_ROOT) -> dict[str, Any]:
         "ignored_type_counts": dict(ignored_type_counts),
         "largest_files": [asdict(record) for record in largest_files],
         "estimated_chunk_count": _estimate_chunks(records),
-        "files": [asdict(record) for record in records],
+        "estimated_index_chunk_count": eligibility[
+            "estimated_index_chunk_count"
+        ],
+        "indexable_files": eligibility["indexable_files"],
+        "index_skipped_files": eligibility["index_skipped_files"],
+        "indexable_type_counts": eligibility["indexable_type_counts"],
+        "index_skip_reason_counts": eligibility[
+            "index_skip_reason_counts"
+        ],
+        "files": eligibility["files"],
     }

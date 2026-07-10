@@ -114,6 +114,11 @@ def test_rag_corpus_inventory_endpoint():
     assert "ignored_files" in data
     assert "file_type_counts" in data
     assert "estimated_chunk_count" in data
+    assert "estimated_index_chunk_count" in data
+    assert "indexable_files" in data
+    assert "index_skipped_files" in data
+    assert "indexable_type_counts" in data
+    assert "index_skip_reason_counts" in data
     assert "files" in data
 
 def test_corpus_inventory_ignores_oversized_text_files(tmp_path: Path):
@@ -131,3 +136,89 @@ def test_corpus_inventory_ignores_oversized_text_files(tmp_path: Path):
     assert files["small_notes.txt"]["accepted"] is True
     assert files["large_dataset.csv"]["accepted"] is False
     assert files["large_dataset.csv"]["reason"] == "ignored_oversized_file"
+
+def test_corpus_inventory_skips_empty_files_from_indexing(tmp_path: Path):
+    (tmp_path / "empty.py").write_text("", encoding="utf-8")
+
+    result = scan_corpus(tmp_path)
+    item = result["files"][0]
+
+    assert result["accepted_files"] == 1
+    assert result["indexable_files"] == 0
+    assert result["index_skipped_files"] == 1
+    assert item["accepted"] is True
+    assert item["index_eligible"] is False
+    assert item["index_reason"] == "skipped_empty_file"
+
+
+def test_corpus_inventory_skips_suspicious_extensions_from_indexing(
+    tmp_path: Path,
+):
+    (tmp_path / "mistyped.cvs").write_text("a,b\n1,2\n", encoding="utf-8")
+    (tmp_path / "backup.csv1").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    result = scan_corpus(tmp_path)
+
+    assert result["accepted_files"] == 2
+    assert result["indexable_files"] == 0
+    assert result["index_skip_reason_counts"] == {
+        "skipped_suspicious_extension": 2
+    }
+
+
+def test_corpus_inventory_skips_generated_datasets_from_indexing(
+    tmp_path: Path,
+):
+    (tmp_path / "model_train.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (tmp_path / "model_predictions.csv").write_text(
+        "prediction\n1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "useful_metrics.csv").write_text(
+        "metric,value\naccuracy,0.9\n",
+        encoding="utf-8",
+    )
+
+    result = scan_corpus(tmp_path)
+    files = {item["relative_path"]: item for item in result["files"]}
+
+    assert result["accepted_files"] == 3
+    assert result["indexable_files"] == 1
+    assert result["index_skipped_files"] == 2
+
+    assert files["model_train.csv"]["index_reason"] == (
+        "skipped_generated_dataset"
+    )
+    assert files["model_predictions.csv"]["index_reason"] == (
+        "skipped_generated_dataset"
+    )
+    assert files["useful_metrics.csv"]["index_eligible"] is True
+
+
+def test_corpus_inventory_prefers_markdown_duplicate_report(
+    tmp_path: Path,
+):
+    (tmp_path / "runtime_status_report.md").write_text(
+        "# Runtime report",
+        encoding="utf-8",
+    )
+    (tmp_path / "runtime_status_report.pdf").write_bytes(b"PDF report")
+    (tmp_path / "runtime_status_report.json").write_text(
+        '{"status": "ok"}',
+        encoding="utf-8",
+    )
+
+    result = scan_corpus(tmp_path)
+    files = {item["relative_path"]: item for item in result["files"]}
+
+    assert result["accepted_files"] == 3
+    assert result["indexable_files"] == 1
+    assert result["index_skipped_files"] == 2
+
+    assert files["runtime_status_report.md"]["index_eligible"] is True
+    assert files["runtime_status_report.pdf"]["index_reason"] == (
+        "skipped_duplicate_format"
+    )
+    assert files["runtime_status_report.json"]["index_reason"] == (
+        "skipped_duplicate_format"
+    )

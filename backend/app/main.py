@@ -42,6 +42,7 @@ from backend.app.local_runtime import (
     get_runtime_research_manifest,
     validate_task_plan,
 )
+from backend.app.rag.corpus_inventory import scan_corpus
 from backend.app.rag.context_service import (
     compact_context,
     rag_build_project_index,
@@ -280,6 +281,10 @@ def create_app(
     @application.post("/slm/intent")
     def slm_intent(request: SLMIntentRequest) -> dict:
         return infer_intent_with_slm(request.message, request.context)
+
+    @application.get("/rag/corpus/inventory")
+    def local_rag_corpus_inventory() -> dict:
+        return scan_corpus()
 
     @application.get("/rag/status")
     def local_rag_status() -> dict:
