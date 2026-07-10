@@ -45,6 +45,7 @@ from backend.app.local_runtime import (
 from backend.app.rag.corpus_inventory import scan_corpus
 from backend.app.rag.corpus_index_preview import build_corpus_index_preview
 from backend.app.rag.corpus_text_extractor import extract_indexable_corpus
+from backend.app.rag.corpus_chunker import build_corpus_chunk_preview
 from backend.app.rag.context_service import (
     compact_context,
     rag_build_project_index,
@@ -300,6 +301,26 @@ def create_app(
         return extract_indexable_corpus(
             limit=limit,
             include_text=include_text,
+        )
+
+    @application.get("/rag/corpus/chunk-preview")
+    def local_rag_corpus_chunk_preview(
+        file_limit: int = Query(default=100, ge=0, le=500),
+        include_text: bool = Query(default=False),
+        max_chars: int = Query(default=4000, ge=100, le=20000),
+        overlap_chars: int = Query(default=400, ge=0, le=5000),
+    ) -> dict:
+        if overlap_chars >= max_chars:
+            raise HTTPException(
+                status_code=400,
+                detail="overlap_chars must be smaller than max_chars",
+            )
+
+        return build_corpus_chunk_preview(
+            file_limit=file_limit,
+            include_text=include_text,
+            max_chars=max_chars,
+            overlap_chars=overlap_chars,
         )
 
     @application.get("/rag/status")
