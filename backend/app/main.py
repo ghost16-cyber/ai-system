@@ -44,6 +44,7 @@ from backend.app.local_runtime import (
 )
 from backend.app.rag.corpus_inventory import scan_corpus
 from backend.app.rag.corpus_index_preview import build_corpus_index_preview
+from backend.app.rag.corpus_text_extractor import extract_indexable_corpus
 from backend.app.rag.context_service import (
     compact_context,
     rag_build_project_index,
@@ -290,6 +291,16 @@ def create_app(
     @application.get("/rag/corpus/index-preview")
     def local_rag_corpus_index_preview() -> dict:
         return build_corpus_index_preview()
+
+    @application.get("/rag/corpus/extraction-preview")
+    def local_rag_corpus_extraction_preview(
+        limit: int = Query(default=100, ge=0, le=500),
+        include_text: bool = Query(default=False),
+    ) -> dict:
+        return extract_indexable_corpus(
+            limit=limit,
+            include_text=include_text,
+        )
 
     @application.get("/rag/status")
     def local_rag_status() -> dict:
