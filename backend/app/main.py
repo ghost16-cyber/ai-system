@@ -23,15 +23,57 @@ from backend.app.analyzer.patch_apply import (
 from backend.app.analyzer.patch_preview import preview_patch_proposal
 from backend.app.analyzer.patch_verification import run_pytest_verification
 from backend.app.analyzer.rules.metadata import get_rule_metadata
+from backend.app.assignments import (
+    AssignmentBrief,
+    AssignmentCodeBlueprintSet,
+    AssignmentEvidenceChecklist,
+    AssignmentPlan,
+    AssignmentProjectManifest,
+    AssignmentTemplatePlan,
+    build_assignment_manifest,
+    build_assignment_plan,
+    build_evidence_checklist,
+    build_final_readiness_report,
+    check_marking_readiness,
+    extract_assignment_brief,
+    export_report_package,
+    generate_analysis_plan,
+    generate_code_blueprints,
+    generate_dashboard_spec,
+    generate_assignment_runbook,
+    generate_assignment_template_plan,
+    generate_report_draft,
+    generate_report_skeleton,
+    generate_task_breakdown,
+    map_dataset_columns,
+    parse_assignment_document,
+    plan_assignment_workspace,
+    run_assignment_copilot,
+    update_evidence_status,
+    write_assignment_manifest,
+    write_code_blueprints,
+    write_assignment_template_plan,
+)
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
+from backend.app.commands import analyze_command, suggest_command
+from backend.app.core.path_utils import resolve_user_path
 from backend.app.chat_workflow import run_chat_workflow
 from backend.app.database.repository import AnalysisRepository
+from backend.app.debugging import analyze_error_output
+from backend.app.datasets import profile_csv_dataset
 from backend.app.hardware_ai_optimizer import (
     HardwareOptimizerResponse,
     probe_hardware,
     recommend_training_settings,
 )
 from backend.app.jobs import JobQueue
+from backend.app.intelligence import (
+    build_intelligence_dashboard,
+    decision_traces_from_chat_runs,
+    intelligence_components,
+    model_use_policy,
+    worker_roles,
+)
 from backend.app.local_runtime import (
     ExecutionProfile,
     PlanValidationResult,
@@ -43,6 +85,12 @@ from backend.app.local_runtime import (
     validate_task_plan,
 )
 from backend.app.rag.corpus_inventory import scan_corpus
+from backend.app.rag.corpus_index_store import (
+    DEFAULT_INDEX_ROOT as DEFAULT_CORPUS_INDEX_ROOT,
+    build_corpus_index,
+    corpus_index_files,
+    corpus_index_status,
+)
 from backend.app.rag.corpus_index_preview import build_corpus_index_preview
 from backend.app.rag.corpus_text_extractor import extract_indexable_corpus
 from backend.app.rag.corpus_chunker import build_corpus_chunk_preview
@@ -103,6 +151,20 @@ from backend.app.slm import (
     select_slm_profile,
 )
 from backend.app.tools import get_tool_metadata
+from backend.app.training_data import (
+    export_examples,
+    get_dataset_status,
+    list_examples,
+    log_chat_run_example,
+    log_manual_example,
+    update_example_label,
+)
+from backend.app.training_data.schemas import (
+    TrainingExampleCreateRequest,
+    TrainingExampleLabelRequest,
+    TrainingExportRequest,
+)
+from backend.app.workspace import inspect_workspace
 
 
 APP_VERSION = "0.5.0"
@@ -125,10 +187,200 @@ class RAGEvaluationRequest(BaseModel):
     selected_cases: list[str] = Field(default_factory=list)
 
 
+class CorpusIndexBuildRequest(BaseModel):
+    full_rebuild: bool = False
+    max_chars: int = Field(default=4000, ge=100, le=20000)
+    overlap_chars: int = Field(default=400, ge=0, le=5000)
+
+
 class SLMChatWithContextRequest(BaseModel):
     message: str = ""
     limit: int = Field(default=4, ge=0, le=10)
     source_filter: str | None = None
+
+
+class AssignmentParseRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
+class AssignmentExtractRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    title: str | None = None
+
+
+class AssignmentPlanRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+
+
+class AssignmentEvidenceBuildRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+
+
+class AssignmentEvidenceUpdateStatusRequest(BaseModel):
+    checklist: dict
+    evidence_id: str
+    status: str
+    notes: str | None = None
+
+
+class AssignmentReportDraftRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    plan: dict | None = None
+    evidence: dict | None = None
+    project_metadata: dict | None = None
+
+
+class AssignmentReportSkeletonRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    dataset_path: str | None = None
+    evidence: dict | None = None
+
+
+class AssignmentTaskBreakdownRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    evidence: dict | None = None
+
+
+class AssignmentMarkingCheckRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    evidence: dict | None = None
+
+
+class AssignmentCopilotRunRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    selected_assignment: str | int | None = "all"
+    workspace_path: str | None = None
+    dataset_path: str | None = None
+    project_metadata: dict | None = None
+
+
+class DatasetProfileRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    sample_rows: int = Field(default=25, ge=1, le=100)
+    row_count_override: int | None = Field(default=None, ge=0)
+
+
+class AssignmentWorkspacePlanRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    assignment_number: int = Field(..., ge=1, le=3)
+    workspace_path: str | None = None
+    dataset_path: str | None = None
+    write_files: bool = False
+    overwrite: bool = False
+
+
+class AssignmentRunbookGenerateRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+    workspace_path: str | None = None
+
+
+class AssignmentReportExportRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    assignment_number: int = Field(default=1, ge=1, le=3)
+    workspace_path: str | None = None
+    report_folder: str = "report_package"
+    overwrite: bool = False
+
+
+class AssignmentCodeBlueprintRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+    dataset_path: str | None = None
+
+
+class AssignmentCodeWriteRequest(BaseModel):
+    assignment_number: int | None = Field(default=None, ge=1, le=3)
+    assignment_numbers: list[int] = Field(default_factory=list)
+    workspace_path: str | None = None
+    dataset_path: str | None = None
+    blueprints: list[dict] | dict | None = None
+    overwrite: bool = False
+
+
+class AssignmentDatasetMapRequest(BaseModel):
+    dataset_path: str | None = None
+    dataset_profile: dict | None = None
+
+
+class AssignmentManifestBuildRequest(BaseModel):
+    copilot_result: dict
+    assignment_number: int = Field(..., ge=1, le=3)
+    dataset_path: str | None = None
+    document_path: str | None = None
+
+
+class AssignmentManifestWriteRequest(BaseModel):
+    copilot_result: dict | None = None
+    manifest: dict | None = None
+    assignment_number: int = Field(..., ge=1, le=3)
+    workspace_path: str | None = None
+    dataset_path: str | None = None
+    document_path: str | None = None
+    overwrite: bool = False
+
+
+class AssignmentAnalysisPlanRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+    dataset_path: str | None = None
+
+
+class AssignmentDashboardSpecRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+    dataset_path: str | None = None
+
+
+class AssignmentFinalReadinessRequest(BaseModel):
+    path: str | None = None
+    text: str | None = None
+    brief: dict | None = None
+    assignment_number: int = Field(..., ge=1, le=3)
+    workspace_path: str | None = None
+    dataset_path: str | None = None
+
+
+class WorkspaceInspectRequest(BaseModel):
+    path: str | None = None
+    max_files: int = Field(default=250, ge=1, le=1000)
+
+
+class AssignmentTemplatePlanRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+
+
+class AssignmentTemplateWriteRequest(BaseModel):
+    assignment_number: int | None = Field(default=None, ge=1, le=3)
+    plan: dict | None = None
+    workspace_path: str | None = None
+    overwrite: bool = False
+
+
+class CommandSuggestRequest(BaseModel):
+    action: str | None = None
+    command: str | None = None
+    target: str | None = None
+    working_directory: str | None = None
+
+
+class DebugAnalyzeErrorRequest(BaseModel):
+    output: str = ""
+    project_path: str | None = None
 
 
 def create_app(
@@ -323,9 +575,606 @@ def create_app(
             overlap_chars=overlap_chars,
         )
 
+    @application.post("/rag/corpus/index/build")
+    def local_rag_corpus_index_build(
+        request: CorpusIndexBuildRequest | None = None,
+    ) -> dict:
+        build_request = request or CorpusIndexBuildRequest()
+
+        if build_request.overlap_chars >= build_request.max_chars:
+            raise HTTPException(
+                status_code=400,
+                detail="overlap_chars must be smaller than max_chars",
+            )
+
+        return build_corpus_index(
+            configured_workspace_root / "astra_corpus",
+            index_root=configured_workspace_root
+            / DEFAULT_CORPUS_INDEX_ROOT,
+            full_rebuild=build_request.full_rebuild,
+            max_chars=build_request.max_chars,
+            overlap_chars=build_request.overlap_chars,
+        )
+
+    @application.get("/rag/corpus/index/status")
+    def local_rag_corpus_index_status() -> dict:
+        return corpus_index_status(
+            configured_workspace_root / DEFAULT_CORPUS_INDEX_ROOT,
+        )
+
+    @application.get("/rag/corpus/index/files")
+    def local_rag_corpus_index_files() -> dict:
+        return corpus_index_files(
+            configured_workspace_root / DEFAULT_CORPUS_INDEX_ROOT,
+        )
+
     @application.get("/rag/status")
     def local_rag_status() -> dict:
         return rag_status(configured_workspace_root)
+
+    @application.get("/intelligence/components")
+    def intelligence_components_endpoint() -> dict:
+        return {"components": intelligence_components(), "count": len(intelligence_components())}
+
+    @application.get("/intelligence/policy")
+    def intelligence_policy_endpoint() -> dict:
+        return model_use_policy()
+
+    @application.get("/intelligence/workers")
+    def intelligence_workers_endpoint() -> dict:
+        roles = worker_roles()
+        recent_jobs = job_queue.list_jobs(limit=20)
+        return {
+            "worker_roles": roles,
+            "count": len(roles),
+            "recent_jobs": [job.model_dump(mode="json") for job in recent_jobs],
+        }
+
+    @application.get("/intelligence/models")
+    def intelligence_models_endpoint(limit: int = Query(default=10, ge=1, le=50)) -> dict:
+        runs = repository.list_chat_runs(limit=limit)
+        dashboard = build_intelligence_dashboard(chat_runs=runs, job_queue=job_queue, limit=limit)
+        return dashboard["model_evaluation_summary"]
+
+    @application.get("/intelligence/decision-traces")
+    def intelligence_decision_traces_endpoint(limit: int = Query(default=10, ge=1, le=50)) -> dict:
+        runs = repository.list_chat_runs(limit=limit)
+        traces = decision_traces_from_chat_runs(runs)
+        return {"items": traces, "count": len(traces)}
+
+    @application.get("/intelligence/dashboard")
+    def intelligence_dashboard_endpoint(limit: int = Query(default=10, ge=1, le=50)) -> dict:
+        runs = repository.list_chat_runs(limit=limit)
+        return build_intelligence_dashboard(chat_runs=runs, job_queue=job_queue, limit=limit)
+
+    @application.get("/assignments/status")
+    def assignment_status() -> dict:
+        return {
+            "status": "ready",
+            "supported_extensions": [".txt", ".md", ".docx"],
+            "supported_dataset_extensions": [".csv", ".txt", ".tsv"],
+            "features": ["parse", "extract", "plan", "template_plan", "template_write"],
+            "advisory_only": True,
+            "tools_executed": False,
+            "patches_applied": False,
+            "runtime_authorized": False,
+        }
+
+    @application.post("/assignments/parse")
+    def assignment_parse(request: AssignmentParseRequest) -> dict:
+        try:
+            parsed = parse_assignment_document(_resolve_assignment_path(request.path))
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return parsed.model_dump(mode="json")
+
+    @application.post("/assignments/extract")
+    def assignment_extract(request: AssignmentExtractRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_request(request)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return brief.model_dump(mode="json")
+
+    @application.post("/assignments/plan")
+    def assignment_plan(request: AssignmentPlanRequest) -> dict:
+        try:
+            if request.brief is not None:
+                brief = AssignmentBrief.model_validate(request.brief)
+            else:
+                brief = _assignment_brief_from_request(
+                    AssignmentExtractRequest(path=request.path, text=request.text)
+                )
+            plan = build_assignment_plan(brief)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return plan.model_dump(mode="json")
+
+    @application.post("/assignments/evidence/build")
+    def assignment_evidence_build(request: AssignmentEvidenceBuildRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            evidence = build_evidence_checklist(brief)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return evidence.model_dump(mode="json")
+
+    @application.post("/assignments/evidence/update-status")
+    def assignment_evidence_update_status(request: AssignmentEvidenceUpdateStatusRequest) -> dict:
+        try:
+            checklist = AssignmentEvidenceChecklist.model_validate(request.checklist)
+            updated = update_evidence_status(
+                checklist,
+                request.evidence_id,
+                request.status,
+                notes=request.notes,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return updated.model_dump(mode="json")
+
+    @application.post("/assignments/report/draft")
+    def assignment_report_draft(request: AssignmentReportDraftRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            plan = build_assignment_plan(brief) if request.plan is None else AssignmentPlan.model_validate(request.plan)
+            evidence = (
+                build_evidence_checklist(brief)
+                if request.evidence is None
+                else AssignmentEvidenceChecklist.model_validate(request.evidence)
+            )
+            draft = generate_report_draft(
+                brief,
+                plan=plan,
+                evidence=evidence,
+                project_metadata=request.project_metadata,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return draft.model_dump(mode="json")
+
+    @application.post("/assignments/report/skeleton")
+    def assignment_report_skeleton(request: AssignmentReportSkeletonRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            evidence = (
+                build_evidence_checklist(brief)
+                if request.evidence is None
+                else AssignmentEvidenceChecklist.model_validate(request.evidence)
+            )
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            skeleton = generate_report_skeleton(brief, dataset_profile=dataset_profile, evidence=evidence)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return skeleton.model_dump(mode="json")
+
+    @application.post("/assignments/tasks/breakdown")
+    def assignment_tasks_breakdown(request: AssignmentTaskBreakdownRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            evidence = (
+                build_evidence_checklist(brief)
+                if request.evidence is None
+                else AssignmentEvidenceChecklist.model_validate(request.evidence)
+            )
+            breakdown = generate_task_breakdown(brief, evidence=evidence)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return breakdown.model_dump(mode="json")
+
+    @application.post("/assignments/marking/check")
+    def assignment_marking_check(request: AssignmentMarkingCheckRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            evidence = (
+                None
+                if request.evidence is None
+                else AssignmentEvidenceChecklist.model_validate(request.evidence)
+            )
+            readiness = check_marking_readiness(brief, evidence)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"items": [item.model_dump(mode="json") for item in readiness]}
+
+    @application.post("/assignments/copilot/run")
+    def assignment_copilot_run(request: AssignmentCopilotRunRequest) -> dict:
+        try:
+            workspace_path = _resolve_workspace_path(request.workspace_path) if request.workspace_path else None
+            document_path = _resolve_assignment_path(request.path) if request.path else None
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            result = run_assignment_copilot(
+                text=request.text,
+                path=document_path,
+                selected_assignment=request.selected_assignment,
+                workspace_path=workspace_path,
+                dataset_profile=dataset_profile,
+                project_metadata=request.project_metadata,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/datasets/profile")
+    def dataset_profile(request: DatasetProfileRequest) -> dict:
+        try:
+            profile = profile_csv_dataset(
+                _resolve_dataset_path(request.path),
+                sample_rows=request.sample_rows,
+                row_count_override=request.row_count_override,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return profile.model_dump(mode="json")
+
+    @application.post("/assignments/workspace/plan")
+    def assignment_workspace_plan(request: AssignmentWorkspacePlanRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            root = _resolve_workspace_write_path(request.workspace_path)
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            plan = plan_assignment_workspace(
+                brief,
+                assignment_number=request.assignment_number,
+                workspace_root=root,
+                dataset_profile=dataset_profile,
+                write_files=request.write_files,
+                overwrite=request.overwrite,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return plan.model_dump(mode="json")
+
+    @application.post("/assignments/runbook/generate")
+    def assignment_runbook_generate(request: AssignmentRunbookGenerateRequest) -> dict:
+        try:
+            root = _resolve_workspace_write_path(request.workspace_path)
+            runbook = generate_assignment_runbook(request.assignment_number, workspace_root=root)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return runbook.model_dump(mode="json")
+
+    @application.post("/assignments/report/export")
+    def assignment_report_export(request: AssignmentReportExportRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            root = _resolve_workspace_write_path(request.workspace_path)
+            evidence = build_evidence_checklist(brief)
+            report = generate_report_draft(brief, evidence=evidence)
+            runbook = generate_assignment_runbook(request.assignment_number, workspace_root=root)
+            readiness = check_marking_readiness(brief, evidence)
+            result = export_report_package(
+                root,
+                report_draft=report,
+                evidence=evidence,
+                runbook=runbook,
+                marking_readiness=readiness,
+                report_folder=request.report_folder,
+                overwrite=request.overwrite,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/code/blueprint")
+    def assignment_code_blueprint(request: AssignmentCodeBlueprintRequest) -> dict:
+        try:
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            result = generate_code_blueprints(
+                request.assignment_number,
+                dataset_profile=dataset_profile,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/code/write")
+    def assignment_code_write(request: AssignmentCodeWriteRequest) -> dict:
+        try:
+            root = _resolve_workspace_write_path(request.workspace_path)
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            blueprint_sets = _blueprint_sets_from_request(request, dataset_profile)
+            result = write_code_blueprints(root, blueprint_sets, overwrite=request.overwrite)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/dataset/map")
+    def assignment_dataset_map(request: AssignmentDatasetMapRequest) -> dict:
+        try:
+            if request.dataset_profile is not None:
+                from backend.app.datasets.schemas import DatasetProfile
+
+                profile = DatasetProfile.model_validate(request.dataset_profile)
+            elif request.dataset_path:
+                profile = profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+            else:
+                profile = None
+            result = map_dataset_columns(profile)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/manifest/build")
+    def assignment_manifest_build(request: AssignmentManifestBuildRequest) -> dict:
+        manifest = build_assignment_manifest(
+            request.copilot_result,
+            assignment_number=request.assignment_number,
+            dataset_path=request.dataset_path,
+            document_path=request.document_path,
+        )
+        return manifest.model_dump(mode="json")
+
+    @application.post("/assignments/manifest/write")
+    def assignment_manifest_write(request: AssignmentManifestWriteRequest) -> dict:
+        try:
+            root = _resolve_workspace_write_path(request.workspace_path)
+            if request.manifest is not None:
+                manifest = AssignmentProjectManifest.model_validate(request.manifest)
+            elif request.copilot_result is not None:
+                manifest = build_assignment_manifest(
+                    request.copilot_result,
+                    assignment_number=request.assignment_number,
+                    dataset_path=request.dataset_path,
+                    document_path=request.document_path,
+                )
+            else:
+                raise ValueError("Either manifest or copilot_result is required.")
+            result = write_assignment_manifest(root, manifest, overwrite=request.overwrite)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/analysis/plan")
+    def assignment_analysis_plan(request: AssignmentAnalysisPlanRequest) -> dict:
+        try:
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            result = generate_analysis_plan(
+                request.assignment_number,
+                dataset_profile=dataset_profile,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/dashboard/spec")
+    def assignment_dashboard_spec(request: AssignmentDashboardSpecRequest) -> dict:
+        try:
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            result = generate_dashboard_spec(
+                request.assignment_number,
+                dataset_profile=dataset_profile,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/assignments/final-readiness")
+    def assignment_final_readiness(request: AssignmentFinalReadinessRequest) -> dict:
+        try:
+            brief = _assignment_brief_from_payload(request)
+            dataset_profile = (
+                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+                if request.dataset_path
+                else None
+            )
+            workspace_inspection = (
+                inspect_workspace(_resolve_workspace_path(request.workspace_path))
+                if request.workspace_path
+                else None
+            )
+            result = build_final_readiness_report(
+                brief,
+                assignment_number=request.assignment_number,
+                dataset_profile=dataset_profile,
+                workspace_inspection=workspace_inspection,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    def _assignment_brief_from_request(request: AssignmentExtractRequest) -> AssignmentBrief:
+        if request.path:
+            parsed = parse_assignment_document(_resolve_assignment_path(request.path))
+            return extract_assignment_brief(parsed)
+        if request.text:
+            title = request.title or "Assignment brief"
+            from backend.app.assignments.schemas import ParsedAssignmentDocument
+
+            parsed = ParsedAssignmentDocument(
+                document_id="assignment-inline",
+                title=title,
+                source_path="<inline>",
+                extracted_text=request.text,
+                created_at=datetime.now(timezone.utc),
+                warnings=[],
+            )
+            return extract_assignment_brief(parsed)
+        raise ValueError("Either path or text is required.")
+
+    def _assignment_brief_from_payload(request) -> AssignmentBrief:
+        if getattr(request, "brief", None) is not None:
+            return AssignmentBrief.model_validate(request.brief)
+        return _assignment_brief_from_request(
+            AssignmentExtractRequest(
+                path=getattr(request, "path", None),
+                text=getattr(request, "text", None),
+            )
+        )
+
+    def _blueprint_sets_from_request(request: AssignmentCodeWriteRequest, dataset_profile) -> list[AssignmentCodeBlueprintSet]:
+        if request.blueprints is not None:
+            payload = request.blueprints if isinstance(request.blueprints, list) else [request.blueprints]
+            return [AssignmentCodeBlueprintSet.model_validate(item) for item in payload]
+        numbers = request.assignment_numbers or ([request.assignment_number] if request.assignment_number else [])
+        if not numbers:
+            raise ValueError("assignment_number, assignment_numbers, or blueprints is required.")
+        invalid = [number for number in numbers if number not in {1, 2, 3}]
+        if invalid:
+            raise ValueError("Assignment numbers must be 1, 2, or 3.")
+        return [generate_code_blueprints(number, dataset_profile=dataset_profile) for number in sorted(set(numbers))]
+
+    def _resolve_assignment_path(raw_path: str) -> Path:
+        return resolve_user_path(
+            raw_path,
+            base_root=configured_workspace_root,
+            expected="file",
+            supported_extensions={".txt", ".md", ".docx"},
+            label="Assignment document",
+        )
+
+    @application.post("/workspace/inspect")
+    def workspace_inspect(request: WorkspaceInspectRequest) -> dict:
+        try:
+            root = _resolve_workspace_path(request.path)
+            inspection = inspect_workspace(root, max_files=request.max_files)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return inspection.model_dump(mode="json")
+
+    @application.post("/assignments/templates/plan")
+    def assignment_template_plan(request: AssignmentTemplatePlanRequest) -> dict:
+        try:
+            plan = generate_assignment_template_plan(request.assignment_number)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return plan.model_dump(mode="json")
+
+    @application.post("/assignments/templates/write")
+    def assignment_template_write(request: AssignmentTemplateWriteRequest) -> dict:
+        try:
+            if request.plan is not None:
+                plan = AssignmentTemplatePlan.model_validate(request.plan)
+            elif request.assignment_number is not None:
+                plan = generate_assignment_template_plan(request.assignment_number)
+            else:
+                raise ValueError("Either assignment_number or plan is required.")
+            root = _resolve_workspace_write_path(request.workspace_path)
+            result = write_assignment_template_plan(root, plan, overwrite=request.overwrite)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return result.model_dump(mode="json")
+
+    @application.post("/commands/suggest")
+    def command_suggest(request: CommandSuggestRequest) -> dict:
+        try:
+            workdir = _resolve_workspace_path(request.working_directory)
+            if request.command:
+                suggestion = analyze_command(
+                    request.command,
+                    workdir,
+                    project_root=configured_workspace_root,
+                )
+            else:
+                suggestion = suggest_command(
+                    request.action or "",
+                    configured_workspace_root,
+                    target=request.target,
+                    working_directory=workdir,
+                )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return suggestion.model_dump(mode="json")
+
+    @application.post("/debug/analyze-error")
+    def debug_analyze_error(request: DebugAnalyzeErrorRequest) -> dict:
+        try:
+            root = _resolve_workspace_path(request.project_path)
+            analysis = analyze_error_output(request.output, project_root=root)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return analysis.model_dump(mode="json")
+
+    def _resolve_workspace_path(raw_path: str | None) -> Path:
+        return resolve_user_path(
+            raw_path,
+            base_root=configured_workspace_root,
+            expected="directory",
+            label="Workspace path",
+        )
+
+    def _resolve_workspace_write_path(raw_path: str | None) -> Path:
+        return resolve_user_path(
+            raw_path,
+            base_root=configured_workspace_root,
+            expected="directory",
+            label="Workspace path",
+            require_exists=False,
+        )
+
+    def _resolve_dataset_path(raw_path: str) -> Path:
+        return resolve_user_path(
+            raw_path,
+            base_root=configured_workspace_root,
+            expected="file",
+            supported_extensions={".csv", ".txt", ".tsv"},
+            label="Dataset file",
+        )
 
     @application.post("/rag/index")
     def local_rag_index() -> dict:
@@ -396,6 +1245,7 @@ def create_app(
             previous_turns=previous_turns,
         )
         repository.store_chat_run(run)
+        _log_training_example(run)
         return run
 
     @application.post("/chat/stream")
@@ -417,6 +1267,7 @@ def create_app(
                     event_sink=events.put,
                 )
                 repository.store_chat_run(run)
+                _log_training_example(run)
                 events.put(
                     {
                         "event": "run_completed",
@@ -449,6 +1300,54 @@ def create_app(
             event_stream(),
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache"},
+        )
+
+    def _log_training_example(run: ChatRunResponse) -> None:
+        try:
+            log_chat_run_example(configured_workspace_root, run)
+        except Exception:
+            return
+
+    @application.get("/training/dataset/status")
+    def training_dataset_status() -> dict:
+        return get_dataset_status(configured_workspace_root)
+
+    @application.get("/training/examples")
+    def training_examples(
+        label_status: str | None = Query(default=None),
+        final_label: str | None = Query(default=None),
+        source: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict:
+        return list_examples(
+            configured_workspace_root,
+            label_status=label_status,
+            final_label=final_label,
+            source=source,
+            limit=limit,
+        )
+
+    @application.post("/training/examples")
+    def training_example_create(request: TrainingExampleCreateRequest) -> dict:
+        return log_manual_example(configured_workspace_root, request)
+
+    @application.post("/training/examples/{example_id}/label")
+    def training_example_label(
+        example_id: str,
+        request: TrainingExampleLabelRequest,
+    ) -> dict:
+        try:
+            return update_example_label(configured_workspace_root, example_id, request)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/training/export")
+    def training_export(request: TrainingExportRequest) -> dict:
+        return export_examples(
+            configured_workspace_root,
+            export_format=request.format,
         )
 
     @application.get("/chat/runs", response_model=ChatRunsResponse)
