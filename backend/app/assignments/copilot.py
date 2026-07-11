@@ -9,6 +9,9 @@ from backend.app.assignments.analysis_planner import generate_analysis_plan
 from backend.app.assignments.code_blueprints import generate_code_blueprints
 from backend.app.assignments.dashboard_spec import generate_dashboard_spec
 from backend.app.assignments.final_readiness import build_final_readiness_report
+from backend.app.assignments.grounded_generation import (
+    build_grounded_generation_plan,
+)
 from backend.app.assignments.marking_checker import check_marking_readiness
 from backend.app.assignments.parser import parse_assignment_document
 from backend.app.assignments.planner import build_assignment_plan
@@ -20,6 +23,7 @@ from backend.app.assignments.schemas import (
     AssignmentBrief,
     AssignmentCopilotResult,
     AssignmentSection,
+    GenerationMode,
     ParsedAssignmentDocument,
 )
 from backend.app.assignments.templates import generate_assignment_template_plan
@@ -40,6 +44,7 @@ def run_assignment_copilot(
     project_metadata: dict | None = None,
     use_corpus: bool = True,
     corpus_workspace_root: str | Path | None = None,
+    generation_mode: GenerationMode = "mixed",
 ) -> AssignmentCopilotResult:
     parsed = _parse_input(text=text, path=path)
     corpus_retrieval = retrieve_corpus_context(
@@ -60,6 +65,26 @@ def run_assignment_copilot(
     code_blueprints = [
         generate_code_blueprints(number, dataset_profile=dataset_profile)
         for number in template_numbers
+    ]
+    grounded_generation = [
+        build_grounded_generation_plan(
+            filtered,
+            assignment_number=number,
+            workspace_path=_generation_workspace_path(
+                workspace_path,
+                number,
+                multiple=len(template_numbers) > 1,
+            ),
+            blueprint_set=blueprint,
+            corpus_sources=corpus_retrieval.sources,
+            evidence=evidence,
+            generation_mode=generation_mode,
+        )
+        for number, blueprint in zip(
+            template_numbers,
+            code_blueprints,
+            strict=True,
+        )
     ]
     analysis_plans = [
         generate_analysis_plan(number, dataset_profile=dataset_profile)
@@ -139,6 +164,35 @@ def run_assignment_copilot(
         corpus_retrieval_skip_reason=corpus_retrieval.skip_reason,
         corpus_context_count=len(corpus_retrieval.sources),
         corpus_sources=corpus_retrieval.sources,
+        workspace_generation_plan=[
+            item.workspace_generation_plan
+            for item in grounded_generation
+        ],
+        grounded_file_blueprints=[
+            blueprint
+            for item in grounded_generation
+            for blueprint in item.grounded_file_blueprints
+        ],
+        corpus_grounding_summary=[
+            item.corpus_grounding_summary
+            for item in grounded_generation
+        ],
+        unsupported_components=list(
+            dict.fromkeys(
+                component
+                for item in grounded_generation
+                for component in item.unsupported_components
+            )
+        ),
+        generation_warnings=[
+            warning
+            for item in grounded_generation
+            for warning in item.generation_warnings
+        ],
+        generation_ready=bool(grounded_generation) and all(
+            item.generation_ready for item in grounded_generation
+        ),
+        generation_mode=generation_mode,
         tools_executed=False,
         files_written=False,
         training_performed=False,
@@ -159,6 +213,16 @@ def _parse_input(*, text: str | None, path: str | Path | None) -> ParsedAssignme
             warnings=[],
         )
     raise ValueError("Either assignment document text or path is required.")
+
+
+def _generation_workspace_path(
+    workspace_path: str | Path | None,
+    assignment_number: int,
+    *,
+    multiple: bool,
+) -> Path:
+    base = Path(workspace_path) if workspace_path else Path("assignment_workspaces")
+    return base / f"assignment_{assignment_number}" if multiple or workspace_path is None else base
 
 
 def _filter_brief(brief: AssignmentBrief, selected_assignment: int | str | None) -> AssignmentBrief:

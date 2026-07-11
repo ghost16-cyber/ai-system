@@ -256,6 +256,13 @@ class AssignmentCopilotResult(BaseModel):
     corpus_retrieval_skip_reason: str | None = None
     corpus_context_count: int = 0
     corpus_sources: list[CorpusSourceMetadata] = Field(default_factory=list)
+    workspace_generation_plan: list[GroundedWorkspaceGenerationPlan] = Field(default_factory=list)
+    grounded_file_blueprints: list[GroundedFileBlueprint] = Field(default_factory=list)
+    corpus_grounding_summary: list[CorpusGroundingSummary] = Field(default_factory=list)
+    unsupported_components: list[str] = Field(default_factory=list)
+    generation_warnings: list[str] = Field(default_factory=list)
+    generation_ready: bool = False
+    generation_mode: GenerationMode = "mixed"
     tools_executed: bool = False
     files_written: bool = False
     training_performed: bool = False
@@ -332,6 +339,87 @@ class AssignmentCodeWriteResult(BaseModel):
     overwrite: bool = False
     commands_executed: bool = False
     credentials_written: bool = False
+
+
+GenerationMode = Literal["template_only", "corpus_grounded", "mixed"]
+
+
+class GroundingProvenance(BaseModel):
+    source_path: str
+    chunk_id: str
+    chunk_index: int
+    score: float
+    start_line: int | None = None
+    end_line: int | None = None
+    influence: str
+
+
+class GroundedFileBlueprint(BaseModel):
+    file_path: str
+    purpose: str
+    assignment_number: int
+    technology_area: str
+    generation_mode: Literal["template_only", "corpus_grounded"]
+    source_ids: list[str] = Field(default_factory=list)
+    grounding: list[GroundingProvenance] = Field(default_factory=list)
+    generated_content: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GroundedWorkspaceFilePlan(BaseModel):
+    path: str
+    purpose: str
+    generation_mode: Literal["template_only", "corpus_grounded"]
+    source_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GroundedWorkspaceGenerationPlan(BaseModel):
+    assignment_number: int
+    assignment_title: str
+    workspace_path: str
+    generation_mode: GenerationMode
+    technologies: list[str] = Field(default_factory=list)
+    directories: list[str] = Field(default_factory=list)
+    files: list[GroundedWorkspaceFilePlan] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    unresolved_requirements: list[str] = Field(default_factory=list)
+    evidence_placeholders: list[str] = Field(default_factory=list)
+    report_placeholders: list[str] = Field(default_factory=list)
+    recommended_manual_configuration_steps: list[str] = Field(default_factory=list)
+    commands_executed: bool = False
+
+
+class CorpusGroundingSummary(BaseModel):
+    candidate_source_count: int = 0
+    usable_source_count: int = 0
+    grounded_file_count: int = 0
+    template_file_count: int = 0
+    excluded_source_count: int = 0
+    source_paths: list[str] = Field(default_factory=list)
+
+
+class GroundedGenerationResult(BaseModel):
+    workspace_generation_plan: GroundedWorkspaceGenerationPlan
+    grounded_file_blueprints: list[GroundedFileBlueprint] = Field(default_factory=list)
+    corpus_grounding_summary: CorpusGroundingSummary
+    unsupported_components: list[str] = Field(default_factory=list)
+    generation_warnings: list[str] = Field(default_factory=list)
+    generation_ready: bool = False
+    generation_mode: GenerationMode = "mixed"
+
+
+class GroundedWorkspaceWriteResult(BaseModel):
+    workspace_path: str
+    created_files: list[str] = Field(default_factory=list)
+    skipped_files: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    refused_files: list[str] = Field(default_factory=list)
+    grounding_summary: CorpusGroundingSummary
+    warnings: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+    commands_executed: bool = False
+    generated_code_executed: bool = False
 
 
 class DatasetMappingSuggestion(BaseModel):

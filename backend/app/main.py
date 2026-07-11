@@ -54,6 +54,14 @@ from backend.app.assignments import (
     write_code_blueprints,
     write_assignment_template_plan,
 )
+from backend.app.assignments.grounded_generation import (
+    write_grounded_workspace,
+)
+from backend.app.assignments.schemas import (
+    CorpusGroundingSummary,
+    GenerationMode,
+    GroundedFileBlueprint,
+)
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.commands import analyze_command, suggest_command
 from backend.app.core.path_utils import resolve_user_path
@@ -289,6 +297,15 @@ class AssignmentCopilotRunRequest(BaseModel):
     dataset_path: str | None = None
     project_metadata: dict | None = None
     use_corpus: bool = True
+    generation_mode: GenerationMode = "mixed"
+
+
+class AssignmentWorkspaceGenerateRequest(BaseModel):
+    assignment_number: int = Field(..., ge=1, le=3)
+    workspace_path: str = Field(..., min_length=1)
+    generation_mode: GenerationMode = "mixed"
+    overwrite: bool = False
+    copilot_result: dict
 
 
 class DatasetProfileRequest(BaseModel):
@@ -888,6 +905,7 @@ def create_app(
                 project_metadata=request.project_metadata,
                 use_corpus=request.use_corpus,
                 corpus_workspace_root=configured_workspace_root,
+                generation_mode=request.generation_mode,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -932,6 +950,80 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return plan.model_dump(mode="json")
+
+    @application.post("/assignments/workspace/generate")
+    def assignment_workspace_generate(
+        request: AssignmentWorkspaceGenerateRequest,
+    ) -> dict:
+        try:
+            root = _resolve_workspace_write_path(request.workspace_path)
+            copilot_mode = request.copilot_result.get("generation_mode")
+            if (
+                copilot_mode is not None
+                and copilot_mode != request.generation_mode
+            ):
+                raise ValueError(
+                    "Requested generation_mode does not match the Copilot result."
+                )
+            raw_blueprints = request.copilot_result.get(
+                "grounded_file_blueprints",
+                [],
+            )
+            if not isinstance(raw_blueprints, list):
+                raise ValueError(
+                    "copilot_result grounded_file_blueprints must be a list."
+                )
+            blueprints = [
+                GroundedFileBlueprint.model_validate(item)
+                for item in raw_blueprints
+                if isinstance(item, dict)
+                and int(item.get("assignment_number", 0))
+                == request.assignment_number
+            ]
+            if not blueprints:
+                raise ValueError(
+                    "No grounded file blueprints were provided for the selected assignment."
+                )
+            raw_summaries = request.copilot_result.get(
+                "corpus_grounding_summary",
+                [],
+            )
+            raw_plans = request.copilot_result.get(
+                "workspace_generation_plan",
+                [],
+            )
+            summary_index = next(
+                (
+                    index
+                    for index, item in enumerate(raw_plans)
+                    if isinstance(item, dict)
+                    and int(item.get("assignment_number", 0))
+                    == request.assignment_number
+                ),
+                None,
+            ) if isinstance(raw_plans, list) else None
+            summary_payload = (
+                raw_summaries[summary_index]
+                if isinstance(raw_summaries, list)
+                and summary_index is not None
+                and len(raw_summaries) > summary_index
+                else {}
+            )
+            summary = CorpusGroundingSummary.model_validate(
+                summary_payload
+            )
+            result = write_grounded_workspace(
+                root,
+                blueprints,
+                grounding_summary=summary,
+                overwrite=request.overwrite,
+            )
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            **result.model_dump(mode="json"),
+            "generation_mode": request.generation_mode,
+        }
 
     @application.post("/assignments/runbook/generate")
     def assignment_runbook_generate(request: AssignmentRunbookGenerateRequest) -> dict:
