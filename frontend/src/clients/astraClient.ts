@@ -437,6 +437,64 @@ export interface AssignmentExecutionSummary {
   limitations: string[];
 }
 
+export type AssignmentRequirementStatus =
+  | "not_started"
+  | "detected"
+  | "partially_verified"
+  | "verified"
+  | "missing"
+  | "failed"
+  | "requires_manual_review"
+  | "not_applicable";
+
+export interface AssignmentRequirementVerification {
+  requirement_id: string;
+  title: string;
+  description: string;
+  source_reference: string;
+  requirement_category: string;
+  required_deliverable_type: string;
+  expected_evidence: string[];
+  verification_method: string;
+  status: AssignmentRequirementStatus;
+  confidence: number;
+  warnings: string[];
+  linked_workspace_files: string[];
+  linked_execution_evidence: string[];
+  reviewer_notes: string[];
+}
+
+export interface AssignmentReadinessSummary {
+  assignment_id: string;
+  verification_timestamp: string;
+  total_requirements: number;
+  status_distribution: Record<string, number>;
+  verified_count: number;
+  partially_verified_count: number;
+  missing_count: number;
+  failed_count: number;
+  manual_review_count: number;
+  blocking_issues: string[];
+  warnings: string[];
+  evidence_coverage_percentage: number;
+  execution_evidence_freshness: string;
+  recommended_next_actions: string[];
+  academic_completion_inferred: false;
+}
+
+export interface AssignmentVerificationSnapshot {
+  schema_version: number;
+  snapshot_id: string;
+  assignment_id: string;
+  workspace: string;
+  verification_timestamp: string;
+  inventory: Array<Record<string, unknown>>;
+  requirements: AssignmentRequirementVerification[];
+  readiness: AssignmentReadinessSummary;
+  manual_reviews: Array<Record<string, unknown>>;
+  warnings: string[];
+}
+
 export interface ChatStreamEvent {
   event:
     | "run_started"
@@ -773,6 +831,30 @@ export class HttpAstraClient implements AstraClient {
   async executeAssignmentCommand(planId: string, request: Record<string, unknown>) {
     return this.postJson<AssignmentCommandRecord>(
       `/assignments/commands/${encodeURIComponent(planId)}/execute`, request,
+    );
+  }
+
+  async verifyAssignmentEvidence(assignmentId: string, request: Record<string, unknown>) {
+    return this.postJson<AssignmentVerificationSnapshot>(
+      `/assignments/${encodeURIComponent(assignmentId)}/verify`, request,
+    );
+  }
+
+  async getAssignmentEvidence(assignmentId: string, workspacePath: string) {
+    return this.getJson<Omit<AssignmentVerificationSnapshot, "schema_version" | "snapshot_id" | "readiness">>(
+      `/assignments/${encodeURIComponent(assignmentId)}/evidence?workspace_path=${encodeURIComponent(workspacePath)}`,
+    );
+  }
+
+  async getAssignmentReadiness(assignmentId: string, workspacePath: string) {
+    return this.getJson<AssignmentReadinessSummary>(
+      `/assignments/${encodeURIComponent(assignmentId)}/readiness?workspace_path=${encodeURIComponent(workspacePath)}`,
+    );
+  }
+
+  async reviewAssignmentEvidence(assignmentId: string, request: Record<string, unknown>) {
+    return this.postJson<{ recorded: true; review: Record<string, unknown> }>(
+      `/assignments/${encodeURIComponent(assignmentId)}/evidence/review`, request,
     );
   }
 

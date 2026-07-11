@@ -1157,6 +1157,95 @@ input:focus-visible {
 .state-failed, .state-expired { color: var(--red); }
 .state-approved, .state-running { color: var(--blue); }
 
+.evidence-readiness,
+.requirement-list,
+.manual-review-controls,
+.tag-row {
+  display: grid;
+  gap: 12px;
+}
+
+.readiness-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.readiness-metrics div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.readiness-metrics strong {
+  font-size: 1.25rem;
+}
+
+.readiness-metrics span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.filter-row,
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.filter-button {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.filter-button.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.requirement-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.requirement-card p {
+  margin: 0;
+}
+
+.tag-row code {
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.manual-review-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.manual-review-controls label {
+  display: grid;
+  gap: 5px;
+}
+
+.requirement-verified { color: var(--green); }
+.requirement-missing, .requirement-failed { color: var(--red); }
+.requirement-requires_manual_review, .requirement-partially_verified { color: var(--amber); }
+.requirement-detected { color: var(--blue); }
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -1187,6 +1276,7 @@ input:focus-visible {
   .two-column,
   .execution-logs,
   .approval-row,
+  .manual-review-controls,
   .history-layout,
   .settings-grid,
   .training-review-controls {
@@ -1220,6 +1310,7 @@ input:focus-visible {
 
   .overview-grid,
   .tool-grid,
+  .readiness-metrics,
   .result-meta,
   .chat-composer {
     grid-template-columns: 1fr;

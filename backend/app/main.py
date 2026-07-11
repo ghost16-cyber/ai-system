@@ -62,6 +62,12 @@ from backend.app.assignments.schemas import (
     GenerationMode,
     GroundedFileBlueprint,
 )
+from backend.app.assignments.verification import (
+    AssignmentVerificationError,
+    load_verification_snapshot,
+    record_manual_evidence_review,
+    verify_assignment_workspace,
+)
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.commands import (
     CommandExecutionError,
@@ -450,6 +456,19 @@ class AssignmentCommandExecuteRequest(BaseModel):
     approval_token: str = Field(..., min_length=1)
 
 
+class AssignmentVerifyRequest(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+    assignment_output: dict
+
+
+class AssignmentEvidenceReviewRequest(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+    requirement_id: str = Field(..., min_length=1, max_length=256)
+    evidence_reference: str = Field(..., min_length=1, max_length=1000)
+    decision: str = Field(..., min_length=1, max_length=32)
+    note: str = Field(default="", max_length=4000)
+
+
 class DebugAnalyzeErrorRequest(BaseModel):
     output: str = ""
     project_path: str | None = None
@@ -468,6 +487,9 @@ def create_app(
     ).expanduser().resolve()
     assignment_command_store = (
         configured_workspace_root / "data" / "assignment_command_runs"
+    )
+    assignment_verification_store = (
+        configured_workspace_root / "data" / "assignment_verification"
     )
 
     repository = AnalysisRepository(configured_path)
@@ -1486,6 +1508,90 @@ def create_app(
             )
         except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/assignments/{assignment_id}/verify")
+    def assignment_verify(
+        assignment_id: str,
+        request: AssignmentVerifyRequest,
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(request.workspace_path)
+            snapshot = verify_assignment_workspace(
+                metadata_root=assignment_verification_store,
+                command_store_root=assignment_command_store,
+                project_root=configured_workspace_root,
+                assignment_id=assignment_id,
+                workspace=workspace,
+                assignment_output=request.assignment_output,
+            )
+        except (AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return snapshot.model_dump(mode="json")
+
+    @application.get("/assignments/{assignment_id}/evidence")
+    def assignment_evidence(
+        assignment_id: str,
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(workspace_path)
+            relative = workspace.relative_to(configured_workspace_root).as_posix()
+            snapshot = load_verification_snapshot(
+                assignment_verification_store, assignment_id, relative
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "assignment_id": snapshot.assignment_id,
+            "workspace": snapshot.workspace,
+            "verification_timestamp": snapshot.verification_timestamp,
+            "inventory": snapshot.inventory,
+            "requirements": snapshot.requirements,
+            "manual_reviews": snapshot.manual_reviews,
+            "warnings": snapshot.warnings,
+        }
+
+    @application.get("/assignments/{assignment_id}/readiness")
+    def assignment_readiness_v2(
+        assignment_id: str,
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(workspace_path)
+            relative = workspace.relative_to(configured_workspace_root).as_posix()
+            snapshot = load_verification_snapshot(
+                assignment_verification_store, assignment_id, relative
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return snapshot.readiness.model_dump(mode="json")
+
+    @application.post("/assignments/{assignment_id}/evidence/review")
+    def assignment_evidence_review(
+        assignment_id: str,
+        request: AssignmentEvidenceReviewRequest,
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(request.workspace_path)
+            relative = workspace.relative_to(configured_workspace_root).as_posix()
+            review = record_manual_evidence_review(
+                metadata_root=assignment_verification_store,
+                assignment_id=assignment_id,
+                workspace_relative=relative,
+                requirement_id=request.requirement_id,
+                evidence_reference=request.evidence_reference,
+                decision=request.decision,
+                note=request.note,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"recorded": True, "review": review.model_dump(mode="json")}
 
     @application.post("/debug/analyze-error")
     def debug_analyze_error(request: DebugAnalyzeErrorRequest) -> dict:

@@ -56,6 +56,7 @@ import type {
   TraceEvent,
 } from "./types/contracts";
 import { AssignmentExecutionSection } from "./components/AssignmentExecutionSection";
+import { AssignmentEvidenceReadinessSection } from "./components/AssignmentEvidenceReadinessSection";
 
 type PageId = "chat" | "assignments" | "system" | "history" | "settings";
 type SafetyMode = "read_only" | "confirm";
@@ -1247,6 +1248,16 @@ function AssignmentCopilotPage({
             client={client}
             assignmentId={selection === "all" ? null : `assignment-${selection}`}
             workspacePath={workspacePath}
+          />
+
+          <AssignmentEvidenceReadinessSection
+            client={client}
+            assignmentId={selection === "all" ? null : `assignment-${selection}`}
+            workspacePath={workspacePath}
+            assignmentOutput={{
+              evidence_checklist: result.evidence_checklist,
+              action_plan: result.action_plan,
+            }}
           />
 
           <section className="panel">

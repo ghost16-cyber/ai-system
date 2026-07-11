@@ -473,6 +473,86 @@ class AssignmentManifestWriteResult(BaseModel):
     overwrite: bool = False
 
 
+VerificationStatus = Literal[
+    "not_started",
+    "detected",
+    "partially_verified",
+    "verified",
+    "missing",
+    "failed",
+    "requires_manual_review",
+    "not_applicable",
+]
+ManualEvidenceDecision = Literal["accepted", "rejected", "needs_replacement"]
+
+
+class WorkspaceEvidenceItem(BaseModel):
+    evidence_reference: str
+    relative_path: str
+    file_type: str
+    size: int
+    sha256: str
+    modified_at: datetime
+    evidence_category: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RequirementVerification(BaseModel):
+    requirement_id: str
+    title: str
+    description: str
+    source_reference: str
+    requirement_category: str
+    required_deliverable_type: str
+    expected_evidence: list[str] = Field(default_factory=list)
+    verification_method: str
+    status: VerificationStatus
+    confidence: float = Field(ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+    linked_workspace_files: list[str] = Field(default_factory=list)
+    linked_execution_evidence: list[str] = Field(default_factory=list)
+    reviewer_notes: list[str] = Field(default_factory=list)
+
+
+class ManualEvidenceReview(BaseModel):
+    requirement_id: str
+    evidence_reference: str
+    decision: ManualEvidenceDecision
+    note: str
+    timestamp: datetime
+
+
+class AssignmentReadinessSummaryV2(BaseModel):
+    assignment_id: str
+    verification_timestamp: datetime
+    total_requirements: int
+    status_distribution: dict[str, int]
+    verified_count: int
+    partially_verified_count: int
+    missing_count: int
+    failed_count: int
+    manual_review_count: int
+    blocking_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    evidence_coverage_percentage: float
+    execution_evidence_freshness: str
+    recommended_next_actions: list[str] = Field(default_factory=list)
+    academic_completion_inferred: bool = False
+
+
+class AssignmentVerificationSnapshot(BaseModel):
+    schema_version: int
+    snapshot_id: str
+    assignment_id: str
+    workspace: str
+    verification_timestamp: datetime
+    inventory: list[WorkspaceEvidenceItem]
+    requirements: list[RequirementVerification]
+    readiness: AssignmentReadinessSummaryV2
+    manual_reviews: list[ManualEvidenceReview] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AssignmentAnalysisQuestion(BaseModel):
     question_id: str
     assignment_number: int

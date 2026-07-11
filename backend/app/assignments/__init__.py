@@ -68,6 +68,13 @@ from backend.app.assignments.templates import (
     write_assignment_template_plan,
 )
 from backend.app.assignments.workspace_builder import plan_assignment_workspace
+from backend.app.assignments.verification import (
+    AssignmentVerificationError,
+    build_workspace_evidence_inventory,
+    load_verification_snapshot,
+    record_manual_evidence_review,
+    verify_assignment_workspace,
+)
 
 __all__ = [
     "AnalysisQuestion",
@@ -132,4 +139,9 @@ __all__ = [
     "write_assignment_manifest",
     "write_code_blueprints",
     "write_assignment_template_plan",
+    "AssignmentVerificationError",
+    "build_workspace_evidence_inventory",
+    "load_verification_snapshot",
+    "record_manual_evidence_review",
+    "verify_assignment_workspace",
 ]
