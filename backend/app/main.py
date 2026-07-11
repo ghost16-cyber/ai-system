@@ -288,6 +288,7 @@ class AssignmentCopilotRunRequest(BaseModel):
     workspace_path: str | None = None
     dataset_path: str | None = None
     project_metadata: dict | None = None
+    use_corpus: bool = True
 
 
 class DatasetProfileRequest(BaseModel):
@@ -885,6 +886,8 @@ def create_app(
                 workspace_path=workspace_path,
                 dataset_profile=dataset_profile,
                 project_metadata=request.project_metadata,
+                use_corpus=request.use_corpus,
+                corpus_workspace_root=configured_workspace_root,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

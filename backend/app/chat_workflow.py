@@ -12,6 +12,10 @@ from backend.app.local_runtime import (
 )
 from backend.app.local_runtime.task_optimizer import classify_task
 from backend.app.rag import context_service as rag_context_service
+from backend.app.rag.corpus_retrieval import (
+    CorpusRetrievalResult,
+    retrieve_corpus_context,
+)
 from backend.app.schemas.api import ChatRunRequest, ChatRunResponse
 from backend.app.slm import gateway as slm_gateway
 from backend.app.specialists.specialist_router import route_specialist_task
@@ -123,6 +127,17 @@ def run_chat_workflow(
         route=route,
         trace=trace,
     )
+    corpus_enabled = (
+        request.use_rag
+        if request.use_corpus is None
+        else request.use_corpus
+    )
+    corpus_retrieval = retrieve_corpus_context(
+        request.message,
+        workspace_root=workspace_root,
+        enabled=corpus_enabled,
+    )
+    trace.append(_corpus_retrieval_trace(corpus_retrieval))
     _emit_event(
         event_sink,
         "rag_completed",
@@ -154,6 +169,7 @@ def run_chat_workflow(
         trace=trace,
         route=route,
         rag_results=rag_results,
+        corpus_retrieval=corpus_retrieval,
         validation=validation,
         profile=profile,
         safety_mode=request.safety_mode,
@@ -164,6 +180,7 @@ def run_chat_workflow(
         request.message,
         route=route,
         rag_results=rag_results,
+        corpus_retrieval=corpus_retrieval,
         validation=validation,
         profile=profile,
         slm_response=slm_response_for_text,
@@ -202,6 +219,10 @@ def run_chat_workflow(
         source_count=grounding_metadata["source_count"],
         source_paths=grounding_metadata["source_paths"],
         grounding_status=grounding_metadata["grounding_status"],
+        corpus_retrieval_used=corpus_retrieval.used,
+        corpus_retrieval_skip_reason=corpus_retrieval.skip_reason,
+        corpus_context_count=len(corpus_retrieval.sources),
+        corpus_sources=corpus_retrieval.sources,
         runtime_decision=_runtime_label(validation, profile),
         safety_decision=validation.decision,
         used_real_slm=bool(slm_result.get("used_real_slm")),
@@ -393,6 +414,7 @@ def _call_slm_gateway(
     trace: list[dict[str, Any]],
     route: dict[str, Any],
     rag_results: list[dict[str, Any]],
+    corpus_retrieval: CorpusRetrievalResult,
     validation,
     profile,
     safety_mode: str,
@@ -402,6 +424,7 @@ def _call_slm_gateway(
         message,
         route=route,
         rag_results=rag_results,
+        corpus_retrieval=corpus_retrieval,
         validation=validation,
         profile=profile,
         memory_summary=memory_summary,
@@ -413,6 +436,11 @@ def _call_slm_gateway(
                 "prompt": prompt,
                 "selected_specialist": route.get("recommended_specialist"),
                 "rag_context": rag_context_service.compact_context(rag_results),
+                "corpus_context": corpus_retrieval.prompt_context,
+                "corpus_sources": [
+                    source.model_dump(mode="json")
+                    for source in corpus_retrieval.sources
+                ],
                 "runtime_decision": _runtime_label(validation, profile),
                 "safety_decision": validation.decision,
                 "safety_mode": safety_mode,
@@ -473,6 +501,7 @@ def build_chat_prompt(
     *,
     route: dict[str, Any],
     rag_results: list[dict[str, Any]],
+    corpus_retrieval: CorpusRetrievalResult,
     validation,
     profile,
     memory_summary: str | None = None,
@@ -482,6 +511,11 @@ def build_chat_prompt(
         rag_context_service.compact_context(rag_results)
         if rag_results
         else "No RAG context is attached for this request."
+    )
+    corpus_block = (
+        corpus_retrieval.prompt_context
+        if corpus_retrieval.prompt_context
+        else "No persistent corpus context is attached for this request."
     )
     memory_block = (
         "Conversation context (local to this conversation; use only if it helps, and answer the latest user message first):\n"
@@ -505,6 +539,8 @@ def build_chat_prompt(
         f"- Runtime decision: {_runtime_label(validation, profile)}\n\n"
         "Optional RAG context:\n"
         f"{rag_block}\n\n"
+        "Optional persistent corpus context:\n"
+        f"{corpus_block}\n\n"
         f"{memory_block}"
         "User message:\n"
         f"{message}\n"
@@ -516,6 +552,7 @@ def _assistant_response(
     *,
     route: dict[str, Any],
     rag_results: list[dict[str, Any]],
+    corpus_retrieval: CorpusRetrievalResult,
     validation,
     profile,
     slm_response: dict[str, Any] | None,
@@ -547,15 +584,22 @@ def _assistant_response(
         if rag_results
         else "I did not use retrieved project context for this answer."
     )
+    corpus_sentence = (
+        f"I used {len(corpus_retrieval.sources)} persistent corpus context item(s) as read-only references."
+        if corpus_retrieval.used
+        else "I did not use persistent corpus context for this answer."
+    )
     context_hint = _context_hint(rag_results)
+    corpus_hint = _corpus_context_hint(corpus_retrieval)
     next_step = _next_step(str(specialist), str(intent), decision)
     hardware = getattr(runtime_context, "hardware", None)
     gpu = getattr(getattr(hardware, "gpu", None), "name", "") if hardware else ""
 
     return (
         f"I routed this to {specialist} for a {intent} request. "
-        f"Safety decision: {decision}. Runtime: {runtime}. {rag_sentence} "
+        f"Safety decision: {decision}. Runtime: {runtime}. {rag_sentence} {corpus_sentence} "
         f"{context_hint}"
+        f"{corpus_hint}"
         f"The safest useful next step is: {next_step} "
         f"No files were changed, no tools were executed from chat, and no destructive action was authorized."
         + (f" Detected runtime hardware: {gpu}." if gpu else "")
@@ -715,6 +759,38 @@ def _rag_trace(reason: str, detail: str, data: dict[str, Any] | None = None) -> 
     return _trace("rag", f"RAG skipped: {reason.replace('_', ' ')}", detail, payload, status="warning")
 
 
+def _corpus_retrieval_trace(
+    retrieval: CorpusRetrievalResult,
+) -> dict[str, Any]:
+    if retrieval.used:
+        return _trace(
+            "corpus_rag",
+            "Persistent corpus context retrieved",
+            f"{len(retrieval.sources)} deduplicated corpus chunk(s) were attached as read-only references.",
+            {
+                "count": len(retrieval.sources),
+                "reason": "corpus_context_relevant",
+                "sources": [
+                    source.model_dump(mode="json")
+                    for source in retrieval.sources
+                ],
+                "code_executed": False,
+            },
+        )
+    return _trace(
+        "corpus_rag",
+        "Persistent corpus retrieval not used",
+        f"Corpus retrieval continued safely without context: {retrieval.skip_reason}.",
+        {
+            "count": 0,
+            "reason": retrieval.skip_reason,
+            "status": retrieval.status,
+            "code_executed": False,
+        },
+        status="warning",
+    )
+
+
 def _rag_gate_reason(message: str, route: dict[str, Any]) -> str | None:
     lowered = message.strip().lower()
     if _is_greeting(message):
@@ -844,6 +920,22 @@ def _context_hint(rag_results: list[dict[str, Any]]) -> str:
     if not paths:
         return ""
     return f"Relevant local context came from: {', '.join(paths)}. "
+
+
+def _corpus_context_hint(
+    retrieval: CorpusRetrievalResult,
+) -> str:
+    if not retrieval.used:
+        return ""
+    paths = _unique_ordered(
+        source.source_path for source in retrieval.sources
+    )[:3]
+    if not paths:
+        return ""
+    return (
+        "Persistent corpus references came from: "
+        f"{', '.join(paths)}. Their contents were not executed. "
+    )
 
 
 def _next_step(specialist: str, intent: str, decision: str) -> str:

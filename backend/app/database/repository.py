@@ -173,6 +173,10 @@ class AnalysisRepository:
                     source_count INTEGER NOT NULL DEFAULT 0,
                     source_paths_json TEXT NOT NULL DEFAULT '[]',
                     grounding_status TEXT NOT NULL DEFAULT 'none',
+                    corpus_retrieval_used INTEGER NOT NULL DEFAULT 0,
+                    corpus_retrieval_skip_reason TEXT,
+                    corpus_context_count INTEGER NOT NULL DEFAULT 0,
+                    corpus_sources_json TEXT NOT NULL DEFAULT '[]',
                     runtime_decision TEXT NOT NULL,
                     safety_decision TEXT NOT NULL,
                     used_real_slm INTEGER NOT NULL DEFAULT 0,
@@ -202,6 +206,18 @@ class AnalysisRepository:
             )
             self._add_column_if_missing(
                 connection, "chat_runs", "grounding_status", "TEXT NOT NULL DEFAULT 'none'"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "corpus_retrieval_used", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "corpus_retrieval_skip_reason", "TEXT"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "corpus_context_count", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._add_column_if_missing(
+                connection, "chat_runs", "corpus_sources_json", "TEXT NOT NULL DEFAULT '[]'"
             )
             self._add_column_if_missing(
                 connection, "chat_runs", "slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"
@@ -356,6 +372,10 @@ class AnalysisRepository:
                     source_count,
                     source_paths_json,
                     grounding_status,
+                    corpus_retrieval_used,
+                    corpus_retrieval_skip_reason,
+                    corpus_context_count,
+                    corpus_sources_json,
                     runtime_decision,
                     safety_decision,
                     used_real_slm,
@@ -367,7 +387,7 @@ class AnalysisRepository:
                     memory_summary,
                     created_at,
                     trace_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -392,6 +412,18 @@ class AnalysisRepository:
                     run.source_count,
                     json.dumps(run.source_paths, sort_keys=True),
                     run.grounding_status,
+                    int(run.corpus_retrieval_used),
+                    run.corpus_retrieval_skip_reason,
+                    run.corpus_context_count,
+                    json.dumps(
+                        [
+                            source.model_dump(mode="json")
+                            if hasattr(source, "model_dump")
+                            else source
+                            for source in run.corpus_sources
+                        ],
+                        sort_keys=True,
+                    ),
                     run.runtime_decision,
                     run.safety_decision,
                     int(run.used_real_slm),
@@ -548,6 +580,14 @@ class AnalysisRepository:
                 if row["grounding_status"] in {"grounded", "weak", "none"}
                 else "none"
             ),
+            corpus_retrieval_used=bool(row["corpus_retrieval_used"]),
+            corpus_retrieval_skip_reason=(
+                str(row["corpus_retrieval_skip_reason"])
+                if row["corpus_retrieval_skip_reason"]
+                else None
+            ),
+            corpus_context_count=int(row["corpus_context_count"]),
+            corpus_sources=_json_list(row["corpus_sources_json"]),
             runtime_decision=str(row["runtime_decision"]),
             safety_decision=str(row["safety_decision"]),
             used_real_slm=bool(row["used_real_slm"]),

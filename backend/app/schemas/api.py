@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.rag.corpus_retrieval import CorpusSourceMetadata
+
 
 class FixValidationResponse(BaseModel):
     status: Literal["not_available", "passed", "failed"] = "not_available"
@@ -79,6 +81,7 @@ class ExecutionProfileRequest(BaseModel):
 class ChatRunRequest(BaseModel):
     message: str = Field(..., min_length=1)
     use_rag: bool = True
+    use_corpus: bool | None = None
     safety_mode: str = "read_only"
     conversation_id: str | None = None
 
@@ -105,6 +108,10 @@ class ChatRunResponse(BaseModel):
     source_count: int = 0
     source_paths: list[str] = Field(default_factory=list)
     grounding_status: Literal["grounded", "weak", "none"] = "none"
+    corpus_retrieval_used: bool = False
+    corpus_retrieval_skip_reason: str | None = None
+    corpus_context_count: int = 0
+    corpus_sources: list[CorpusSourceMetadata] = Field(default_factory=list)
     runtime_decision: str
     safety_decision: str
     used_real_slm: bool = False

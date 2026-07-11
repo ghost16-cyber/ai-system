@@ -26,6 +26,7 @@ from backend.app.assignments.templates import generate_assignment_template_plan
 from backend.app.assignments.workspace_builder import plan_assignment_workspace
 from backend.app.commands import suggest_command
 from backend.app.datasets.schemas import DatasetProfile
+from backend.app.rag.corpus_retrieval import retrieve_corpus_context
 from backend.app.workspace import inspect_workspace
 
 
@@ -37,8 +38,19 @@ def run_assignment_copilot(
     workspace_path: str | Path | None = None,
     dataset_profile: DatasetProfile | None = None,
     project_metadata: dict | None = None,
+    use_corpus: bool = True,
+    corpus_workspace_root: str | Path | None = None,
 ) -> AssignmentCopilotResult:
     parsed = _parse_input(text=text, path=path)
+    corpus_retrieval = retrieve_corpus_context(
+        parsed.extracted_text[:4000],
+        workspace_root=(
+            corpus_workspace_root
+            or workspace_path
+            or Path.cwd()
+        ),
+        enabled=use_corpus,
+    )
     brief = extract_assignment_brief(parsed)
     filtered = _filter_brief(brief, selected_assignment)
     plan = build_assignment_plan(filtered)
@@ -123,6 +135,10 @@ def run_assignment_copilot(
         analysis_plans=[plan.model_dump(mode="json") for plan in analysis_plans],
         dashboard_specs=[spec.model_dump(mode="json") for spec in dashboard_specs],
         final_readiness=final_readiness.model_dump(mode="json"),
+        corpus_retrieval_used=corpus_retrieval.used,
+        corpus_retrieval_skip_reason=corpus_retrieval.skip_reason,
+        corpus_context_count=len(corpus_retrieval.sources),
+        corpus_sources=corpus_retrieval.sources,
         tools_executed=False,
         files_written=False,
         training_performed=False,

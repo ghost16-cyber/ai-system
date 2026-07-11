@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.rag.corpus_retrieval import CorpusSourceMetadata
+
 
 class ParsedAssignmentDocument(BaseModel):
     document_id: str
@@ -250,6 +252,10 @@ class AssignmentCopilotResult(BaseModel):
     analysis_plans: list[dict[str, Any]] = Field(default_factory=list)
     dashboard_specs: list[dict[str, Any]] = Field(default_factory=list)
     final_readiness: dict[str, Any] | None = None
+    corpus_retrieval_used: bool = False
+    corpus_retrieval_skip_reason: str | None = None
+    corpus_context_count: int = 0
+    corpus_sources: list[CorpusSourceMetadata] = Field(default_factory=list)
     tools_executed: bool = False
     files_written: bool = False
     training_performed: bool = False
