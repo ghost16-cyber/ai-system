@@ -75,6 +75,14 @@ from backend.app.assignments.verification import (
     record_manual_evidence_review,
     verify_assignment_workspace,
 )
+from backend.app.assignments.report_assembly import (
+    ReportAssemblyError,
+    assemble_grounded_report,
+    create_grounded_report,
+    export_grounded_report,
+    report_export_readiness,
+    update_grounded_report,
+)
 
 __all__ = [
     "AnalysisQuestion",
@@ -144,4 +152,10 @@ __all__ = [
     "load_verification_snapshot",
     "record_manual_evidence_review",
     "verify_assignment_workspace",
+    "ReportAssemblyError",
+    "assemble_grounded_report",
+    "create_grounded_report",
+    "export_grounded_report",
+    "report_export_readiness",
+    "update_grounded_report",
 ]

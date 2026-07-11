@@ -57,6 +57,7 @@ import type {
 } from "./types/contracts";
 import { AssignmentExecutionSection } from "./components/AssignmentExecutionSection";
 import { AssignmentEvidenceReadinessSection } from "./components/AssignmentEvidenceReadinessSection";
+import { AssignmentReportSection } from "./components/AssignmentReportSection";
 
 type PageId = "chat" | "assignments" | "system" | "history" | "settings";
 type SafetyMode = "read_only" | "confirm";
@@ -1258,6 +1259,12 @@ function AssignmentCopilotPage({
               evidence_checklist: result.evidence_checklist,
               action_plan: result.action_plan,
             }}
+          />
+
+          <AssignmentReportSection
+            client={client}
+            assignmentId={selection === "all" ? null : `assignment-${selection}`}
+            workspacePath={workspacePath}
           />
 
           <section className="panel">

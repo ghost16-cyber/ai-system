@@ -553,6 +553,105 @@ class AssignmentVerificationSnapshot(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+ReportSectionState = Literal[
+    "verified",
+    "manually_accepted",
+    "partially_supported",
+    "unsupported",
+    "missing",
+    "stale",
+    "requires_manual_review",
+    "not_applicable",
+]
+ReportExportFormat = Literal["markdown", "json", "docx", "zip"]
+
+
+class GroundedReportContentBlock(BaseModel):
+    block_id: str
+    block_type: Literal["grounded_statement", "requirement", "evidence_note", "placeholder", "user_authored"]
+    text: str
+    evidence_references: list[str] = Field(default_factory=list)
+    user_authored: bool = False
+
+
+class GroundedReportSection(BaseModel):
+    section_id: str
+    title: str
+    purpose: str
+    originating_requirement_ids: list[str] = Field(default_factory=list)
+    grounded_content_blocks: list[GroundedReportContentBlock] = Field(default_factory=list)
+    linked_evidence: list[str] = Field(default_factory=list)
+    selected_evidence: list[str] = Field(default_factory=list)
+    verification_state: ReportSectionState
+    citations: list[str] = Field(default_factory=list)
+    user_editable_notes: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    placeholders: list[str] = Field(default_factory=list)
+    inclusion_status: Literal["included", "excluded"] = "included"
+    mandatory: bool = True
+
+
+class ReportRevision(BaseModel):
+    revision_id: str
+    timestamp: datetime
+    changed_sections: list[str] = Field(default_factory=list)
+    previous_revision_reference: str | None = None
+    user_authored_fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportExportReadiness(BaseModel):
+    report_id: str
+    calculated_at: datetime
+    supported_section_count: int
+    unsupported_section_count: int
+    unresolved_placeholder_count: int
+    stale_evidence_count: int
+    failed_evidence_count: int
+    manual_review_count: int
+    missing_mandatory_section_count: int
+    traceability_coverage_percentage: float
+    export_blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    status: Literal["blocked", "eligible_for_final_human_submission_review"] = "blocked"
+
+
+class GroundedAssignmentReport(BaseModel):
+    schema_version: int
+    report_id: str
+    assignment_id: str
+    workspace: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    source_verification_snapshot: str
+    report_sections: list[GroundedReportSection]
+    requirement_coverage: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_references: list[str] = Field(default_factory=list)
+    unresolved_items: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    export_status: str = "not_exported"
+    current_revision_id: str
+    revisions: list[ReportRevision] = Field(default_factory=list)
+    recommended_submission_files: list[str] = Field(default_factory=list)
+
+
+class ReportExportRecord(BaseModel):
+    schema_version: int
+    export_id: str
+    report_id: str
+    assignment_id: str
+    workspace: str
+    format: ReportExportFormat
+    created_at: datetime
+    filename: str
+    media_type: str
+    sha256: str
+    size: int
+    selected_files: list[dict[str, Any]] = Field(default_factory=list)
+    readiness: ReportExportReadiness
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AssignmentAnalysisQuestion(BaseModel):
     question_id: str
     assignment_number: int

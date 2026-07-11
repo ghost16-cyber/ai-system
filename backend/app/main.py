@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.analyzer import add_validated_fixes, analyze_python_code
@@ -67,6 +67,18 @@ from backend.app.assignments.verification import (
     load_verification_snapshot,
     record_manual_evidence_review,
     verify_assignment_workspace,
+)
+from backend.app.assignments.report_assembly import (
+    ReportAssemblyError,
+    assemble_grounded_report,
+    create_grounded_report,
+    export_grounded_report,
+    list_grounded_reports,
+    list_report_exports,
+    load_grounded_report,
+    report_export_readiness,
+    resolve_report_export,
+    update_grounded_report,
 )
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
 from backend.app.commands import (
@@ -469,6 +481,26 @@ class AssignmentEvidenceReviewRequest(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class AssignmentReportCreateRequest(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+    title: str | None = Field(default=None, max_length=300)
+
+
+class AssignmentReportUpdateRequest(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+    changes: dict
+
+
+class AssignmentReportWorkspaceRequest(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+
+
+class AssignmentReportExportRequestV2(BaseModel):
+    workspace_path: str = Field(..., min_length=1)
+    format: str = Field(..., min_length=1, max_length=20)
+    selected_files: list[str] = Field(default_factory=list)
+
+
 class DebugAnalyzeErrorRequest(BaseModel):
     output: str = ""
     project_path: str | None = None
@@ -491,6 +523,7 @@ def create_app(
     assignment_verification_store = (
         configured_workspace_root / "data" / "assignment_verification"
     )
+    assignment_report_store = configured_workspace_root / "data" / "assignment_reports"
 
     repository = AnalysisRepository(configured_path)
     job_queue = JobQueue(configured_path)
@@ -1592,6 +1625,112 @@ def create_app(
         except (AssignmentVerificationError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"recorded": True, "review": review.model_dump(mode="json")}
+
+    def _report_workspace(raw_path: str) -> tuple[Path, str]:
+        workspace = _resolve_workspace_path(raw_path)
+        return workspace, workspace.relative_to(configured_workspace_root).as_posix()
+
+    @application.post("/assignments/{assignment_id}/reports")
+    def assignment_report_create(assignment_id: str, request: AssignmentReportCreateRequest) -> dict:
+        try:
+            _, relative = _report_workspace(request.workspace_path)
+            report = create_grounded_report(
+                report_root=assignment_report_store,
+                verification_root=assignment_verification_store,
+                assignment_id=assignment_id,
+                workspace_relative=relative,
+                title=request.title,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return report.model_dump(mode="json")
+
+    @application.get("/assignments/{assignment_id}/reports")
+    def assignment_report_list(assignment_id: str, workspace_path: str = Query(..., min_length=1)) -> dict:
+        try:
+            _, relative = _report_workspace(workspace_path)
+            reports = list_grounded_reports(assignment_report_store, assignment_id, relative)
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"assignment_id": assignment_id, "workspace": relative, "reports": [item.model_dump(mode="json") for item in reports]}
+
+    @application.get("/assignments/{assignment_id}/reports/{report_id}")
+    def assignment_report_get(assignment_id: str, report_id: str, workspace_path: str = Query(..., min_length=1)) -> dict:
+        try:
+            _, relative = _report_workspace(workspace_path)
+            return load_grounded_report(assignment_report_store, assignment_id, relative, report_id).model_dump(mode="json")
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.patch("/assignments/{assignment_id}/reports/{report_id}")
+    def assignment_report_update(assignment_id: str, report_id: str, request: AssignmentReportUpdateRequest) -> dict:
+        try:
+            _, relative = _report_workspace(request.workspace_path)
+            report = update_grounded_report(report_root=assignment_report_store, assignment_id=assignment_id, workspace_relative=relative, report_id=report_id, changes=request.changes)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return report.model_dump(mode="json")
+
+    @application.post("/assignments/{assignment_id}/reports/{report_id}/assemble")
+    def assignment_report_assemble(assignment_id: str, report_id: str, request: AssignmentReportWorkspaceRequest) -> dict:
+        try:
+            _, relative = _report_workspace(request.workspace_path)
+            report = assemble_grounded_report(report_root=assignment_report_store, verification_root=assignment_verification_store, assignment_id=assignment_id, workspace_relative=relative, report_id=report_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, AssignmentVerificationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return report.model_dump(mode="json")
+
+    @application.get("/assignments/{assignment_id}/reports/{report_id}/readiness")
+    def assignment_report_readiness(assignment_id: str, report_id: str, workspace_path: str = Query(..., min_length=1)) -> dict:
+        try:
+            _, relative = _report_workspace(workspace_path)
+            report = load_grounded_report(assignment_report_store, assignment_id, relative, report_id)
+            return report_export_readiness(report).model_dump(mode="json")
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/assignments/{assignment_id}/reports/{report_id}/export")
+    def assignment_report_export(assignment_id: str, report_id: str, request: AssignmentReportExportRequestV2) -> dict:
+        try:
+            _, relative = _report_workspace(request.workspace_path)
+            record = export_grounded_report(report_root=assignment_report_store, project_root=configured_workspace_root, assignment_id=assignment_id, workspace_relative=relative, report_id=report_id, export_format=request.format, selected_files=request.selected_files)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return record.model_dump(mode="json")
+
+    @application.get("/assignments/{assignment_id}/reports/{report_id}/exports")
+    def assignment_report_exports(assignment_id: str, report_id: str, workspace_path: str = Query(..., min_length=1)) -> dict:
+        try:
+            _, relative = _report_workspace(workspace_path)
+            records = list_report_exports(assignment_report_store, assignment_id, relative, report_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"exports": [record.model_dump(mode="json") for record in records]}
+
+    @application.get("/assignments/{assignment_id}/reports/{report_id}/exports/{export_id}")
+    def assignment_report_export_download(assignment_id: str, report_id: str, export_id: str, workspace_path: str = Query(..., min_length=1)):
+        try:
+            _, relative = _report_workspace(workspace_path)
+            record, target = resolve_report_export(assignment_report_store, assignment_id, relative, report_id, export_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (ReportAssemblyError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return FileResponse(path=target, media_type=record.media_type, filename=record.filename)
 
     @application.post("/debug/analyze-error")
     def debug_analyze_error(request: DebugAnalyzeErrorRequest) -> dict:

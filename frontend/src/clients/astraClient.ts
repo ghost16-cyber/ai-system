@@ -495,6 +495,54 @@ export interface AssignmentVerificationSnapshot {
   warnings: string[];
 }
 
+export type ReportSectionState = "verified" | "manually_accepted" | "partially_supported" | "unsupported" | "missing" | "stale" | "requires_manual_review" | "not_applicable";
+
+export interface GroundedReportSection {
+  section_id: string;
+  title: string;
+  purpose: string;
+  originating_requirement_ids: string[];
+  grounded_content_blocks: Array<{ block_id: string; block_type: string; text: string; evidence_references: string[]; user_authored: boolean }>;
+  linked_evidence: string[];
+  selected_evidence: string[];
+  verification_state: ReportSectionState;
+  citations: string[];
+  user_editable_notes: string;
+  warnings: string[];
+  placeholders: string[];
+  inclusion_status: "included" | "excluded";
+  mandatory: boolean;
+}
+
+export interface GroundedAssignmentReport {
+  report_id: string;
+  assignment_id: string;
+  workspace: string;
+  title: string;
+  source_verification_snapshot: string;
+  report_sections: GroundedReportSection[];
+  requirement_coverage: Array<Record<string, unknown>>;
+  unresolved_items: string[];
+  warnings: string[];
+  current_revision_id: string;
+  revisions: Array<Record<string, unknown>>;
+  recommended_submission_files: string[];
+}
+
+export interface ReportExportReadiness {
+  supported_section_count: number;
+  unsupported_section_count: number;
+  unresolved_placeholder_count: number;
+  stale_evidence_count: number;
+  failed_evidence_count: number;
+  manual_review_count: number;
+  missing_mandatory_section_count: number;
+  traceability_coverage_percentage: number;
+  export_blockers: string[];
+  warnings: string[];
+  status: "blocked" | "eligible_for_final_human_submission_review";
+}
+
 export interface ChatStreamEvent {
   event:
     | "run_started"
@@ -858,6 +906,30 @@ export class HttpAstraClient implements AstraClient {
     );
   }
 
+  async createAssignmentReport(assignmentId: string, request: Record<string, unknown>) {
+    return this.postJson<GroundedAssignmentReport>(`/assignments/${encodeURIComponent(assignmentId)}/reports`, request);
+  }
+
+  async updateAssignmentReport(assignmentId: string, reportId: string, request: Record<string, unknown>) {
+    return this.patchJson<GroundedAssignmentReport>(`/assignments/${encodeURIComponent(assignmentId)}/reports/${encodeURIComponent(reportId)}`, request);
+  }
+
+  async getAssignmentReportReadiness(assignmentId: string, reportId: string, workspacePath: string) {
+    return this.getJson<ReportExportReadiness>(`/assignments/${encodeURIComponent(assignmentId)}/reports/${encodeURIComponent(reportId)}/readiness?workspace_path=${encodeURIComponent(workspacePath)}`);
+  }
+
+  async exportAssignmentReportV2(assignmentId: string, reportId: string, request: Record<string, unknown>) {
+    return this.postJson<Record<string, unknown>>(`/assignments/${encodeURIComponent(assignmentId)}/reports/${encodeURIComponent(reportId)}/export`, request);
+  }
+
+  async getAssignmentReportExports(assignmentId: string, reportId: string, workspacePath: string) {
+    return this.getJson<{ exports: Array<Record<string, unknown>> }>(`/assignments/${encodeURIComponent(assignmentId)}/reports/${encodeURIComponent(reportId)}/exports?workspace_path=${encodeURIComponent(workspacePath)}`);
+  }
+
+  assignmentReportExportUrl(assignmentId: string, reportId: string, exportId: string, workspacePath: string) {
+    return `${this.baseUrl}/assignments/${encodeURIComponent(assignmentId)}/reports/${encodeURIComponent(reportId)}/exports/${encodeURIComponent(exportId)}?workspace_path=${encodeURIComponent(workspacePath)}`;
+  }
+
   async getCompactTrace(jobId: string) {
     return this.getJson<CompactTraceResponse>(
       `/jobs/${encodeURIComponent(jobId)}/trace/compact`,
@@ -919,6 +991,16 @@ export class HttpAstraClient implements AstraClient {
   private async postJson<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json() as Promise<T>;
+  }
+
+  private async patchJson<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

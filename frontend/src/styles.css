@@ -1246,6 +1246,75 @@ input:focus-visible {
 .requirement-requires_manual_review, .requirement-partially_verified { color: var(--amber); }
 .requirement-detected { color: var(--blue); }
 
+.assignment-report,
+.report-section-list,
+.report-nav,
+.selection-list {
+  display: grid;
+  gap: 12px;
+}
+
+.report-title-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.report-title-editor label {
+  display: grid;
+  gap: 5px;
+}
+
+.report-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.report-nav {
+  position: sticky;
+  top: 12px;
+}
+
+.report-nav a {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.report-nav span,
+.report-block strong {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.report-block {
+  border-left: 3px solid var(--blue);
+  padding: 8px 10px;
+  background: var(--surface);
+}
+
+.report-block.placeholder {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.report-block.user_authored {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.report-block p {
+  margin: 5px 0;
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -1277,6 +1346,7 @@ input:focus-visible {
   .execution-logs,
   .approval-row,
   .manual-review-controls,
+  .report-layout,
   .history-layout,
   .settings-grid,
   .training-review-controls {
