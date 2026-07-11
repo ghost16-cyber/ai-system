@@ -63,7 +63,15 @@ from backend.app.assignments.schemas import (
     GroundedFileBlueprint,
 )
 from backend.app.benchmark.trace_compactor import compact_orchestrator_trace
-from backend.app.commands import analyze_command, suggest_command
+from backend.app.commands import (
+    CommandExecutionError,
+    analyze_command,
+    approve_assignment_command,
+    execute_assignment_command,
+    get_assignment_command,
+    plan_assignment_command,
+    suggest_command,
+)
 from backend.app.core.path_utils import resolve_user_path
 from backend.app.chat_workflow import run_chat_workflow
 from backend.app.database.repository import AnalysisRepository
@@ -418,6 +426,21 @@ class CommandSuggestRequest(BaseModel):
     working_directory: str | None = None
 
 
+class AssignmentCommandPlanRequest(BaseModel):
+    action: str = Field(..., min_length=1)
+    workspace_path: str = Field(..., min_length=1)
+    target: str | None = None
+    timeout_seconds: int = Field(default=30, ge=1, le=120)
+
+
+class AssignmentCommandApprovalRequest(BaseModel):
+    confirmation: str = Field(..., min_length=1)
+
+
+class AssignmentCommandExecuteRequest(BaseModel):
+    approval_token: str = Field(..., min_length=1)
+
+
 class DebugAnalyzeErrorRequest(BaseModel):
     output: str = ""
     project_path: str | None = None
@@ -434,6 +457,9 @@ def create_app(
         workspace_root
         or os.getenv("AI_SYSTEM_WORKSPACE_ROOT", str(DEFAULT_WORKSPACE_ROOT))
     ).expanduser().resolve()
+    assignment_command_store = (
+        configured_workspace_root / "data" / "assignment_command_runs"
+    )
 
     repository = AnalysisRepository(configured_path)
     job_queue = JobQueue(configured_path)
@@ -1307,6 +1333,85 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return suggestion.model_dump(mode="json")
+
+    @application.post("/assignments/commands/plan")
+    def assignment_command_plan(request: AssignmentCommandPlanRequest) -> dict:
+        try:
+            workspace = _resolve_workspace_path(request.workspace_path)
+            return plan_assignment_command(
+                assignment_command_store,
+                configured_workspace_root,
+                workspace,
+                action=request.action,
+                target=request.target,
+                timeout_seconds=request.timeout_seconds,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (CommandExecutionError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/assignments/commands/{plan_id}/approve")
+    def assignment_command_approve(
+        plan_id: str,
+        request: AssignmentCommandApprovalRequest,
+    ) -> dict:
+        try:
+            plan, approval_token = approve_assignment_command(
+                assignment_command_store,
+                plan_id,
+                confirmation=request.confirmation,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except CommandExecutionError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"plan": plan, "approval_token": approval_token}
+
+    @application.post("/assignments/commands/{plan_id}/execute")
+    def assignment_command_execute(
+        plan_id: str,
+        request: AssignmentCommandExecuteRequest,
+    ) -> dict:
+        try:
+            return execute_assignment_command(
+                assignment_command_store,
+                configured_workspace_root,
+                plan_id,
+                approval_token=request.approval_token,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except CommandExecutionError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.get("/assignments/commands/{plan_id}")
+    def assignment_command_status(plan_id: str) -> dict:
+        try:
+            return get_assignment_command(assignment_command_store, plan_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except CommandExecutionError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.get("/assignments/commands/{plan_id}/logs")
+    def assignment_command_logs(plan_id: str) -> dict:
+        try:
+            record = get_assignment_command(assignment_command_store, plan_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except CommandExecutionError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "plan_id": record["plan_id"],
+            "status": record["status"],
+            "exit_code": record["exit_code"],
+            "stdout": record["stdout"],
+            "stderr": record["stderr"],
+            "log_truncated": record["log_truncated"],
+            "timed_out": record.get("timed_out", False),
+            "error": record["error"],
+        }
 
     @application.post("/debug/analyze-error")
     def debug_analyze_error(request: DebugAnalyzeErrorRequest) -> dict:
