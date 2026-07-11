@@ -6,7 +6,9 @@ from backend.app.commands.execution import (
     approve_assignment_command,
     execute_assignment_command,
     get_assignment_command,
+    get_assignment_execution_summary,
     plan_assignment_command,
+    suggest_assignment_actions,
 )
 
 __all__ = [
@@ -17,6 +19,8 @@ __all__ = [
     "approve_assignment_command",
     "execute_assignment_command",
     "get_assignment_command",
+    "get_assignment_execution_summary",
     "plan_assignment_command",
     "suggest_command",
+    "suggest_assignment_actions",
 ]

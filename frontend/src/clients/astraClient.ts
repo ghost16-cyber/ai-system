@@ -373,6 +373,70 @@ export interface AssignmentManifestWriteResult {
   overwrite: boolean;
 }
 
+export type AssignmentExecutionDisplayState =
+  | "pending"
+  | "approved"
+  | "running"
+  | "completed"
+  | "failed"
+  | "expired";
+
+export interface AssignmentExecutionSuggestion {
+  action: string;
+  target: string | null;
+  executable: string;
+  arguments: string[];
+  command: string;
+  working_directory: string;
+  purpose: string;
+  expected_result: string;
+  risk_level: string;
+  timeout_seconds: number;
+  requires_approval: true;
+  executed: false;
+}
+
+export interface AssignmentCommandRecord {
+  plan_id: string;
+  assignment_id: string;
+  assignment_task: string;
+  expected_result: string;
+  action: string;
+  target: string | null;
+  executable: string;
+  arguments: string[];
+  command: string;
+  working_directory: string;
+  purpose: string;
+  risk_level: string;
+  timeout_seconds: number;
+  workspace: string;
+  status: string;
+  display_state: AssignmentExecutionDisplayState;
+  approval_expires_at: string | null;
+  approved_artifacts: Array<{ path: string; sha256: string }>;
+  created_at: string;
+  approved_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  log_available: boolean;
+  safety_limitations: string[];
+}
+
+export interface AssignmentExecutionSummary {
+  assignment_id: string;
+  workspace: string;
+  planned_commands: AssignmentCommandRecord[];
+  approval_state: string;
+  execution_state: string;
+  assignment_completion_inferred: false;
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface ChatStreamEvent {
   event:
     | "run_started"
@@ -682,6 +746,34 @@ export class HttpAstraClient implements AstraClient {
 
   async writeAssignmentManifest(request: Record<string, unknown>) {
     return this.postJson<AssignmentManifestWriteResult>("/assignments/manifest/write", request);
+  }
+
+  async getAssignmentExecutionSuggestions(assignmentId: string, workspacePath: string) {
+    return this.getJson<{ assignment_id: string; workspace: string; suggestions: AssignmentExecutionSuggestion[]; executed: false }>(
+      `/assignments/${encodeURIComponent(assignmentId)}/execution/suggestions?workspace_path=${encodeURIComponent(workspacePath)}`,
+    );
+  }
+
+  async getAssignmentExecutionSummary(assignmentId: string, workspacePath: string) {
+    return this.getJson<AssignmentExecutionSummary>(
+      `/assignments/${encodeURIComponent(assignmentId)}/execution?workspace_path=${encodeURIComponent(workspacePath)}`,
+    );
+  }
+
+  async planAssignmentCommand(request: Record<string, unknown>) {
+    return this.postJson<AssignmentCommandRecord>("/assignments/commands/plan", request);
+  }
+
+  async approveAssignmentCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<{ plan: AssignmentCommandRecord; approval_token: string }>(
+      `/assignments/commands/${encodeURIComponent(planId)}/approve`, request,
+    );
+  }
+
+  async executeAssignmentCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<AssignmentCommandRecord>(
+      `/assignments/commands/${encodeURIComponent(planId)}/execute`, request,
+    );
   }
 
   async getCompactTrace(jobId: string) {

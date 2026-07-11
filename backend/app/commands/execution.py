@@ -18,7 +18,7 @@ from uuid import uuid4
 from backend.app.commands.suggestions import suggest_command
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 120
 APPROVAL_TTL_SECONDS = 600
@@ -26,6 +26,17 @@ MAX_LOG_CHARS = 64_000
 ALLOWED_ACTIONS = frozenset(
     {"pytest", "python_script", "streamlit", "docker_ps", "docker_compose_up"}
 )
+COMPOSE_FILES = ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml")
+PYTHON_ENTRY_SCRIPTS = (
+    "main.py",
+    "app.py",
+    "run.py",
+    "producer.py",
+    "consumer_to_influx.py",
+    "pyspark_snowflake.py",
+    "structured_streaming_job.py",
+)
+STREAMLIT_ENTRY_SCRIPTS = ("dashboard/app.py", "streamlit_app.py")
 _STORE_LOCK = threading.Lock()
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|access[_-]?key)\b(\s*[:=]\s*)([^\s,;]+)"
@@ -42,6 +53,9 @@ def plan_assignment_command(
     project_root: str | Path,
     workspace: str | Path,
     *,
+    assignment_id: str,
+    assignment_task: str,
+    expected_result: str,
     action: str,
     target: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
@@ -49,6 +63,11 @@ def plan_assignment_command(
     root = Path(project_root).expanduser().resolve()
     workdir = Path(workspace).expanduser().resolve()
     _require_inside(workdir, root, "Command workspace")
+    assignment_key = _validate_assignment_id(assignment_id)
+    if not assignment_task.strip():
+        raise CommandExecutionError("Originating assignment task is required.")
+    if not expected_result.strip():
+        raise CommandExecutionError("Expected result is required.")
     if not workdir.is_dir():
         raise CommandExecutionError("Command workspace must already exist and be a directory.")
     action_key = action.strip().lower().replace("-", "_")
@@ -75,6 +94,9 @@ def plan_assignment_command(
     record: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "plan_id": uuid4().hex,
+        "assignment_id": assignment_key,
+        "assignment_task": assignment_task.strip(),
+        "expected_result": expected_result.strip(),
         "action": action_key,
         "target": target,
         "argv": argv,
@@ -110,17 +132,21 @@ def plan_assignment_command(
     record["fingerprint"] = _fingerprint(record)
     with _STORE_LOCK:
         _write_record(store_root, record)
-    return public_command_record(record)
+    return public_command_record(record, project_root=root)
 
 
 def approve_assignment_command(
     store_root: str | Path,
     plan_id: str,
     *,
+    assignment_id: str,
+    workspace: str | Path,
+    project_root: str | Path,
     confirmation: str,
 ) -> tuple[dict[str, Any], str]:
     with _STORE_LOCK:
         record = _read_record(store_root, plan_id)
+        _verify_assignment_association(record, assignment_id, workspace, project_root)
         if record["status"] != "planned":
             raise CommandExecutionError("Only a planned command can be approved.")
         expected = f"APPROVE {plan_id}"
@@ -138,7 +164,7 @@ def approve_assignment_command(
         ).isoformat()
         record["approval_token_hash"] = _token_hash(token)
         _write_record(store_root, record)
-    return public_command_record(record), token
+    return public_command_record(record, project_root=project_root), token
 
 
 def execute_assignment_command(
@@ -146,10 +172,13 @@ def execute_assignment_command(
     project_root: str | Path,
     plan_id: str,
     *,
+    assignment_id: str,
+    workspace: str | Path,
     approval_token: str,
 ) -> dict[str, Any]:
     with _STORE_LOCK:
         record = _read_record(store_root, plan_id)
+        _verify_assignment_association(record, assignment_id, workspace, project_root)
         if record["status"] != "approved":
             raise CommandExecutionError("Command must be approved and can execute only once.")
         _verify_fingerprint(record)
@@ -194,22 +223,154 @@ def execute_assignment_command(
         record["status"] = "failed"
         record["error"] = _redact(str(error))
     record["finished_at"] = _now()
+    record["evidence"] = _build_execution_evidence(record)
     with _STORE_LOCK:
         _write_record(store_root, record)
-    return public_command_record(record)
+    return public_command_record(record, project_root=project_root)
 
 
-def get_assignment_command(store_root: str | Path, plan_id: str) -> dict[str, Any]:
+def get_assignment_command(
+    store_root: str | Path,
+    plan_id: str,
+    *,
+    project_root: str | Path | None = None,
+    assignment_id: str | None = None,
+    workspace: str | Path | None = None,
+) -> dict[str, Any]:
     with _STORE_LOCK:
-        return public_command_record(_read_record(store_root, plan_id))
+        record = _read_record(store_root, plan_id)
+        if assignment_id is not None or workspace is not None:
+            if assignment_id is None or workspace is None or project_root is None:
+                raise CommandExecutionError("Assignment and workspace association are both required.")
+            _verify_assignment_association(record, assignment_id, workspace, project_root)
+        _refresh_expired_approval(store_root, record)
+        return public_command_record(record, project_root=project_root)
 
 
-def public_command_record(record: dict[str, Any]) -> dict[str, Any]:
+def suggest_assignment_actions(
+    project_root: str | Path,
+    workspace: str | Path,
+) -> list[dict[str, Any]]:
+    """Return deterministic, non-executing actions detected from workspace files."""
+    root = Path(project_root).expanduser().resolve()
+    workdir = Path(workspace).expanduser().resolve()
+    _require_inside(workdir, root, "Command workspace")
+    if not workdir.is_dir():
+        raise CommandExecutionError("Command workspace must already exist and be a directory.")
+
+    detected: list[tuple[str, str | None, str, str]] = []
+    has_tests = any(_eligible_regular_file(workdir, name) for name in ("pytest.ini", "tox.ini")) or any(
+        path.is_file() and path.name.startswith("test_") and not path.is_symlink()
+        for directory in (workdir / "tests", workdir / "test")
+        if directory.is_dir() and not directory.is_symlink()
+        for path in directory.glob("*.py")
+    )
+    if has_tests:
+        detected.append(("pytest", None, "Validate the assignment's Python test suite.", "Pytest pass/fail summary."))
+
+    for target in PYTHON_ENTRY_SCRIPTS:
+        if _eligible_regular_file(workdir, target) and not _looks_like_streamlit(workdir / target):
+            detected.append(("python_script", target, f"Validate assignment entry script {target}.", "Script output or a Python traceback."))
+    for target in (*STREAMLIT_ENTRY_SCRIPTS, "app.py"):
+        if _eligible_regular_file(workdir, target) and _looks_like_streamlit(workdir / target):
+            detected.append(("streamlit", target, f"Validate detected Streamlit application {target}.", "Streamlit startup output or an import error."))
+
+    compose = next((name for name in COMPOSE_FILES if _eligible_regular_file(workdir, name)), None)
+    has_docker_context = compose is not None or _eligible_regular_file(workdir, "Dockerfile")
+    if has_docker_context:
+        detected.append(("docker_ps", None, "Inspect Docker status for this assignment workspace.", "Read-only running-container table."))
+    if compose is not None:
+        detected.append(("docker_compose_up", None, f"Start services declared by {compose} after approval.", "Compose service startup logs."))
+
+    suggestions: list[dict[str, Any]] = []
+    for action, target, purpose, expected_result in detected:
+        suggestion = suggest_command(action, root, target=target, working_directory=workdir)
+        argv = shlex.split(suggestion.command, posix=os.name != "nt")
+        suggestions.append({
+            "action": action,
+            "target": target,
+            "executable": argv[0],
+            "arguments": argv[1:],
+            "command": shlex.join(argv),
+            "working_directory": ".",
+            "purpose": purpose,
+            "expected_result": expected_result,
+            "risk_level": "medium" if action == "pytest" else suggestion.risk_level,
+            "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+            "requires_approval": True,
+            "executed": False,
+        })
+    return suggestions
+
+
+def get_assignment_execution_summary(
+    store_root: str | Path,
+    project_root: str | Path,
+    assignment_id: str,
+    workspace: str | Path,
+) -> dict[str, Any]:
+    root = Path(project_root).expanduser().resolve()
+    workdir = Path(workspace).expanduser().resolve()
+    _require_inside(workdir, root, "Command workspace")
+    assignment_key = _validate_assignment_id(assignment_id)
+    records: list[dict[str, Any]] = []
+    store = Path(store_root).expanduser().resolve()
+    with _STORE_LOCK:
+        if store.is_dir():
+            for path in sorted(store.glob("*.json")):
+                if not re.fullmatch(r"[a-f0-9]{32}\.json", path.name):
+                    continue
+                record = _read_record(store, path.stem)
+                _refresh_expired_approval(store, record)
+                if record["assignment_id"] == assignment_key and record["workspace_path"] == str(workdir):
+                    records.append(public_command_record(record, project_root=root))
+    evidence = [record["evidence"] for record in records if isinstance(record.get("evidence"), dict)]
     return {
+        "assignment_id": assignment_key,
+        "workspace": workdir.relative_to(root).as_posix(),
+        "planned_commands": records,
+        "approval_state": _aggregate_state(records, approved=True),
+        "execution_state": _aggregate_state(records, approved=False),
+        "evidence": evidence,
+        "assignment_completion_inferred": False,
+        "warnings": [
+            "Controlled execution is not an operating-system sandbox.",
+            "A successful exit records validation evidence but does not mark academic work complete.",
+        ],
+        "limitations": [
+            "Only deterministic allowlisted actions can be planned.",
+            "Network and filesystem isolation are not provided by this executor.",
+        ],
+    }
+
+
+def public_command_record(
+    record: dict[str, Any], *, project_root: str | Path | None = None
+) -> dict[str, Any]:
+    public = {
         key: value
         for key, value in record.items()
-        if key not in {"approval_token_hash"}
+        if key not in {"approval_token_hash", "workspace_path"}
     }
+    workspace = Path(record["workspace_path"])
+    if project_root is not None:
+        try:
+            public["workspace"] = workspace.relative_to(Path(project_root).resolve()).as_posix()
+        except ValueError:
+            public["workspace"] = workspace.name
+    else:
+        public["workspace"] = workspace.name
+    public["executable"] = record["argv"][0]
+    public["arguments"] = list(record["argv"][1:])
+    public["working_directory"] = "."
+    public["display_state"] = _display_state(record["status"])
+    public["log_available"] = bool(record.get("stdout") or record.get("stderr"))
+    public["redacted_output_summary"] = {
+        "stdout": str(record.get("stdout") or "")[:1000],
+        "stderr": str(record.get("stderr") or "")[:1000],
+        "truncated": bool(record.get("log_truncated")),
+    }
+    return public
 
 
 def _validate_argv(action: str, argv: list[str], workspace: Path) -> None:
@@ -223,7 +384,7 @@ def _validate_argv(action: str, argv: list[str], workspace: Path) -> None:
             raise CommandExecutionError("Command arguments do not match the allowlisted action.")
         if action == "docker_compose_up" and not any(
             (workspace / name).is_file()
-            for name in ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml")
+            for name in COMPOSE_FILES
         ):
             raise CommandExecutionError("Docker Compose file not found in the command workspace.")
         return
@@ -259,7 +420,7 @@ def _approved_artifacts(action: str, argv: list[str], workspace: Path) -> list[d
     elif action == "streamlit":
         paths.append(workspace / argv[2])
     elif action == "docker_compose_up":
-        for name in ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"):
+        for name in COMPOSE_FILES:
             candidate = workspace / name
             if candidate.is_file():
                 paths.append(candidate)
@@ -391,6 +552,9 @@ def _read_record(store_root: str | Path, plan_id: str) -> dict[str, Any]:
         raise CommandExecutionError("Command plan record has an incompatible schema.")
     required_types = {
         "plan_id": str,
+        "assignment_id": str,
+        "assignment_task": str,
+        "expected_result": str,
         "status": str,
         "action": str,
         "argv": list,
@@ -421,6 +585,10 @@ def _fingerprint(record: dict[str, Any]) -> str:
     payload = {
         key: record[key]
         for key in (
+            "assignment_id",
+            "assignment_task",
+            "expected_result",
+            "purpose",
             "action",
             "target",
             "argv",
@@ -448,6 +616,108 @@ def _require_inside(path: Path, root: Path, label: str) -> None:
         path.relative_to(root)
     except ValueError as error:
         raise CommandExecutionError(f"{label} must stay inside the configured workspace root.") from error
+
+
+def _validate_assignment_id(value: str) -> str:
+    assignment_id = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", assignment_id):
+        raise CommandExecutionError("Assignment identifier is invalid.")
+    return assignment_id
+
+
+def _verify_assignment_association(
+    record: dict[str, Any],
+    assignment_id: str,
+    workspace: str | Path,
+    project_root: str | Path,
+) -> None:
+    root = Path(project_root).expanduser().resolve()
+    workdir = Path(workspace).expanduser().resolve()
+    _require_inside(workdir, root, "Command workspace")
+    if record["assignment_id"] != _validate_assignment_id(assignment_id):
+        raise CommandExecutionError("Command plan belongs to a different assignment.")
+    if not secrets.compare_digest(record["workspace_path"], str(workdir)):
+        raise CommandExecutionError("Command plan belongs to a different workspace.")
+
+
+def _refresh_expired_approval(store_root: str | Path, record: dict[str, Any]) -> None:
+    if record.get("status") != "approved":
+        return
+    try:
+        expires = datetime.fromisoformat(record["approval_expires_at"])
+    except (TypeError, ValueError):
+        return
+    if datetime.now(timezone.utc) >= expires:
+        record["status"] = "approval_expired"
+        record["approval_token_hash"] = None
+        _write_record(store_root, record)
+
+
+def _display_state(status: str) -> str:
+    return {
+        "planned": "pending",
+        "approved": "approved",
+        "running": "running",
+        "succeeded": "completed",
+        "failed": "failed",
+        "timed_out": "failed",
+        "approval_expired": "expired",
+    }.get(status, "failed")
+
+
+def _build_execution_evidence(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "evidence_id": f"execution-{record['plan_id']}",
+        "assignment_id": record["assignment_id"],
+        "assignment_task": record["assignment_task"],
+        "command_type": record["action"],
+        "exit_code": record.get("exit_code"),
+        "started_at": record.get("started_at"),
+        "finished_at": record.get("finished_at"),
+        "audit_record_reference": f"assignment-command:{record['plan_id']}",
+        "process_succeeded": record.get("exit_code") == 0,
+        "academic_completion_inferred": False,
+    }
+
+
+def _eligible_regular_file(workspace: Path, relative: str) -> bool:
+    candidate = workspace / relative
+    current = workspace
+    for part in Path(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+    if not candidate.is_file():
+        return False
+    try:
+        candidate.resolve().relative_to(workspace)
+    except ValueError:
+        return False
+    return True
+
+
+def _looks_like_streamlit(path: Path) -> bool:
+    try:
+        sample = path.read_text(encoding="utf-8", errors="replace")[:64_000]
+    except OSError:
+        return False
+    return bool(re.search(r"(?m)^\s*(?:import\s+streamlit|from\s+streamlit\s+import)\b", sample))
+
+
+def _aggregate_state(records: list[dict[str, Any]], *, approved: bool) -> str:
+    if not records:
+        return "none"
+    states = [record["display_state"] for record in records]
+    if approved:
+        if "approved" in states:
+            return "approved"
+        if "expired" in states:
+            return "expired"
+        return "pending" if "pending" in states else "consumed"
+    for state in ("running", "failed", "completed", "expired", "approved", "pending"):
+        if state in states:
+            return state
+    return "pending"
 
 
 def _redact(value: str) -> str:

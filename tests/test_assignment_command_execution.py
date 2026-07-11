@@ -14,8 +14,19 @@ def _client(tmp_path: Path) -> tuple[TestClient, Path]:
     return TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)), workspace
 
 
+def _association(**extra) -> dict:
+    return {
+        "assignment_id": "assignment-2",
+        "workspace_path": "assignment_workspaces/assignment_2",
+        **extra,
+    }
+
+
 def _plan(client: TestClient, workspace: Path, **overrides) -> dict:
     payload = {
+        "assignment_id": "assignment-2",
+        "assignment_task": "Validate the generated assignment workspace",
+        "expected_result": "The selected validation reports its status",
         "action": "python_script",
         "workspace_path": str(workspace.relative_to(workspace.parents[1])),
         "target": "safe.py",
@@ -30,7 +41,11 @@ def _plan(client: TestClient, workspace: Path, **overrides) -> dict:
 def _approve(client: TestClient, plan_id: str) -> str:
     response = client.post(
         f"/assignments/commands/{plan_id}/approve",
-        json={"confirmation": f"APPROVE {plan_id}"},
+        json={
+            "assignment_id": "assignment-2",
+            "workspace_path": "assignment_workspaces/assignment_2",
+            "confirmation": f"APPROVE {plan_id}",
+        },
     )
     assert response.status_code == 200, response.text
     return response.json()["approval_token"]
@@ -45,7 +60,7 @@ def test_planning_is_non_executing_and_persists_audit_record(tmp_path: Path) -> 
     )
     with client:
         plan = _plan(client, workspace)
-        status = client.get(f"/assignments/commands/{plan['plan_id']}")
+        status = client.get(f"/assignments/commands/{plan['plan_id']}", params=_association())
 
     assert plan["status"] == "planned"
     assert plan["approval_required"] is True
@@ -62,11 +77,14 @@ def test_unknown_action_and_missing_target_are_rejected(tmp_path: Path) -> None:
     with client:
         unknown = client.post(
             "/assignments/commands/plan",
-            json={"action": "bash", "workspace_path": relative},
+            json={"assignment_id": "assignment-2", "assignment_task": "Validate", "expected_result": "Status", "action": "bash", "workspace_path": relative},
         )
         missing = client.post(
             "/assignments/commands/plan",
             json={
+                "assignment_id": "assignment-2",
+                "assignment_task": "Validate",
+                "expected_result": "Status",
                 "action": "python_script",
                 "workspace_path": relative,
                 "target": "missing.py",
@@ -87,6 +105,9 @@ def test_target_traversal_and_symlink_are_rejected(tmp_path: Path) -> None:
         traversal = client.post(
             "/assignments/commands/plan",
             json={
+                "assignment_id": "assignment-2",
+                "assignment_task": "Validate",
+                "expected_result": "Status",
                 "action": "python_script",
                 "workspace_path": relative,
                 "target": "../outside.py",
@@ -95,6 +116,9 @@ def test_target_traversal_and_symlink_are_rejected(tmp_path: Path) -> None:
         symlink = client.post(
             "/assignments/commands/plan",
             json={
+                "assignment_id": "assignment-2",
+                "assignment_task": "Validate",
+                "expected_result": "Status",
                 "action": "python_script",
                 "workspace_path": relative,
                 "target": "linked.py",
@@ -112,7 +136,7 @@ def test_exact_approval_is_required_and_token_is_not_persisted(tmp_path: Path) -
         plan = _plan(client, workspace)
         rejected = client.post(
             f"/assignments/commands/{plan['plan_id']}/approve",
-            json={"confirmation": "yes"},
+            json=_association(confirmation="yes"),
         )
         token = _approve(client, plan["plan_id"])
 
@@ -132,21 +156,21 @@ def test_execute_requires_valid_approval_and_runs_once(tmp_path: Path) -> None:
         plan = _plan(client, workspace)
         before_approval = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": "not-approved"},
+            json=_association(approval_token="not-approved"),
         )
         token = _approve(client, plan["plan_id"])
         wrong_token = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": "wrong-token"},
+            json=_association(approval_token="wrong-token"),
         )
         executed = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": token},
+            json=_association(approval_token=token),
         )
-        logs = client.get(f"/assignments/commands/{plan['plan_id']}/logs")
+        logs = client.get(f"/assignments/commands/{plan['plan_id']}/logs", params=_association())
         repeated = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": token},
+            json=_association(approval_token=token),
         )
 
     assert before_approval.status_code == 400
@@ -176,7 +200,7 @@ def test_execution_strips_secret_environment_and_redacts_logs(tmp_path: Path, mo
         token = _approve(client, plan["plan_id"])
         result = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": token},
+            json=_association(approval_token=token),
         ).json()
 
     assert "environment-secret" not in result["stdout"]
@@ -197,7 +221,7 @@ def test_timeout_terminates_command_and_captures_partial_log(tmp_path: Path) -> 
         token = _approve(client, plan["plan_id"])
         response = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": token},
+            json=_association(approval_token=token),
         )
 
     assert response.status_code == 200
@@ -217,7 +241,7 @@ def test_plan_integrity_tampering_blocks_approval(tmp_path: Path) -> None:
         record_path.write_text(json.dumps(record), encoding="utf-8")
         response = client.post(
             f"/assignments/commands/{plan['plan_id']}/approve",
-            json={"confirmation": f"APPROVE {plan['plan_id']}"},
+            json=_association(confirmation=f"APPROVE {plan['plan_id']}"),
         )
 
     assert response.status_code == 400
@@ -238,7 +262,7 @@ def test_script_changed_after_approval_is_not_executed(tmp_path: Path) -> None:
         )
         response = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
-            json={"approval_token": token},
+            json=_association(approval_token=token),
         )
 
     assert response.status_code == 400
@@ -252,12 +276,12 @@ def test_docker_compose_plan_requires_workspace_compose_file(tmp_path: Path) -> 
     with client:
         missing = client.post(
             "/assignments/commands/plan",
-            json={"action": "docker_compose_up", "workspace_path": relative},
+            json={"assignment_id": "assignment-2", "assignment_task": "Start services", "expected_result": "Startup logs", "action": "docker_compose_up", "workspace_path": relative},
         )
         (workspace / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
         planned = client.post(
             "/assignments/commands/plan",
-            json={"action": "docker_compose_up", "workspace_path": relative},
+            json={"assignment_id": "assignment-2", "assignment_task": "Start services", "expected_result": "Startup logs", "action": "docker_compose_up", "workspace_path": relative},
         )
 
     assert missing.status_code == 400
@@ -273,9 +297,9 @@ def test_outside_workspace_and_invalid_plan_id_are_controlled(tmp_path: Path) ->
     with client:
         outside_response = client.post(
             "/assignments/commands/plan",
-            json={"action": "pytest", "workspace_path": str(outside)},
+            json={"assignment_id": "assignment-2", "assignment_task": "Validate tests", "expected_result": "Test summary", "action": "pytest", "workspace_path": str(outside)},
         )
-        invalid_id = client.get("/assignments/commands/not-a-plan-id")
+        invalid_id = client.get("/assignments/commands/not-a-plan-id", params=_association())
 
     assert outside_response.status_code == 400
     assert invalid_id.status_code == 400
@@ -288,7 +312,7 @@ def test_malformed_persisted_plan_returns_controlled_error(tmp_path: Path) -> No
         plan = _plan(client, workspace)
         record_path = tmp_path / "data" / "assignment_command_runs" / f"{plan['plan_id']}.json"
         record_path.write_text("{not-json", encoding="utf-8")
-        response = client.get(f"/assignments/commands/{plan['plan_id']}")
+        response = client.get(f"/assignments/commands/{plan['plan_id']}", params=_association())
 
     assert response.status_code == 400
     assert "malformed" in response.json()["detail"].lower()

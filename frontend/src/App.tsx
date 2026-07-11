@@ -55,6 +55,7 @@ import type {
   SpecialistTracesResponse,
   TraceEvent,
 } from "./types/contracts";
+import { AssignmentExecutionSection } from "./components/AssignmentExecutionSection";
 
 type PageId = "chat" | "assignments" | "system" | "history" | "settings";
 type SafetyMode = "read_only" | "confirm";
@@ -695,6 +696,7 @@ function App() {
         )}
         {activePage === "assignments" && (
           <AssignmentCopilotPage
+            client={client}
             text={assignmentText}
             setText={setAssignmentText}
             path={assignmentPath}
@@ -947,6 +949,7 @@ function ChatResultMeta({ run }: { run: ChatRunResponse }) {
 }
 
 function AssignmentCopilotPage({
+  client,
   text,
   setText,
   path,
@@ -973,6 +976,7 @@ function AssignmentCopilotPage({
   onCreateStarterFiles,
   onWriteManifest,
 }: {
+  client: HttpAstraClient;
   text: string;
   setText: (value: string) => void;
   path: string;
@@ -1050,7 +1054,7 @@ function AssignmentCopilotPage({
       <PageTitle
         eyebrow="Assignment Copilot"
         title="Plan, evidence, report, and readiness"
-        detail="Paste an assignment brief or provide a local document path. Astra produces structured guidance only: no commands are run and no files are written."
+        detail="Paste an assignment brief or provide a local document path. Analysis is non-executing; validation requires separate Plan, Approve, and Execute actions."
       />
 
       <form className="panel copilot-form" onSubmit={submit}>
@@ -1092,7 +1096,7 @@ function AssignmentCopilotPage({
                 onChange={(event) => setWorkspacePath(event.target.value)}
                 placeholder="Optional, relative to backend workspace"
               />
-              <span className="helper-text">Use an assignment workspace folder; no commands are run from here.</span>
+              <span className="helper-text">Use an assignment workspace folder. Nothing runs until a command is separately planned, approved, and executed.</span>
             </label>
             <label>
               Dataset path
@@ -1238,6 +1242,12 @@ function AssignmentCopilotPage({
               />
             )}
           </section>
+
+          <AssignmentExecutionSection
+            client={client}
+            assignmentId={selection === "all" ? null : `assignment-${selection}`}
+            workspacePath={workspacePath}
+          />
 
           <section className="panel">
             <PanelTitle icon={ClipboardCheck} title="Assignment Tasks" />

@@ -69,7 +69,9 @@ from backend.app.commands import (
     approve_assignment_command,
     execute_assignment_command,
     get_assignment_command,
+    get_assignment_execution_summary,
     plan_assignment_command,
+    suggest_assignment_actions,
     suggest_command,
 )
 from backend.app.core.path_utils import resolve_user_path
@@ -427,6 +429,9 @@ class CommandSuggestRequest(BaseModel):
 
 
 class AssignmentCommandPlanRequest(BaseModel):
+    assignment_id: str = Field(..., min_length=1, max_length=128)
+    assignment_task: str = Field(..., min_length=1, max_length=1000)
+    expected_result: str = Field(..., min_length=1, max_length=1000)
     action: str = Field(..., min_length=1)
     workspace_path: str = Field(..., min_length=1)
     target: str | None = None
@@ -434,10 +439,14 @@ class AssignmentCommandPlanRequest(BaseModel):
 
 
 class AssignmentCommandApprovalRequest(BaseModel):
+    assignment_id: str = Field(..., min_length=1, max_length=128)
+    workspace_path: str = Field(..., min_length=1)
     confirmation: str = Field(..., min_length=1)
 
 
 class AssignmentCommandExecuteRequest(BaseModel):
+    assignment_id: str = Field(..., min_length=1, max_length=128)
+    workspace_path: str = Field(..., min_length=1)
     approval_token: str = Field(..., min_length=1)
 
 
@@ -1342,6 +1351,9 @@ def create_app(
                 assignment_command_store,
                 configured_workspace_root,
                 workspace,
+                assignment_id=request.assignment_id,
+                assignment_task=request.assignment_task,
+                expected_result=request.expected_result,
                 action=request.action,
                 target=request.target,
                 timeout_seconds=request.timeout_seconds,
@@ -1357,14 +1369,18 @@ def create_app(
         request: AssignmentCommandApprovalRequest,
     ) -> dict:
         try:
+            workspace = _resolve_workspace_path(request.workspace_path)
             plan, approval_token = approve_assignment_command(
                 assignment_command_store,
                 plan_id,
+                assignment_id=request.assignment_id,
+                workspace=workspace,
+                project_root=configured_workspace_root,
                 confirmation=request.confirmation,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except CommandExecutionError as error:
+        except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"plan": plan, "approval_token": approval_token}
 
@@ -1374,33 +1390,58 @@ def create_app(
         request: AssignmentCommandExecuteRequest,
     ) -> dict:
         try:
+            workspace = _resolve_workspace_path(request.workspace_path)
             return execute_assignment_command(
                 assignment_command_store,
                 configured_workspace_root,
                 plan_id,
+                assignment_id=request.assignment_id,
+                workspace=workspace,
                 approval_token=request.approval_token,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except CommandExecutionError as error:
+        except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     @application.get("/assignments/commands/{plan_id}")
-    def assignment_command_status(plan_id: str) -> dict:
+    def assignment_command_status(
+        plan_id: str,
+        assignment_id: str = Query(..., min_length=1, max_length=128),
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
         try:
-            return get_assignment_command(assignment_command_store, plan_id)
+            workspace = _resolve_workspace_path(workspace_path)
+            return get_assignment_command(
+                assignment_command_store,
+                plan_id,
+                project_root=configured_workspace_root,
+                assignment_id=assignment_id,
+                workspace=workspace,
+            )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except CommandExecutionError as error:
+        except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     @application.get("/assignments/commands/{plan_id}/logs")
-    def assignment_command_logs(plan_id: str) -> dict:
+    def assignment_command_logs(
+        plan_id: str,
+        assignment_id: str = Query(..., min_length=1, max_length=128),
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
         try:
-            record = get_assignment_command(assignment_command_store, plan_id)
+            workspace = _resolve_workspace_path(workspace_path)
+            record = get_assignment_command(
+                assignment_command_store,
+                plan_id,
+                project_root=configured_workspace_root,
+                assignment_id=assignment_id,
+                workspace=workspace,
+            )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except CommandExecutionError as error:
+        except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {
             "plan_id": record["plan_id"],
@@ -1412,6 +1453,39 @@ def create_app(
             "timed_out": record.get("timed_out", False),
             "error": record["error"],
         }
+
+    @application.get("/assignments/{assignment_id}/execution/suggestions")
+    def assignment_execution_suggestions(
+        assignment_id: str,
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(workspace_path)
+            suggestions = suggest_assignment_actions(configured_workspace_root, workspace)
+        except (CommandExecutionError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "assignment_id": assignment_id,
+            "workspace": workspace.relative_to(configured_workspace_root).as_posix(),
+            "suggestions": suggestions,
+            "executed": False,
+        }
+
+    @application.get("/assignments/{assignment_id}/execution")
+    def assignment_execution_summary(
+        assignment_id: str,
+        workspace_path: str = Query(..., min_length=1),
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(workspace_path)
+            return get_assignment_execution_summary(
+                assignment_command_store,
+                configured_workspace_root,
+                assignment_id,
+                workspace,
+            )
+        except (CommandExecutionError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @application.post("/debug/analyze-error")
     def debug_analyze_error(request: DebugAnalyzeErrorRequest) -> dict:

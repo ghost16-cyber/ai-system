@@ -1093,6 +1093,70 @@ input:focus-visible {
   padding: 14px;
 }
 
+.assignment-execution,
+.execution-grid,
+.execution-plan,
+.execution-logs,
+.approval-row,
+.hash-list {
+  display: grid;
+  gap: 12px;
+}
+
+.execution-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.execution-card,
+.execution-plan {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface-soft);
+}
+
+.execution-card {
+  display: grid;
+  gap: 8px;
+}
+
+.execution-card code,
+.hash-list code {
+  overflow-wrap: anywhere;
+}
+
+.execution-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.approval-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.approval-row label {
+  display: grid;
+  gap: 6px;
+}
+
+.execution-logs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.execution-logs pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.state-completed { color: var(--green); }
+.state-failed, .state-expired { color: var(--red); }
+.state-approved, .state-running { color: var(--blue); }
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -1121,6 +1185,8 @@ input:focus-visible {
 
   .chat-grid,
   .two-column,
+  .execution-logs,
+  .approval-row,
   .history-layout,
   .settings-grid,
   .training-review-controls {
