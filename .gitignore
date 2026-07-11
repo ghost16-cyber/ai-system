@@ -32,6 +32,7 @@ assignment_inputs/
 # Local RAG corpus data
 astra_corpus/
 data/rag/corpus_index/
+data/rag/corpus_vectors/
 *.db
 *.sqlite
 .venv*/

@@ -94,6 +94,17 @@ from backend.app.rag.corpus_index_store import (
 from backend.app.rag.corpus_index_preview import build_corpus_index_preview
 from backend.app.rag.corpus_text_extractor import extract_indexable_corpus
 from backend.app.rag.corpus_chunker import build_corpus_chunk_preview
+from backend.app.rag.corpus_search import search_corpus_vectors
+from backend.app.rag.corpus_vector_store import (
+    DEFAULT_VECTOR_ROOT as DEFAULT_CORPUS_VECTOR_ROOT,
+    CorpusVectorStoreError,
+    build_corpus_vectors,
+    corpus_vector_files,
+    corpus_vector_status,
+)
+from backend.app.rag.deterministic_embeddings import (
+    DeterministicEmbeddingProvider,
+)
 from backend.app.rag.context_service import (
     compact_context,
     rag_build_project_index,
@@ -191,6 +202,17 @@ class CorpusIndexBuildRequest(BaseModel):
     full_rebuild: bool = False
     max_chars: int = Field(default=4000, ge=100, le=20000)
     overlap_chars: int = Field(default=400, ge=0, le=5000)
+
+
+class CorpusEmbeddingBuildRequest(BaseModel):
+    full_rebuild: bool = False
+
+
+class CorpusSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    top_k: int = Field(default=5, ge=1, le=100)
+    minimum_score: float | None = Field(default=0.0, ge=-1.0, le=1.0)
+    source_path: str | None = None
 
 
 class SLMChatWithContextRequest(BaseModel):
@@ -607,6 +629,56 @@ def create_app(
         return corpus_index_files(
             configured_workspace_root / DEFAULT_CORPUS_INDEX_ROOT,
         )
+
+    @application.post("/rag/corpus/embeddings/build")
+    def local_rag_corpus_embeddings_build(
+        request: CorpusEmbeddingBuildRequest | None = None,
+    ) -> dict:
+        build_request = request or CorpusEmbeddingBuildRequest()
+        provider = DeterministicEmbeddingProvider()
+        try:
+            return build_corpus_vectors(
+                provider,
+                index_root=(
+                    configured_workspace_root / DEFAULT_CORPUS_INDEX_ROOT
+                ),
+                vector_root=(
+                    configured_workspace_root / DEFAULT_CORPUS_VECTOR_ROOT
+                ),
+                full_rebuild=build_request.full_rebuild,
+            )
+        except CorpusVectorStoreError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.get("/rag/corpus/embeddings/status")
+    def local_rag_corpus_embeddings_status() -> dict:
+        return corpus_vector_status(
+            configured_workspace_root / DEFAULT_CORPUS_VECTOR_ROOT,
+            provider=DeterministicEmbeddingProvider(),
+        )
+
+    @application.get("/rag/corpus/embeddings/files")
+    def local_rag_corpus_embeddings_files() -> dict:
+        return corpus_vector_files(
+            configured_workspace_root / DEFAULT_CORPUS_VECTOR_ROOT,
+            provider=DeterministicEmbeddingProvider(),
+        )
+
+    @application.post("/rag/corpus/search")
+    def local_rag_corpus_search(request: CorpusSearchRequest) -> dict:
+        try:
+            return search_corpus_vectors(
+                request.query,
+                DeterministicEmbeddingProvider(),
+                vector_root=(
+                    configured_workspace_root / DEFAULT_CORPUS_VECTOR_ROOT
+                ),
+                top_k=request.top_k,
+                minimum_score=request.minimum_score,
+                source_path=request.source_path,
+            )
+        except (CorpusVectorStoreError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @application.get("/rag/status")
     def local_rag_status() -> dict:
