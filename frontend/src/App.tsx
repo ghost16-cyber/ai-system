@@ -6,9 +6,11 @@ import {
   CircleAlert,
   Database,
   FileText,
+  FolderOpen,
   History,
   Paperclip,
   Plus,
+  RefreshCw,
   Send,
   Server,
   ShieldCheck,
@@ -37,6 +39,10 @@ import {
   isAssignmentWorkspaceRequest,
   type AssignmentWorkspaceAction,
 } from "./state/assignmentWorkspaceState";
+import {
+  folderAccessActionFromPayload,
+  type FolderAccessAction,
+} from "./state/folderAccessState";
 
 interface Settings {
   apiUrl: string;
@@ -60,6 +66,7 @@ interface Message {
   run?: ChatRunResponse;
   action?: ChatAction;
   workspaceAction?: AssignmentWorkspaceAction;
+  folderAction?: FolderAccessAction;
   info?: InfoCard;
 }
 
@@ -203,12 +210,14 @@ export default function App() {
     });
     setConversationId(run.conversation_id);
     const action = genericActionFromRun(run);
+    const folderAction = run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined;
     setMessages((current) => current.map((item) => item.id === assistantId ? {
       ...item,
-      text: action ? "" : run.assistant_response,
+      text: action || folderAction ? "" : run.assistant_response,
       createdAt: run.created_at,
       run,
       action: action ?? undefined,
+      folderAction,
     } : item));
   }
 
@@ -323,6 +332,17 @@ export default function App() {
     ));
   }
 
+  function updateFolderAction(
+    messageId: string,
+    change: (action: FolderAccessAction) => FolderAccessAction,
+  ) {
+    setMessages((current) => current.map((item) =>
+      item.id === messageId && item.folderAction
+        ? { ...item, folderAction: change(item.folderAction) }
+        : item,
+    ));
+  }
+
   async function approveWorkspaceAction(
     messageId: string,
     action: AssignmentWorkspaceAction,
@@ -398,6 +418,93 @@ export default function App() {
       ));
     } catch (caught) {
       updateWorkspaceAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  async function approveFolderAction(
+    messageId: string,
+    action: FolderAccessAction,
+    chatRunId?: string,
+  ) {
+    if (action.status !== "awaiting_approval") return;
+    if (!action.actionId || !chatRunId) return;
+    const lockId = `folder-access:${action.actionId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      updateFolderAction(messageId, (current) => ({ ...current, status: "scanning", error: undefined }));
+      await nextPaint();
+      const updatedRun = await client.approveChatFolder(action.actionId, { chat_run_id: chatRunId });
+      const updatedFolder = updatedRun.action
+        ? folderAccessActionFromPayload(updatedRun.action)
+        : null;
+      updateFolderAction(messageId, (current) => ({ ...current, ...(updatedFolder ?? {}) }));
+      setMessages((current) => current.map((item) =>
+        item.id === messageId ? { ...item, run: updatedRun } : item,
+      ));
+    } catch (caught) {
+      updateFolderAction(messageId, (current) => ({
+        ...current,
+        status: "failed",
+        error: cleanError(caught),
+      }));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  async function cancelFolderAction(
+    messageId: string,
+    action: FolderAccessAction,
+    chatRunId?: string,
+  ) {
+    if (action.status !== "awaiting_approval") return;
+    if (!action.actionId || !chatRunId) return;
+    const lockId = `folder-access:${action.actionId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const updatedRun = await client.cancelChatFolder(action.actionId, { chat_run_id: chatRunId });
+      const updatedFolder = updatedRun.action
+        ? folderAccessActionFromPayload(updatedRun.action)
+        : null;
+      updateFolderAction(messageId, (current) => ({ ...current, ...(updatedFolder ?? {}) }));
+      setMessages((current) => current.map((item) =>
+        item.id === messageId ? { ...item, run: updatedRun } : item,
+      ));
+    } catch (caught) {
+      updateFolderAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  async function rescanFolderAction(
+    messageId: string,
+    action: FolderAccessAction,
+    chatRunId?: string,
+  ) {
+    if (action.status !== "completed") return;
+    if (!action.actionId || !chatRunId) return;
+    const lockId = `folder-rescan:${action.actionId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      updateFolderAction(messageId, (current) => ({ ...current, status: "scanning", error: undefined }));
+      await nextPaint();
+      const updatedRun = await client.rescanChatFolder(action.actionId, { chat_run_id: chatRunId });
+      const updatedFolder = updatedRun.action
+        ? folderAccessActionFromPayload(updatedRun.action)
+        : null;
+      updateFolderAction(messageId, (current) => ({ ...current, ...(updatedFolder ?? {}) }));
+      setMessages((current) => current.map((item) =>
+        item.id === messageId ? { ...item, run: updatedRun } : item,
+      ));
+    } catch (caught) {
+      updateFolderAction(messageId, (current) => ({
+        ...current,
+        status: "failed",
+        error: cleanError(caught),
+      }));
     } finally {
       locks.current.delete(lockId);
     }
@@ -495,6 +602,7 @@ export default function App() {
           action: genericActionFromRun(run) ?? undefined,
           info: assignmentAnalysisInfoFromRun(run),
           workspaceAction: run.action ? assignmentWorkspaceActionFromPayload(run.action) ?? undefined : undefined,
+          folderAction: run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined,
         },
       ]);
       setConversationId(selectedConversationId);
@@ -519,7 +627,7 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
@@ -544,6 +652,9 @@ function ChatMessage({
   onCancel,
   onApproveWorkspace,
   onCancelWorkspace,
+  onApproveFolder,
+  onCancelFolder,
+  onRescanFolder,
   onOption,
   onContinue,
 }: {
@@ -552,6 +663,9 @@ function ChatMessage({
   onCancel: (id: string, action: ChatAction, chatRunId?: string) => Promise<void>;
   onApproveWorkspace: (id: string, action: AssignmentWorkspaceAction, chatRunId?: string) => Promise<void>;
   onCancelWorkspace: (id: string, action: AssignmentWorkspaceAction, chatRunId?: string) => Promise<void>;
+  onApproveFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
+  onCancelFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
+  onRescanFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
   onOption: (option: string) => void;
   onContinue: (conversationId: string) => Promise<void>;
 }) {
@@ -559,9 +673,51 @@ function ChatMessage({
     {message.text && <p className="message-text">{message.text}</p>}
     {message.action && <ActionCard action={message.action} onApprove={() => void onApprove(message.id, message.action!, message.run?.run_id)} onCancel={() => void onCancel(message.id, message.action!, message.run?.run_id)} onOption={onOption} />}
     {message.workspaceAction && <AssignmentWorkspaceCard action={message.workspaceAction} onApprove={() => void onApproveWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} onCancel={() => void onCancelWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} />}
+    {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && <RunDetails run={message.run} />}
   </div></article>;
+}
+
+function FolderAccessCard({
+  action,
+  onApprove,
+  onCancel,
+  onRescan,
+}: {
+  action: FolderAccessAction;
+  onApprove: () => void;
+  onCancel: () => void;
+  onRescan: () => void;
+}) {
+  const busy = action.status === "scanning" || action.status === "approving" || action.status === "running";
+  const completed = action.status === "completed";
+  return <div className="action-card folder-action-card">
+    <div className="card-heading"><div><span className="eyebrow">Project folder</span><h2>{completed ? "Project folder connected" : action.status === "cancelled" ? "Folder access cancelled" : "Folder access requested"}</h2></div><Status status={action.status as ChatActionStatus} /></div>
+    <p>{completed ? "Astra scanned safe metadata only. File contents were not read or stored." : "Astra needs your approval before scanning this folder in read-only mode."}</p>
+    <div className="folder-request"><FolderOpen size={17} /><span>{completed ? action.displayPath : action.requestedDisplayPath}</span></div>
+    {action.status === "awaiting_approval" && <div className="button-row"><button className="primary-button" onClick={onApprove}><ShieldCheck size={16} />Approve read-only scan</button><button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel</button></div>}
+    {busy && <div className="progress-line"><Activity className="spin" size={16} />Scanning approved folder metadata…</div>}
+    {action.status === "cancelled" && <div className="result cancelled"><X size={17} />Folder access cancelled. No folder was scanned.</div>}
+    {action.resultSummary && completed && <div className="result completed"><CheckCircle2 size={17} />{action.resultSummary}</div>}
+    {completed && <div className="folder-summary-grid">
+      <span><strong>{action.summary.readable}</strong> readable</span>
+      <span><strong>{action.summary.ignored}</strong> ignored</span>
+      <span><strong>{action.summary.assignments}</strong> assignments</span>
+      <span><strong>{action.summary.datasets}</strong> datasets</span>
+      <span><strong>{action.summary.sourceFiles}</strong> source files</span>
+      <span><strong>{action.summary.reports}</strong> reports</span>
+      <span><strong>{action.summary.evidenceFiles}</strong> evidence</span>
+      <span><strong>{action.summary.configurationFiles}</strong> config</span>
+    </div>}
+    {completed && <div className="folder-diff"><span>Added {action.diff.added}</span><span>Changed {action.diff.changed}</span><span>Deleted {action.diff.deleted}</span><span>Unchanged {action.diff.unchanged}</span></div>}
+    {completed && action.lastScannedAt && <p className="muted">Last scanned: {formatTime(action.lastScannedAt)}</p>}
+    {completed && action.warnings.length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Scan warnings</strong><ul>{action.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div></div>}
+    {completed && <div className="button-row"><button className="secondary-button" onClick={onRescan} disabled={busy}><RefreshCw size={16} />Rescan</button></div>}
+    {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
+    {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: read-only metadata scan</span><span>Files are addressed by project-relative paths only.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+  </div>;
 }
 
 function AssignmentWorkspaceCard({
@@ -628,7 +784,7 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
 function Status({ status }: { status: ChatActionStatus }) { return <span className={`status status-${status}`}>{status.replace(/_/g, " ")}</span>; }
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
-function genericActionFromRun(run: ChatRunResponse) { return run.action?.action_type === "assignment" ? null : (run.action ? actionFromPayload(run.action) : null); }
+function genericActionFromRun(run: ChatRunResponse) { return run.action?.action_type === "assignment" || run.action?.action_type === "folder_access" ? null : (run.action ? actionFromPayload(run.action) : null); }
 function withoutPlan(details: Record<string, unknown>) { const rest = { ...details }; delete rest.command_plan; return rest; }
 function statusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : status === "approved" ? "Approved. Starting…" : "Running the approved action…"; }
 function workspaceStatusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : "Creating the approved workspace…"; }

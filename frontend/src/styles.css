@@ -147,10 +147,27 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .workspace-plan-list code { overflow-wrap: anywhere; color: var(--green-dark); font-size: .76rem; }
 .workspace-plan-list small { flex: 0 0 auto; color: var(--muted); font-size: .72rem; }
 .status-partially_completed { color: var(--amber); background: var(--amber-soft); }
+.status-scanning { color: var(--green-dark); background: var(--green-soft); }
 .status-cancelled { color: var(--muted); background: #edf1ef; }
 .result.partially_completed { color: #725315; background: var(--amber-soft); }
 .result.cancelled { color: var(--muted); background: #edf1ef; }
 
+.folder-action-card { border-color: #cfe0d6; }
+.folder-request { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border: 1px solid #cfe0d6; border-radius: 10px; color: var(--green-dark); background: var(--surface-soft); font-weight: 700; overflow-wrap: anywhere; }
+.folder-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.folder-summary-grid span, .folder-diff span { padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: #fbfcfb; font-size: .78rem; }
+.folder-summary-grid strong { display: block; color: #29382f; font-size: .95rem; }
+.folder-diff { display: flex; flex-wrap: wrap; gap: 8px; }
+.folder-inventory-details { border-top: 1px solid var(--line); }
+.folder-inventory-list { display: grid; gap: 7px; max-height: 320px; margin-top: 12px; overflow-y: auto; padding-right: 4px; }
+.folder-inventory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfb; font-size: .75rem; }
+.folder-inventory-row code { min-width: 0; overflow-wrap: anywhere; color: var(--green-dark); }
+.folder-inventory-row span { color: #29382f; font-weight: 700; }
+.folder-inventory-row small { color: var(--muted); }
+.folder-inventory-row.ignored { opacity: .78; }
+
 @media (max-width: 640px) {
   .workspace-plan-list > div { align-items: flex-start; flex-direction: column; }
+  .folder-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .folder-inventory-row { grid-template-columns: 1fr; }
 }

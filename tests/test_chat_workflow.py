@@ -63,6 +63,76 @@ def _workspace_action(run: dict) -> dict:
     return _assignment_action(run)["technical_details"]["workspace_action"]
 
 
+def _folder_action(run: dict) -> dict:
+    action = run["action"]
+    assert action["action_type"] == "folder_access"
+    return action
+
+
+def _folder_details(run: dict) -> dict:
+    return _folder_action(run)["technical_details"]["folder_action"]
+
+
+def _request_folder(client: TestClient, folder: Path, message: str | None = None) -> dict:
+    response = client.post(
+        "/chat/run",
+        json={"message": message or f"Use {folder}", "use_rag": True},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _approve_folder(client: TestClient, run: dict):
+    action_id = _folder_action(run)["action_id"]
+    return client.post(
+        f"/chat/folders/{action_id}/approve",
+        json={"chat_run_id": run["run_id"]},
+    )
+
+
+def _cancel_folder(client: TestClient, run: dict):
+    action_id = _folder_action(run)["action_id"]
+    return client.post(
+        f"/chat/folders/{action_id}/cancel",
+        json={"chat_run_id": run["run_id"]},
+    )
+
+
+def _rescan_folder(client: TestClient, run: dict):
+    action_id = _folder_action(run)["action_id"]
+    return client.post(
+        f"/chat/folders/{action_id}/rescan",
+        json={"chat_run_id": run["run_id"]},
+    )
+
+
+def _make_folder_project(tmp_path: Path) -> Path:
+    project = tmp_path / "folder_project"
+    (project / "src").mkdir(parents=True)
+    (project / "data").mkdir()
+    (project / ".git").mkdir()
+    (project / ".venv").mkdir()
+    (project / "node_modules").mkdir()
+    (project / "README.md").write_text("Astra folder project\n", encoding="utf-8")
+    (project / "assignment_brief.md").write_text("Do the assignment. SUPERSECRET-CONTENT\n", encoding="utf-8")
+    (project / "src" / "app.py").write_text("print('should not execute during scan')\n", encoding="utf-8")
+    (project / "data" / "events.csv").write_text("day,value\n1,2\n", encoding="utf-8")
+    (project / "evidence.png").write_bytes(b"\x89PNG\r\n")
+    (project / ".env").write_text("TOKEN=do-not-store\n", encoding="utf-8")
+    (project / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (project / ".venv" / "pyvenv.cfg").write_text("home=/tmp\n", encoding="utf-8")
+    (project / "node_modules" / "package.json").write_text("{}", encoding="utf-8")
+    (project / "local.sqlite").write_bytes(b"sqlite")
+    (project / "model.pt").write_bytes(b"weights")
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (project / "outside-link").symlink_to(outside)
+    except OSError:
+        pass
+    return project
+
+
 def test_chat_assignment_analysis_and_workspace_action_are_persisted(
     tmp_path: Path,
 ) -> None:
@@ -220,6 +290,343 @@ def test_chat_assignment_workspace_rejects_mismatched_run_without_modifying_reco
     assert first_after["action"] == first_before["action"]
     assert second_after["action"] == second_before["action"]
     assert not (tmp_path / "assignment_workspaces").exists()
+
+
+def test_folder_request_creates_awaiting_action_without_scanning(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app import main as main_module
+
+    project = _make_folder_project(tmp_path)
+
+    def ordinary_workflow_must_not_run(*args, **kwargs):
+        raise AssertionError("ordinary workflow was invoked")
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", ordinary_workflow_must_not_run)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/run",
+            json={"message": f"Use {project}", "use_rag": True},
+        )
+        runs = _chat_runs(client)
+
+    assert response.status_code == 200, response.text
+    assert len(runs) == 1
+    action = _folder_action(runs[0])
+    details = _folder_details(runs[0])
+    assert action["status"] == "awaiting_approval"
+    assert action["approval_required"] is True
+    assert details["status"] == "awaiting_approval"
+    assert details["inventory"] == []
+    assert details["scan_count"] == 0
+
+
+def test_folder_approval_scans_and_persists_sanitized_inventory(
+    tmp_path: Path,
+) -> None:
+    project = _make_folder_project(tmp_path)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project, f"Open this project folder: {project}")
+        run = _stored_run(client, created["run_id"])
+        approval = _approve_folder(client, run)
+        updated = _stored_run(client, run["run_id"])
+        detail = client.get(f"/chat/conversations/{run['conversation_id']}")
+        runs = _chat_runs(client)
+
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["run_id"] == run["run_id"]
+    assert len(runs) == 1
+    action = _folder_action(updated)
+    details = _folder_details(updated)
+    inventory = details["inventory"]
+    paths = {item["relative_path"] for item in inventory}
+    assert action["status"] == "completed"
+    assert details["status"] == "completed"
+    assert details["summary"]["readable"] >= 5
+    assert "README.md" in paths
+    assert "src/app.py" in paths
+    assert "data/events.csv" in paths
+    assert all(not Path(path).is_absolute() for path in paths)
+    assert all(str(project) not in path for path in paths)
+    assert "SUPERSECRET-CONTENT" not in json.dumps(action)
+    assert "TOKEN=do-not-store" not in json.dumps(action)
+    ignored = {item["relative_path"]: item["ignore_reason"] for item in inventory if item["status"] == "ignored"}
+    assert ignored[".env"] == "sensitive_file"
+    assert ignored[".git"] == "ignored_directory"
+    assert ignored[".venv"] == "ignored_directory"
+    assert ignored["node_modules"] == "ignored_directory"
+    assert ignored["local.sqlite"] == "blocked_file_type"
+    assert ignored["model.pt"] == "blocked_file_type"
+    if "outside-link" in ignored:
+        assert ignored["outside-link"] == "symlink_escape"
+    restored_action = detail.json()["turns"][0]["action"]
+    assert restored_action["technical_details"]["folder_action"]["inventory"] == inventory
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "read those files",
+        "read the files",
+        "open those files",
+        "inspect the file contents",
+        "summarize the folder files",
+        "analyze those files",
+        "read the assignment",
+        "read the dataset",
+    ],
+)
+def test_connected_folder_content_request_is_deterministic_without_specialist_or_action(
+    tmp_path: Path,
+    monkeypatch,
+    message: str,
+) -> None:
+    from backend.app import main as main_module
+
+    project = _make_folder_project(tmp_path)
+
+    def ordinary_workflow_must_not_run(*args, **kwargs):
+        raise AssertionError("ordinary specialist, RAG, and SLM workflow was invoked")
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", ordinary_workflow_must_not_run)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        folder_run = _stored_run(client, created["run_id"])
+        approval = _approve_folder(client, folder_run)
+        assert approval.status_code == 200, approval.text
+        connected_action = _stored_run(client, folder_run["run_id"])["action"]
+
+        response = client.post(
+            "/chat/run",
+            json={
+                "message": message,
+                "conversation_id": folder_run["conversation_id"],
+                "use_rag": True,
+            },
+        )
+        runs = _chat_runs(client)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assistant_response"] == (
+        "That folder is connected in metadata-only mode. I can see its inventory, "
+        "but file-content reading is not enabled yet."
+    )
+    assert body["selected_specialist"] == "folder_access"
+    assert body["intent"] == "folder_content_unavailable"
+    assert body["used_real_slm"] is False
+    assert body["slm_provider"] == "not_invoked"
+    assert body["rag_used"] is False
+    assert body["action"] is None
+    assert len(runs) == 2
+    original = next(run for run in runs if run["run_id"] == folder_run["run_id"])
+    assert original["action"] == connected_action
+
+
+def test_streamed_connected_folder_content_request_bypasses_specialist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app import main as main_module
+
+    project = _make_folder_project(tmp_path)
+
+    def ordinary_workflow_must_not_run(*args, **kwargs):
+        raise AssertionError("ordinary specialist, RAG, and SLM workflow was invoked")
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", ordinary_workflow_must_not_run)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        folder_run = _stored_run(client, created["run_id"])
+        approval = _approve_folder(client, folder_run)
+        assert approval.status_code == 200, approval.text
+
+        response = client.post(
+            "/chat/stream",
+            json={
+                "message": "read those files",
+                "conversation_id": folder_run["conversation_id"],
+                "use_rag": True,
+            },
+        )
+        events = _ndjson_events(response)
+        runs = _chat_runs(client)
+
+    assert response.status_code == 200, response.text
+    assert [event["event"] for event in events] == ["run_completed"]
+    run = events[0]["data"]["run"]
+    assert run["intent"] == "folder_content_unavailable"
+    assert run["used_real_slm"] is False
+    assert run["action"] is None
+    assert len(runs) == 2
+
+
+def test_folder_cancellation_updates_same_record_without_scan(
+    tmp_path: Path,
+) -> None:
+    project = _make_folder_project(tmp_path)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        run = _stored_run(client, created["run_id"])
+        cancellation = _cancel_folder(client, run)
+        updated = _stored_run(client, run["run_id"])
+        runs = _chat_runs(client)
+
+    assert cancellation.status_code == 200, cancellation.text
+    assert len(runs) == 1
+    action = _folder_action(updated)
+    details = _folder_details(updated)
+    assert action["status"] == "cancelled"
+    assert action["result_summary"] == "Folder access cancelled. No folder was scanned."
+    assert details["status"] == "cancelled"
+    assert details["inventory"] == []
+    assert details["scan_count"] == 0
+
+
+def test_folder_action_rejects_mismatched_chat_run_without_modifying_records(
+    tmp_path: Path,
+) -> None:
+    first_project = _make_folder_project(tmp_path)
+    second_project = tmp_path / "second"
+    second_project.mkdir()
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = _request_folder(client, first_project)
+        second = _request_folder(client, second_project, f"Scan my assignment folder at {second_project}")
+        first_before = _stored_run(client, first["run_id"])
+        second_before = _stored_run(client, second["run_id"])
+        action_id = _folder_action(first_before)["action_id"]
+        rejected = client.post(
+            f"/chat/folders/{action_id}/approve",
+            json={"chat_run_id": second["run_id"]},
+        )
+        first_after = _stored_run(client, first["run_id"])
+        second_after = _stored_run(client, second["run_id"])
+        runs = _chat_runs(client)
+
+    assert rejected.status_code == 409
+    assert len(runs) == 2
+    assert first_after["action"] == first_before["action"]
+    assert second_after["action"] == second_before["action"]
+
+
+def test_folder_state_conflicts_return_409(
+    tmp_path: Path,
+) -> None:
+    project = _make_folder_project(tmp_path)
+    other = tmp_path / "cancelled"
+    other.mkdir()
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        run = _stored_run(client, created["run_id"])
+        first_approval = _approve_folder(client, run)
+        approved_run = _stored_run(client, run["run_id"])
+        second_approval = _approve_folder(client, approved_run)
+        cancel_after_completion = _cancel_folder(client, approved_run)
+
+        cancelled = _request_folder(client, other, f"Connect this folder in read-only mode: {other}")
+        cancelled_run = _stored_run(client, cancelled["run_id"])
+        cancellation = _cancel_folder(client, cancelled_run)
+        approval_after_cancel = _approve_folder(client, _stored_run(client, cancelled["run_id"]))
+
+    assert first_approval.status_code == 200, first_approval.text
+    assert second_approval.status_code == 409
+    assert cancel_after_completion.status_code == 409
+    assert cancellation.status_code == 200, cancellation.text
+    assert approval_after_cancel.status_code == 409
+
+
+def test_folder_rescan_reports_added_changed_deleted_and_unchanged_files(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "rescan"
+    project.mkdir()
+    keep = project / "keep.py"
+    changed = project / "changed.py"
+    deleted = project / "deleted.py"
+    keep.write_text("keep = 1\n", encoding="utf-8")
+    changed.write_text("value = 1\n", encoding="utf-8")
+    deleted.write_text("gone = 1\n", encoding="utf-8")
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        run = _stored_run(client, created["run_id"])
+        approval = _approve_folder(client, run)
+        assert approval.status_code == 200, approval.text
+        changed.write_text("value = 2\n", encoding="utf-8")
+        deleted.unlink()
+        (project / "added.py").write_text("added = 1\n", encoding="utf-8")
+        rescan = _rescan_folder(client, _stored_run(client, run["run_id"]))
+        updated = _stored_run(client, run["run_id"])
+        runs = _chat_runs(client)
+
+    assert rescan.status_code == 200, rescan.text
+    assert len(runs) == 1
+    diff = _folder_details(updated)["diff"]
+    assert diff["added"] == 1
+    assert diff["changed"] == 1
+    assert diff["deleted"] == 1
+    assert diff["unchanged"] == 1
+    assert _folder_details(updated)["scan_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("path_factory", "status_code"),
+    [
+        (lambda base: base / "missing-folder", 404),
+        (lambda base: base / "regular-file.txt", 400),
+        (lambda base: base / "project" / ".." / "project", 400),
+    ],
+)
+def test_folder_invalid_paths_fail_controlled(
+    tmp_path: Path,
+    path_factory,
+    status_code: int,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (tmp_path / "regular-file.txt").write_text("not a folder", encoding="utf-8")
+    requested = path_factory(tmp_path)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/folders/request",
+            json={"path": str(requested), "user_message": f"Use {requested}"},
+        )
+        assert created.status_code == 200, created.text
+        run = _stored_run(client, created.json()["run_id"])
+        approval = _approve_folder(client, run)
+        updated = _stored_run(client, run["run_id"])
+
+    assert approval.status_code == status_code
+    assert _folder_action(updated)["status"] == "failed"
+    assert _folder_details(updated)["error"]
+
+
+def test_folder_scan_limits_warn_and_generated_files_are_not_executed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app.folders import scanner
+
+    project = tmp_path / "limits"
+    project.mkdir()
+    marker = tmp_path / "executed.txt"
+    (project / "would_execute.py").write_text(
+        "from pathlib import Path\nPath(r'%s').write_text('ran', encoding='utf-8')\n" % marker,
+        encoding="utf-8",
+    )
+    for index in range(5):
+        (project / f"file_{index}.py").write_text(f"value = {index}\n", encoding="utf-8")
+    monkeypatch.setattr(scanner, "MAX_FILES", 3)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = _request_folder(client, project)
+        run = _stored_run(client, created["run_id"])
+        approval = _approve_folder(client, run)
+        updated = _stored_run(client, run["run_id"])
+
+    assert approval.status_code == 200, approval.text
+    details = _folder_details(updated)
+    assert details["warnings"]
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("phrase", ["run the test", "run the tests", "run pytest"])

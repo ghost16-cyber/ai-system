@@ -6,6 +6,7 @@ const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const clientSource = readFileSync(new URL("../src/clients/astraClient.ts", import.meta.url), "utf8");
 const workspaceStateSource = readFileSync(new URL("../src/state/assignmentWorkspaceState.ts", import.meta.url), "utf8");
+const folderStateSource = readFileSync(new URL("../src/state/folderAccessState.ts", import.meta.url), "utf8");
 
 test("the application shell renders only the chat product", () => {
   assert.match(appSource, /aria-label="Conversation"/);
@@ -125,4 +126,51 @@ test("restored workspace cards do not auto-run generation and keep duplicate-cli
   assert.equal(appSource.slice(continueIndex, approveIndex).includes("approveChatAssignmentWorkspace"), false);
   assert.match(appSource, /tryLockCommandAction\(locks\.current, lockId\)/);
   assert.match(appSource, /assignment-workspace:\$\{action\.actionId\}/);
+});
+
+test("awaiting folder card renders in the conversation with approval controls", () => {
+  assert.match(appSource, /FolderAccessCard/);
+  assert.match(appSource, /Folder access requested/);
+  assert.match(appSource, /Approve read-only scan/);
+  assert.match(appSource, /client\.approveChatFolder/);
+  assert.match(appSource, /client\.cancelChatFolder/);
+  assert.match(clientSource, /\/chat\/folders\/\$\{encodeURIComponent\(actionId\)\}\/approve/);
+  assert.match(clientSource, /\/chat\/folders\/\$\{encodeURIComponent\(actionId\)\}\/cancel/);
+});
+
+test("folder actions restore from persisted run.action states", () => {
+  assert.match(folderStateSource, /folderAccessActionFromPayload/);
+  assert.match(folderStateSource, /action_type !== "folder_access"/);
+  assert.match(appSource, /folderAccessActionFromPayload\(run\.action\)/);
+  assert.match(appSource, /folderAction:/);
+  assert.match(appSource, /Project folder connected/);
+  assert.match(appSource, /Folder access cancelled\. No folder was scanned\./);
+  assert.match(appSource, /Folder scan failed/);
+});
+
+test("restored folder cards do not auto-run scans and keep duplicate-click locks", () => {
+  const continueIndex = appSource.indexOf("async function continueConversation");
+  const approveIndex = appSource.indexOf("async function approveFolderAction");
+  assert.ok(continueIndex > -1);
+  assert.ok(approveIndex > -1);
+  assert.equal(appSource.slice(continueIndex, approveIndex).includes("approveChatFolder"), false);
+  assert.match(appSource, /folder-access:\$\{action\.actionId\}/);
+  assert.match(appSource, /folder-rescan:\$\{action\.actionId\}/);
+  assert.match(appSource, /tryLockCommandAction\(locks\.current, lockId\)/);
+});
+
+test("folder rescan updates the same card and inventory remains bounded", () => {
+  assert.match(appSource, /client\.rescanChatFolder/);
+  assert.match(clientSource, /\/chat\/folders\/\$\{encodeURIComponent\(actionId\)\}\/rescan/);
+  assert.match(appSource, /updateFolderAction\(messageId/);
+  assert.match(stylesSource, /\.folder-inventory-list\s*\{[^}]*max-height:\s*320px/s);
+  assert.match(stylesSource, /\.folder-inventory-list\s*\{[^}]*overflow-y:\s*auto/s);
+});
+
+test("folder card avoids raw absolute scanned paths and keeps details collapsed", () => {
+  assert.match(folderStateSource, /looksAbsolute/);
+  assert.match(folderStateSource, /relative_path/);
+  assert.doesNotMatch(appSource, /approved_root\}/);
+  assert.doesNotMatch(appSource, /<details[^>]*\sopen/);
+  assert.doesNotMatch(appSource, /open=\{/);
 });

@@ -6,6 +6,7 @@ import {
   assignmentAnalysisFromActionPayload,
   assignmentWorkspaceActionFromPayload,
 } from "../src/state/assignmentWorkspaceState.ts";
+import { folderAccessActionFromPayload } from "../src/state/folderAccessState.ts";
 
 test("maps the persisted backend action payload to the shared chat action model", () => {
   const action = actionFromPayload({
@@ -121,4 +122,114 @@ test("maps persisted workspace action states", () => {
   });
   assert.equal(cancelled?.status, "cancelled");
   assert.equal(cancelled?.resultSummary, "Workspace creation cancelled. No files were written.");
+});
+
+const folderPayload = {
+  action_id: "folder-action-1",
+  action_type: "folder_access",
+  title: "Folder access requested",
+  summary: "Approve read-only access before Astra scans this folder.",
+  status: "awaiting_approval",
+  technical_details: {
+    folder_action: {
+      action_id: "folder-action-1",
+      status: "awaiting_approval",
+      requested_path: "/home/user/project",
+      display_path: "user/project",
+      inventory: [],
+      summary: {
+        total_discovered: 0,
+        readable: 0,
+        ignored: 0,
+        assignments: 0,
+        datasets: 0,
+        source_files: 0,
+        reports: 0,
+        evidence_files: 0,
+        configuration_files: 0,
+        other_files: 0,
+        warning_count: 0,
+      },
+      diff: { added: 0, changed: 0, deleted: 0, unchanged: 0 },
+      warnings: [],
+      scan_count: 0,
+    },
+  },
+};
+
+test("maps persisted folder action states without exposing absolute scanned files", () => {
+  const awaiting = folderAccessActionFromPayload(folderPayload);
+  assert.equal(awaiting?.actionId, "folder-action-1");
+  assert.equal(awaiting?.status, "awaiting_approval");
+  assert.equal(awaiting?.requestedDisplayPath, "user/project");
+
+  const completed = folderAccessActionFromPayload({
+    ...folderPayload,
+    status: "completed",
+    result_summary: "Scanned 2 readable files.",
+    technical_details: {
+      folder_action: {
+        ...folderPayload.technical_details.folder_action,
+        status: "completed",
+        approved_root: "/home/user/project",
+        approved_root_display: "user/project",
+        last_scanned_at: "2026-07-12T12:00:00+00:00",
+        scan_count: 1,
+        result_summary: "Scanned 2 readable files.",
+        summary: {
+          total_discovered: 3,
+          readable: 2,
+          ignored: 1,
+          assignments: 1,
+          datasets: 0,
+          source_files: 1,
+          reports: 0,
+          evidence_files: 0,
+          configuration_files: 0,
+          other_files: 0,
+          warning_count: 0,
+        },
+        diff: { added: 2, changed: 0, deleted: 0, unchanged: 0 },
+        inventory: [
+          { relative_path: "assignment.md", filename: "assignment.md", classification: "assignment", extension: ".md", size_bytes: 120, modified_at: "now", fingerprint: "a", status: "readable" },
+          { relative_path: "/home/user/project/secret.py", filename: "secret.py", classification: "source_code", extension: ".py", size_bytes: 10, modified_at: "now", fingerprint: "b", status: "readable" },
+        ],
+      },
+    },
+  });
+  assert.equal(completed?.status, "completed");
+  assert.equal(completed?.summary.readable, 2);
+  assert.equal(completed?.diff.added, 2);
+  assert.deepEqual(completed?.inventory.map((item) => item.relativePath), ["assignment.md"]);
+
+  const cancelled = folderAccessActionFromPayload({
+    ...folderPayload,
+    status: "cancelled",
+    technical_details: {
+      folder_action: {
+        ...folderPayload.technical_details.folder_action,
+        status: "cancelled",
+        result_summary: "Folder access cancelled. No folder was scanned.",
+      },
+    },
+  });
+  assert.equal(cancelled?.status, "cancelled");
+  assert.equal(cancelled?.resultSummary, "Folder access cancelled. No folder was scanned.");
+});
+
+test("maps failed folder actions to a friendly card error", () => {
+  const failed = folderAccessActionFromPayload({
+    ...folderPayload,
+    status: "failed",
+    error: "Folder path must point to a directory.",
+    technical_details: {
+      folder_action: {
+        ...folderPayload.technical_details.folder_action,
+        status: "failed",
+        error: "Folder path must point to a directory.",
+      },
+    },
+  });
+  assert.equal(failed?.status, "failed");
+  assert.equal(failed?.error, "Folder path must point to a directory.");
 });

@@ -5,6 +5,7 @@ export type ChatActionStatus =
   | "approving"
   | "approved"
   | "running"
+  | "scanning"
   | "completed"
   | "partially_completed"
   | "failed"
@@ -13,6 +14,7 @@ export type ChatActionStatus =
 export type ChatActionType =
   | "command"
   | "assignment"
+  | "folder_access"
   | "system_configuration"
   | "report_generation"
   | "file_creation"

@@ -362,6 +362,16 @@ export interface ChatAssignmentActionRequest {
   chat_run_id: string;
 }
 
+export interface ChatFolderRequest {
+  path: string;
+  conversation_id?: string | null;
+  user_message?: string;
+}
+
+export interface ChatFolderActionRequest {
+  chat_run_id: string;
+}
+
 export interface AssignmentWorkspaceWriteResult {
   workspace_path: string;
   created_files: string[];
@@ -695,6 +705,10 @@ export interface AstraClient {
   createChatAssignmentAnalysis(request: ChatAssignmentAnalyzeRequest): Promise<ChatRunResponse>;
   approveChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest): Promise<ChatRunResponse>;
   cancelChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest): Promise<ChatRunResponse>;
+  requestChatFolder(request: ChatFolderRequest): Promise<ChatRunResponse>;
+  approveChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  cancelChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  rescanChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -928,6 +942,22 @@ export class HttpAstraClient implements AstraClient {
 
   async cancelChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest) {
     return this.postJson<ChatRunResponse>(`/chat/assignments/workspace/${encodeURIComponent(actionId)}/cancel`, request);
+  }
+
+  async requestChatFolder(request: ChatFolderRequest) {
+    return this.postJson<ChatRunResponse>("/chat/folders/request", request);
+  }
+
+  async approveChatFolder(actionId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/folders/${encodeURIComponent(actionId)}/approve`, request);
+  }
+
+  async cancelChatFolder(actionId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/folders/${encodeURIComponent(actionId)}/cancel`, request);
+  }
+
+  async rescanChatFolder(actionId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/folders/${encodeURIComponent(actionId)}/rescan`, request);
   }
 
   async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {

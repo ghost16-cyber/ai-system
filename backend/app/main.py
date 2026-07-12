@@ -215,6 +215,17 @@ from backend.app.training_data.schemas import (
     TrainingExampleLabelRequest,
     TrainingExportRequest,
 )
+from backend.app.folders import (
+    FolderScanError,
+    build_inventory,
+    create_folder_content_unavailable_chat_run,
+    create_folder_chat_run,
+    detect_folder_request,
+    diff_inventories,
+    has_completed_folder_action,
+    is_folder_content_request,
+    validate_folder_root,
+)
 from backend.app.workspace import inspect_workspace
 
 
@@ -350,6 +361,16 @@ class ChatAssignmentAnalyzeRequest(AssignmentCopilotRunRequest):
 
 
 class ChatAssignmentActionRequest(BaseModel):
+    chat_run_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ChatFolderRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    user_message: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class ChatFolderActionRequest(BaseModel):
     chat_run_id: str = Field(..., min_length=1, max_length=128)
 
 
@@ -1263,6 +1284,204 @@ def create_app(
                         **workspace_action,
                         "status": "cancelled",
                         "result_summary": summary,
+                    }
+                },
+            },
+        )
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/folders/request", response_model=ChatRunResponse)
+    def chat_folder_request(request: ChatFolderRequest) -> ChatRunResponse:
+        run = create_folder_chat_run(
+            message=request.user_message or f"Use {request.path}",
+            requested_path=request.path,
+            conversation_id=request.conversation_id,
+        )
+        repository.store_chat_run(run)
+        return run
+
+    @application.post("/chat/folders/{action_id}/approve", response_model=ChatRunResponse)
+    def chat_folder_approve(
+        action_id: str,
+        request: ChatFolderActionRequest,
+    ) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, action_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        action = run.action or {}
+        if action.get("status") != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail="Folder access action is not awaiting approval.",
+            )
+        folder_action = _folder_action_from_run(run)
+        requested_path = str(folder_action.get("requested_path") or "")
+
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "scanning",
+                "error": None,
+                "technical_details": {
+                    "folder_action": {
+                        **folder_action,
+                        "status": "scanning",
+                        "error": None,
+                    }
+                },
+            },
+        )
+
+        try:
+            approved_root = validate_folder_root(requested_path)
+            scan = build_inventory(approved_root)
+        except FileNotFoundError as error:
+            _record_folder_failure(request.chat_run_id, action_id, folder_action, str(error))
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (FolderScanError, OSError) as error:
+            _record_folder_failure(request.chat_run_id, action_id, folder_action, str(error))
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        inventory = scan.get("inventory") if isinstance(scan.get("inventory"), list) else []
+        diff = diff_inventories([], inventory)
+        summary = _folder_result_summary(scan)
+        completed_folder_action = {
+            **folder_action,
+            "status": "completed",
+            "display_path": scan.get("root_display_name") or folder_action.get("display_path"),
+            "approved_root": str(approved_root),
+            "approved_root_display": scan.get("root_display_name"),
+            "inventory": inventory,
+            "summary": scan.get("summary") or {},
+            "warnings": scan.get("warnings") or [],
+            "diff": diff,
+            "scan_count": 1,
+            "last_scanned_at": scan.get("scanned_at"),
+            "limits": scan.get("limits") or {},
+            "result_summary": summary,
+            "error": None,
+        }
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "completed",
+                "approval_required": False,
+                "result_summary": summary,
+                "error": None,
+                "technical_details": {"folder_action": completed_folder_action},
+            },
+        )
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/folders/{action_id}/cancel", response_model=ChatRunResponse)
+    def chat_folder_cancel(
+        action_id: str,
+        request: ChatFolderActionRequest,
+    ) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, action_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        action = run.action or {}
+        if action.get("status") != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail="Folder access action is not awaiting approval.",
+            )
+        folder_action = _folder_action_from_run(run)
+        summary = "Folder access cancelled. No folder was scanned."
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "cancelled",
+                "approval_required": False,
+                "result_summary": summary,
+                "error": None,
+                "technical_details": {
+                    "folder_action": {
+                        **folder_action,
+                        "status": "cancelled",
+                        "result_summary": summary,
+                        "error": None,
+                    }
+                },
+            },
+        )
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/folders/{action_id}/rescan", response_model=ChatRunResponse)
+    def chat_folder_rescan(
+        action_id: str,
+        request: ChatFolderActionRequest,
+    ) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, action_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        action = run.action or {}
+        if action.get("status") != "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="Folder access action must be completed before rescan.",
+            )
+        folder_action = _folder_action_from_run(run)
+        approved_root = str(folder_action.get("approved_root") or "")
+        previous_inventory = folder_action.get("inventory")
+        if not isinstance(previous_inventory, list):
+            previous_inventory = []
+
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "scanning",
+                "error": None,
+                "technical_details": {
+                    "folder_action": {
+                        **folder_action,
+                        "status": "scanning",
+                        "error": None,
+                    }
+                },
+            },
+        )
+
+        try:
+            root = validate_folder_root(approved_root)
+            scan = build_inventory(root)
+        except FileNotFoundError as error:
+            _record_folder_failure(request.chat_run_id, action_id, folder_action, str(error))
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (FolderScanError, OSError) as error:
+            _record_folder_failure(request.chat_run_id, action_id, folder_action, str(error))
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        inventory = scan.get("inventory") if isinstance(scan.get("inventory"), list) else []
+        diff = diff_inventories(previous_inventory, inventory)
+        summary = _folder_result_summary(scan)
+        scan_count = int(folder_action.get("scan_count") or 0) + 1
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "completed",
+                "approval_required": False,
+                "result_summary": summary,
+                "error": None,
+                "technical_details": {
+                    "folder_action": {
+                        **folder_action,
+                        "status": "completed",
+                        "display_path": scan.get("root_display_name") or folder_action.get("display_path"),
+                        "approved_root": str(root),
+                        "approved_root_display": scan.get("root_display_name"),
+                        "inventory": inventory,
+                        "summary": scan.get("summary") or {},
+                        "warnings": scan.get("warnings") or [],
+                        "diff": diff,
+                        "scan_count": scan_count,
+                        "last_scanned_at": scan.get("scanned_at"),
+                        "limits": scan.get("limits") or {},
+                        "result_summary": summary,
+                        "error": None,
                     }
                 },
             },
@@ -2210,6 +2429,67 @@ def create_app(
                 detail="The chat run is not associated with this assignment action.",
             )
 
+    def _require_folder_action_association(
+        chat_run_id: str,
+        action_id: str,
+    ) -> None:
+        if not repository.chat_run_action_matches_id(chat_run_id, action_id):
+            raise HTTPException(
+                status_code=409,
+                detail="The chat run is not associated with this folder action.",
+            )
+
+    def _folder_action_from_run(run: ChatRunResponse) -> dict:
+        action = run.action or {}
+        if action.get("action_type") != "folder_access":
+            raise HTTPException(status_code=409, detail="Chat run does not contain a folder action.")
+        technical = action.get("technical_details")
+        folder_action = (
+            technical.get("folder_action")
+            if isinstance(technical, dict)
+            else None
+        )
+        if not isinstance(folder_action, dict) or folder_action.get("action_id") != action.get("action_id"):
+            raise HTTPException(status_code=400, detail="Folder action is malformed.")
+        return folder_action
+
+    def _record_folder_failure(
+        chat_run_id: str,
+        action_id: str,
+        folder_action: dict,
+        error: str,
+    ) -> None:
+        repository.update_chat_run_action_for_id(
+            chat_run_id,
+            action_id,
+            {
+                "status": "failed",
+                "approval_required": False,
+                "result_summary": "Folder scan failed before any inventory was recorded.",
+                "error": error,
+                "technical_details": {
+                    "folder_action": {
+                        **folder_action,
+                        "status": "failed",
+                        "result_summary": "Folder scan failed before any inventory was recorded.",
+                        "error": error,
+                    }
+                },
+            },
+        )
+
+    def _folder_result_summary(scan: dict) -> str:
+        summary = scan.get("summary") if isinstance(scan, dict) else {}
+        if not isinstance(summary, dict):
+            summary = {}
+        readable = int(summary.get("readable") or 0)
+        ignored = int(summary.get("ignored") or 0)
+        total = int(summary.get("total_discovered") or 0)
+        warnings = int(summary.get("warning_count") or 0)
+        noun = "file" if readable == 1 else "files"
+        warning_note = f" with {warnings} warning{'s' if warnings != 1 else ''}" if warnings else ""
+        return f"Scanned {readable} readable {noun} ({ignored} ignored, {total} discovered){warning_note}."
+
     def _run_assignment_copilot_request(
         request: AssignmentCopilotRunRequest,
     ):
@@ -2510,16 +2790,36 @@ def create_app(
 
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
-        detected = detect_chat_action(request.message)
-        if detected is not None:
-            run = _plan_chat_action(request, detected)
-            repository.store_chat_run(run)
-            return run
         previous_turns = (
             repository.list_chat_runs_for_conversation(request.conversation_id)
             if request.conversation_id
             else []
         )
+        folder_path = detect_folder_request(request.message)
+        if folder_path is not None:
+            run = create_folder_chat_run(
+                message=request.message,
+                requested_path=folder_path,
+                conversation_id=request.conversation_id,
+            )
+            repository.store_chat_run(run)
+            return run
+        if (
+            request.conversation_id
+            and is_folder_content_request(request.message)
+            and has_completed_folder_action(previous_turns)
+        ):
+            run = create_folder_content_unavailable_chat_run(
+                message=request.message,
+                conversation_id=request.conversation_id,
+            )
+            repository.store_chat_run(run)
+            return run
+        detected = detect_chat_action(request.message)
+        if detected is not None:
+            run = _plan_chat_action(request, detected)
+            repository.store_chat_run(run)
+            return run
         run = run_chat_workflow(
             request,
             workspace_root=configured_workspace_root,
@@ -2531,10 +2831,21 @@ def create_app(
 
     @application.post("/chat/stream")
     def chat_stream(request: ChatRunRequest) -> StreamingResponse:
+        conversation_turns = (
+            repository.list_chat_runs_for_conversation(request.conversation_id)
+            if request.conversation_id
+            else []
+        )
+        folder_path = detect_folder_request(request.message)
+        folder_content_unavailable = bool(
+            request.conversation_id
+            and is_folder_content_request(request.message)
+            and has_completed_folder_action(conversation_turns)
+        )
         detected = detect_chat_action(request.message)
         previous_turns = (
-            repository.list_chat_runs_for_conversation(request.conversation_id)
-            if request.conversation_id and detected is None
+            conversation_turns
+            if detected is None and folder_path is None and not folder_content_unavailable
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -2542,7 +2853,18 @@ def create_app(
 
         def worker() -> None:
             try:
-                if detected is not None:
+                if folder_path is not None:
+                    run = create_folder_chat_run(
+                        message=request.message,
+                        requested_path=folder_path,
+                        conversation_id=request.conversation_id,
+                    )
+                elif folder_content_unavailable:
+                    run = create_folder_content_unavailable_chat_run(
+                        message=request.message,
+                        conversation_id=request.conversation_id,
+                    )
+                elif detected is not None:
                     run = _plan_chat_action(request, detected)
                 else:
                     run = run_chat_workflow(
@@ -2552,7 +2874,7 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
-                if run.action is None:
+                if run.action is None and not folder_content_unavailable:
                     _log_training_example(run)
                 events.put(
                     {
