@@ -160,3 +160,34 @@ def test_expired_approval_is_mapped_for_frontend_display(tmp_path: Path) -> None
     assert summary["approval_state"] == "expired"
     assert summary["execution_state"] == "expired"
     assert summary["planned_commands"][0]["display_state"] == "expired"
+
+
+def test_pending_plan_can_be_cancelled_without_execution(tmp_path: Path) -> None:
+    client, workspace = _setup(tmp_path)
+    marker = workspace / "executed.txt"
+    (workspace / "main.py").write_text(
+        "from pathlib import Path\nPath('executed.txt').write_text('ran')\n",
+        encoding="utf-8",
+    )
+    with client:
+        plan = _plan(client, target="main.py")
+        response = client.post(
+            f"/assignments/commands/{plan['plan_id']}/cancel",
+            json=_association(),
+        )
+        approve = client.post(
+            f"/assignments/commands/{plan['plan_id']}/approve",
+            json=_association(confirmation=f"APPROVE {plan['plan_id']}"),
+        )
+        summary = client.get(
+            f"/assignments/{ASSIGNMENT_ID}/execution",
+            params={"workspace_path": WORKSPACE_PATH},
+        ).json()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+    assert response.json()["display_state"] == "cancelled"
+    assert response.json()["exit_code"] is None
+    assert approve.status_code == 400
+    assert summary["execution_state"] == "cancelled"
+    assert not marker.exists()

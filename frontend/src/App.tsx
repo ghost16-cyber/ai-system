@@ -19,9 +19,10 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HttpAstraClient,
+  type AssignmentCommandRecord,
   type AssignmentCopilotRequest,
   type AssignmentCopilotResult,
   type AssignmentCodeWriteResult,
@@ -58,6 +59,12 @@ import type {
 import { AssignmentExecutionSection } from "./components/AssignmentExecutionSection";
 import { AssignmentEvidenceReadinessSection } from "./components/AssignmentEvidenceReadinessSection";
 import { AssignmentReportSection } from "./components/AssignmentReportSection";
+import {
+  approveAndExecuteCommand,
+  commandResultPresentation,
+  type ChatCommandStatus,
+  tryLockCommandAction,
+} from "./state/chatCommandState";
 
 type PageId = "chat" | "assignments" | "system" | "history" | "settings";
 type SafetyMode = "read_only" | "confirm";
@@ -71,12 +78,21 @@ interface FrontendSettings {
   safetyMode: SafetyMode;
 }
 
+interface ChatAction {
+  assignmentId: string;
+  workspacePath: string;
+  status: ChatCommandStatus;
+  plan: AssignmentCommandRecord;
+  error?: string;
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
   createdAt: string;
   meta?: ChatRunResponse;
+  action?: ChatAction;
 }
 
 interface ChatProgressStep {
@@ -138,10 +154,43 @@ const pages: Array<{ id: PageId; label: string; icon: typeof MessageSquareText }
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
+interface DetectedChatAction {
+  action: "pytest";
+  assignmentTask: string;
+  expectedResult: string;
+  workspacePath: string;
+}
+
+function detectChatAction(prompt: string): DetectedChatAction | null {
+  const normalized = prompt
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/, "")
+    .replace(/\s+/g, " ");
+
+  const isPytestRequest = [
+    /^(?:please )?run (?:all |the |project )?(?:tests|test suite|pytest)(?: for (?:this|the) project)?$/,
+    /^(?:please )?execute (?:all |the |project )?(?:tests|test suite|pytest)$/,
+    /^(?:please )?test (?:this|the) project$/,
+  ].some((pattern) => pattern.test(normalized));
+
+  if (!isPytestRequest) {
+    return null;
+  }
+
+  return {
+    action: "pytest",
+    assignmentTask: "Run the project test suite requested through Chat.",
+    expectedResult: "Pytest pass/fail summary and any relevant failing-test output.",
+    workspacePath: ".",
+  };
+}
+
 function App() {
   const [activePage, setActivePage] = useState<PageId>("chat");
   const [settings, setSettings] = useState<FrontendSettings>(loadSettings);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const chatActionLocks = useRef<Set<string>>(new Set());
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -317,6 +366,83 @@ function App() {
     const prompt = (promptOverride ?? chatInput).trim();
     if (!prompt || chatLoading) return;
 
+    const detectedAction = detectChatAction(prompt);
+
+    if (detectedAction) {
+      setChatInput("");
+      setLastPrompt(prompt);
+      setChatError(null);
+      setChatLoading(true);
+      setChatProgress([
+        {
+          id: `planning-${Date.now()}`,
+          label: "Preparing action",
+          detail: "Validating the request against Astra's command allowlist.",
+          status: "active",
+        },
+      ]);
+
+      const userMessage: ChatMessage = {
+        id: newId("user"),
+        role: "user",
+        text: prompt,
+        createdAt: new Date().toISOString(),
+      };
+
+      setMessages((current) => [...current, userMessage]);
+
+      try {
+        const assignmentId = "chat-action";
+        const plan = await client.planAssignmentCommand({
+          assignment_id: assignmentId,
+          workspace_path: detectedAction.workspacePath,
+          assignment_task: detectedAction.assignmentTask,
+          expected_result: detectedAction.expectedResult,
+          action: detectedAction.action,
+          timeout_seconds: 120,
+        });
+
+        const assistantMessage: ChatMessage = {
+          id: newId("assistant-action"),
+          role: "assistant",
+          text: "I prepared a safe test-run plan. Nothing has been executed.",
+          createdAt: new Date().toISOString(),
+          action: {
+            assignmentId,
+            workspacePath: detectedAction.workspacePath,
+            status: "awaiting_approval",
+            plan,
+          },
+        };
+
+        setMessages((current) => [...current, assistantMessage]);
+        setChatProgress([
+          {
+            id: `planned-${plan.plan_id}`,
+            label: "Awaiting approval",
+            detail: "The command was planned successfully but has not been executed.",
+            status: "done",
+          },
+        ]);
+      } catch (error) {
+        const message = cleanError(error);
+        setChatError(message);
+        setMessages((current) => [
+          ...current,
+          {
+            id: newId("assistant-action-error"),
+            role: "assistant",
+            text: `I could not prepare the test-run plan: ${message}`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setChatLoading(false);
+      }
+
+      return;
+    }
+
     if (looksDestructive(prompt)) {
       const confirmed = window.confirm(
         "This request sounds destructive. Chat is read-only, and Astra will only produce a preview unless you explicitly authorize an action elsewhere. Continue?",
@@ -438,6 +564,202 @@ function App() {
       }
     } finally {
       setChatLoading(false);
+    }
+  }
+
+  async function approveChatAction(messageId: string, action: ChatAction) {
+    const planId = action.plan.plan_id;
+
+    if (
+      action.status !== "awaiting_approval" ||
+      chatActionLocks.current.has(planId)
+    ) {
+      return;
+    }
+
+    // This ref is updated synchronously, preventing rapid double-click execution.
+    if (!tryLockCommandAction(chatActionLocks.current, planId)) return;
+    setChatError(null);
+
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId && message.action
+          ? {
+              ...message,
+              text: "Approval received. Astra is authorizing the planned action.",
+              action: {
+                ...message.action,
+                status: "approving",
+                error: undefined,
+              },
+            }
+          : message,
+      ),
+    );
+
+    setChatProgress((current) => [
+      ...current,
+      {
+        id: `approving-${planId}`,
+        label: "Approving",
+        detail: "Authorizing the exact command that was shown in the plan.",
+        status: "active",
+      },
+    ]);
+
+    try {
+      const executed = await approveAndExecuteCommand({
+        calls: {
+          approve: (id, request) => client.approveAssignmentCommand(id, request),
+          execute: (id, request) => client.executeAssignmentCommand(id, request),
+        },
+        planId,
+        association: {
+          assignment_id: action.assignmentId,
+          workspace_path: action.workspacePath,
+        },
+        onApproved: (plan) => {
+          setMessages((current) => current.map((message) =>
+            message.id === messageId && message.action
+              ? { ...message, text: "The command is approved and ready to run.", action: { ...message.action, status: "approved", plan } }
+              : message,
+          ));
+          setChatProgress((current) => [...current, {
+            id: `approved-${planId}`,
+            label: "Approved",
+            detail: "Approval recorded for this exact command.",
+            status: "done",
+          }]);
+        },
+        beforeExecution: nextPaint,
+        onRunning: () => {
+          setMessages((current) => current.map((message) =>
+            message.id === messageId && message.action
+              ? { ...message, text: "The approved test command is now running.", action: { ...message.action, status: "running" } }
+              : message,
+          ));
+          setChatProgress((current) => [...current, {
+            id: `running-${planId}`,
+            label: "Running",
+            detail: "Executing the approved command once inside the project workspace.",
+            status: "active",
+          }]);
+        },
+      });
+
+      const succeeded =
+        executed.display_state === "completed" && executed.exit_code === 0;
+      const presentation = commandResultPresentation(executed);
+
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.action
+            ? {
+                ...message,
+                text: presentation.summary,
+                action: {
+                  ...message.action,
+                  status: succeeded ? "completed" : "failed",
+                  plan: executed,
+                  error: succeeded ? undefined : presentation.errorTail || "The command did not complete successfully.",
+                },
+              }
+            : message,
+        ),
+      );
+
+      setChatProgress((current) => [
+        ...current,
+        {
+          id: `finished-${planId}`,
+          label: succeeded ? "Completed" : "Failed",
+          detail: succeeded
+            ? "The approved command finished successfully."
+            : "The command finished with an error or failing test result.",
+          status: succeeded ? "done" : "error",
+        },
+      ]);
+    } catch (error) {
+      const message = cleanError(error);
+
+      setChatError(message);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === messageId && item.action
+            ? {
+                ...item,
+                text: `I could not complete the approved action: ${message}`,
+                action: {
+                  ...item.action,
+                  status: "failed",
+                  error: message,
+                },
+              }
+            : item,
+        ),
+      );
+
+      setChatProgress((current) => [
+        ...current,
+        {
+          id: `failed-${planId}`,
+          label: "Action failed",
+          detail: message,
+          status: "error",
+        },
+      ]);
+    } finally {
+      chatActionLocks.current.delete(planId);
+    }
+  }
+
+  async function cancelChatAction(messageId: string, action: ChatAction) {
+    const planId = action.plan.plan_id;
+
+    if (
+      action.status !== "awaiting_approval" ||
+      chatActionLocks.current.has(planId)
+    ) {
+      return;
+    }
+
+    if (!tryLockCommandAction(chatActionLocks.current, planId)) return;
+
+    try {
+      const cancelled = await client.cancelAssignmentCommand(planId, {
+        assignment_id: action.assignmentId,
+        workspace_path: action.workspacePath,
+      });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.action
+            ? {
+                ...message,
+                text: "Action cancelled. No command was executed.",
+                action: { ...message.action, status: "cancelled", plan: cancelled },
+              }
+            : message,
+        ),
+      );
+      setChatProgress((current) => [
+        ...current,
+        {
+          id: `cancelled-${planId}`,
+          label: "Cancelled",
+          detail: "The command was not approved or executed.",
+          status: "warning",
+        },
+      ]);
+    } catch (error) {
+      const message = cleanError(error);
+      setChatError(message);
+      setMessages((current) => current.map((item) =>
+        item.id === messageId && item.action
+          ? { ...item, action: { ...item.action, error: `Could not cancel this action: ${message}` } }
+          : item,
+      ));
+    } finally {
+      chatActionLocks.current.delete(planId);
     }
   }
 
@@ -691,6 +1013,10 @@ function App() {
             onSubmit={() => void sendChat()}
             onRetry={() => lastPrompt && void sendChat(lastPrompt)}
             onNewChat={startNewChat}
+            onApproveAction={(messageId, action) =>
+              void approveChatAction(messageId, action)
+            }
+            onCancelAction={cancelChatAction}
             activeConversationId={activeConversationId}
             settings={settings}
             runtime={systemData?.runtime ?? null}
@@ -784,6 +1110,8 @@ function ChatPage({
   onSubmit,
   onRetry,
   onNewChat,
+  onApproveAction,
+  onCancelAction,
   activeConversationId,
   settings,
   runtime,
@@ -798,6 +1126,8 @@ function ChatPage({
   onSubmit: () => void;
   onRetry: () => void;
   onNewChat: () => void;
+  onApproveAction: (messageId: string, action: ChatAction) => void;
+  onCancelAction: (messageId: string, action: ChatAction) => void;
   activeConversationId: string | null;
   settings: FrontendSettings;
   runtime: RuntimeContext | null;
@@ -836,6 +1166,142 @@ function ChatPage({
                 </div>
                 <div className="message-body">
                   <p>{message.text}</p>
+                  {message.action && (
+                    <div className="execution-plan chat-action-card">
+                      <div className="execution-plan-header">
+                        <strong>{message.action.plan.purpose}</strong>
+                        <span className={`status-pill state-${message.action.status}`}>
+                          {message.action.status.replace(/_/g, " ")}
+                        </span>
+                      </div>
+
+                      <p className="chat-action-explanation">
+                        {message.action.plan.expected_result}
+                      </p>
+                      <dl className="chat-action-summary">
+                        <div>
+                          <dt>Command preview</dt>
+                          <dd><code>{message.action.plan.command}</code></dd>
+                        </div>
+                        <div>
+                          <dt>Working directory</dt>
+                          <dd><code>{message.action.plan.workspace || "."}</code></dd>
+                        </div>
+                        <div>
+                          <dt>Expected file modifications</dt>
+                          <dd>{expectedFileModifications(message.action.plan)}</dd>
+                        </div>
+                        <div>
+                          <dt>Risk and safety</dt>
+                          <dd>
+                            {message.action.plan.risk_level} risk. {message.action.plan.why_safe}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      <details>
+                        <summary>Technical details</summary>
+                        <div className="execution-logs">
+                          <code>Action: {message.action.plan.action}</code>
+                          <code>Timeout: {message.action.plan.timeout_seconds}s</code>
+                          <code>Executable: {message.action.plan.executable}</code>
+                          <code>Arguments: {message.action.plan.arguments.join(" ")}</code>
+                          {(message.action.status === "completed" || message.action.status === "failed") && (
+                            <>
+                              <label>
+                                Full redacted stdout
+                                <pre>{message.action.plan.stdout || "(empty)"}</pre>
+                              </label>
+                              <label>
+                                Full redacted stderr
+                                <pre>{message.action.plan.stderr || "(empty)"}</pre>
+                              </label>
+                            </>
+                          )}
+                        </div>
+                      </details>
+
+                      {(["awaiting_approval", "approving", "approved", "running"] as ChatCommandStatus[]).includes(message.action.status) && (
+                        <div className="button-row">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            disabled={message.action.status !== "awaiting_approval"}
+                            onClick={() =>
+                              message.action &&
+                              onApproveAction(message.id, message.action)
+                            }
+                          >
+                            <ShieldCheck size={15} />
+                            Approve and run
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={message.action.status !== "awaiting_approval"}
+                            onClick={() =>
+                              message.action &&
+                              onCancelAction(message.id, message.action)
+                            }
+                          >
+                            <AlertTriangle size={15} />
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {message.action.status === "approving" && (
+                        <div className="notice subtle">
+                          <Activity size={16} className="spin" />
+                          Authorizing the exact planned command…
+                        </div>
+                      )}
+
+                      {message.action.status === "approved" && (
+                        <div className="notice subtle">
+                          <CheckCircle2 size={16} />
+                          Approved. Starting the command…
+                        </div>
+                      )}
+
+                      {message.action.status === "running" && (
+                        <div className="notice subtle">
+                          <Activity size={16} className="spin" />
+                          Running the approved command…
+                        </div>
+                      )}
+
+                      {message.action.status === "cancelled" && (
+                        <div className="notice amber">
+                          Action cancelled. No command was executed.
+                        </div>
+                      )}
+
+                      {(message.action.status === "completed" ||
+                        message.action.status === "failed") && (
+                        <>
+                          <div
+                            className={
+                              message.action.status === "completed"
+                                ? "notice subtle"
+                                : "notice amber"
+                            }
+                          >
+                            <strong>{commandResultPresentation(message.action.plan).summary}</strong>
+                            <span>Exit code: {message.action.plan.exit_code ?? "unavailable"}</span>
+                          </div>
+                        </>
+                      )}
+
+                      {message.action.error &&
+                        message.action.status === "failed" && (
+                          <div className="notice amber">
+                            <strong>Relevant final error lines</strong>
+                            <pre className="error-tail">{message.action.error}</pre>
+                          </div>
+                        )}
+                    </div>
+                  )}
                   {message.meta && <ChatResultMeta run={message.meta} />}
                 </div>
               </article>
@@ -2773,6 +3239,26 @@ function formatAge(iso: string) {
 function formatDate(iso: string) {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+}
+
+function expectedFileModifications(plan: AssignmentCommandRecord) {
+  if (plan.action === "pytest" || plan.action === "docker_ps") {
+    return "None expected from this command.";
+  }
+  if (plan.action === "docker_compose_up") {
+    return "No project files expected; container state may change.";
+  }
+  return "The command may modify files within the approved working directory.";
+}
+
+function nextPaint() {
+  return new Promise<void>((resolve) => {
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      resolve();
+      return;
+    }
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 function cleanError(error: unknown) {

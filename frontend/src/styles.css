@@ -1156,6 +1156,62 @@ input:focus-visible {
 .state-completed { color: var(--green); }
 .state-failed, .state-expired { color: var(--red); }
 .state-approved, .state-running { color: var(--blue); }
+.state-awaiting_approval { color: var(--amber); }
+.state-approving { color: var(--blue); }
+.state-cancelled { color: var(--muted); }
+
+.chat-action-card {
+  gap: 14px;
+}
+
+.chat-action-explanation {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chat-action-summary {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.chat-action-summary div {
+  display: grid;
+  gap: 3px;
+}
+
+.chat-action-summary dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chat-action-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-action-card .notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-action-card .notice span,
+.chat-action-card .notice strong {
+  width: 100%;
+}
+
+.error-tail {
+  width: 100%;
+  max-height: 180px;
+  margin: 4px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+}
 
 .evidence-readiness,
 .requirement-list,

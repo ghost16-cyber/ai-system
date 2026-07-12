@@ -379,7 +379,8 @@ export type AssignmentExecutionDisplayState =
   | "running"
   | "completed"
   | "failed"
-  | "expired";
+  | "expired"
+  | "cancelled";
 
 export interface AssignmentExecutionSuggestion {
   action: string;
@@ -409,6 +410,8 @@ export interface AssignmentCommandRecord {
   working_directory: string;
   purpose: string;
   risk_level: string;
+  why_safe: string;
+  expected_output_hint: string;
   timeout_seconds: number;
   workspace: string;
   status: string;
@@ -879,6 +882,12 @@ export class HttpAstraClient implements AstraClient {
   async executeAssignmentCommand(planId: string, request: Record<string, unknown>) {
     return this.postJson<AssignmentCommandRecord>(
       `/assignments/commands/${encodeURIComponent(planId)}/execute`, request,
+    );
+  }
+
+  async cancelAssignmentCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<AssignmentCommandRecord>(
+      `/assignments/commands/${encodeURIComponent(planId)}/cancel`, request,
     );
   }
 

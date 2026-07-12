@@ -85,6 +85,7 @@ from backend.app.commands import (
     CommandExecutionError,
     analyze_command,
     approve_assignment_command,
+    cancel_assignment_command,
     execute_assignment_command,
     get_assignment_command,
     get_assignment_execution_summary,
@@ -460,6 +461,11 @@ class AssignmentCommandApprovalRequest(BaseModel):
     assignment_id: str = Field(..., min_length=1, max_length=128)
     workspace_path: str = Field(..., min_length=1)
     confirmation: str = Field(..., min_length=1)
+
+
+class AssignmentCommandAssociationRequest(BaseModel):
+    assignment_id: str = Field(..., min_length=1, max_length=128)
+    workspace_path: str = Field(..., min_length=1)
 
 
 class AssignmentCommandExecuteRequest(BaseModel):
@@ -1453,6 +1459,25 @@ def create_app(
                 assignment_id=request.assignment_id,
                 workspace=workspace,
                 approval_token=request.approval_token,
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (CommandExecutionError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @application.post("/assignments/commands/{plan_id}/cancel")
+    def assignment_command_cancel(
+        plan_id: str,
+        request: AssignmentCommandAssociationRequest,
+    ) -> dict:
+        try:
+            workspace = _resolve_workspace_path(request.workspace_path)
+            return cancel_assignment_command(
+                assignment_command_store,
+                plan_id,
+                assignment_id=request.assignment_id,
+                workspace=workspace,
+                project_root=configured_workspace_root,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

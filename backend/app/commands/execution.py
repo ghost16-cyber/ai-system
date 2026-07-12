@@ -167,6 +167,28 @@ def approve_assignment_command(
     return public_command_record(record, project_root=project_root), token
 
 
+def cancel_assignment_command(
+    store_root: str | Path,
+    plan_id: str,
+    *,
+    assignment_id: str,
+    workspace: str | Path,
+    project_root: str | Path,
+) -> dict[str, Any]:
+    """Persist cancellation of an unapproved plan without executing it."""
+    with _STORE_LOCK:
+        record = _read_record(store_root, plan_id)
+        _verify_assignment_association(record, assignment_id, workspace, project_root)
+        if record["status"] != "planned":
+            raise CommandExecutionError("Only a pending command plan can be cancelled.")
+        _verify_fingerprint(record)
+        record["status"] = "cancelled"
+        record["finished_at"] = _now()
+        record["approval_token_hash"] = None
+        _write_record(store_root, record)
+    return public_command_record(record, project_root=project_root)
+
+
 def execute_assignment_command(
     store_root: str | Path,
     project_root: str | Path,
@@ -662,6 +684,7 @@ def _display_state(status: str) -> str:
         "failed": "failed",
         "timed_out": "failed",
         "approval_expired": "expired",
+        "cancelled": "cancelled",
     }.get(status, "failed")
 
 
@@ -714,7 +737,7 @@ def _aggregate_state(records: list[dict[str, Any]], *, approved: bool) -> str:
         if "expired" in states:
             return "expired"
         return "pending" if "pending" in states else "consumed"
-    for state in ("running", "failed", "completed", "expired", "approved", "pending"):
+    for state in ("running", "failed", "completed", "cancelled", "expired", "approved", "pending"):
         if state in states:
             return state
     return "pending"
