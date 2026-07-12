@@ -3,6 +3,7 @@ import type {
   AssignmentGenerationMode,
   AssignmentWorkspaceWriteResult,
 } from "../clients/astraClient";
+import type { ChatActionStatus } from "./chatActionState";
 
 export interface AssignmentWorkspaceTarget {
   assignmentNumber: number;
@@ -10,6 +11,24 @@ export interface AssignmentWorkspaceTarget {
   workspacePath: string;
   generationMode: AssignmentGenerationMode;
   plannedFileCount: number;
+}
+
+export interface AssignmentAnalysisCard {
+  title: string;
+  summary: string;
+  rows: Array<{ label: string; value: string }>;
+  technical: Record<string, unknown>;
+  copilotResult?: AssignmentCopilotResult;
+}
+
+export interface AssignmentWorkspaceAction {
+  actionId?: string;
+  status: ChatActionStatus;
+  targets: AssignmentWorkspaceTarget[];
+  copilotResult: AssignmentCopilotResult;
+  results?: AssignmentWorkspaceWriteResult[];
+  resultSummary?: string;
+  error?: string;
 }
 
 export interface AssignmentWorkspacePresentation {
@@ -91,6 +110,71 @@ export function presentAssignmentWorkspaceResults(
   };
 }
 
+export function assignmentAnalysisFromActionPayload(
+  payload: Record<string, unknown> | null | undefined,
+): AssignmentAnalysisCard | null {
+  if (!payload || payload.action_type !== "assignment") return null;
+  const details = asRecord(payload.technical_details);
+  if (!details) return null;
+  const analysis = asRecord(details.assignment_analysis);
+  if (!analysis) return null;
+  const title = readString(analysis.title) || "Assignment analysis";
+  const summary = readString(analysis.next_recommended_step) || readString(payload.summary);
+  const copilot = asRecord(details.copilot_result);
+  const card: AssignmentAnalysisCard = {
+    title,
+    summary,
+    rows: [
+      { label: "Sections found", value: String(readNumber(analysis.section_count)) },
+      { label: "Tasks found", value: String(readNumber(analysis.task_count)) },
+      { label: "Evidence required", value: String(readNumber(analysis.evidence_count)) },
+      { label: "Report sections", value: String(readNumber(analysis.report_section_count)) },
+    ],
+    technical: {
+      assignment_analysis: analysis,
+      copilot_result: copilot ?? {},
+    },
+  };
+  if (copilot) card.copilotResult = copilot as unknown as AssignmentCopilotResult;
+  return card;
+}
+
+export function assignmentWorkspaceActionFromPayload(
+  payload: Record<string, unknown> | null | undefined,
+): AssignmentWorkspaceAction | null {
+  if (!payload || payload.action_type !== "assignment") return null;
+  const details = asRecord(payload.technical_details);
+  if (!details) return null;
+  const workspace = asRecord(details.workspace_action);
+  const copilot = asRecord(details.copilot_result) as unknown as AssignmentCopilotResult | null;
+  if (!workspace || !copilot) return null;
+  const targets = Array.isArray(workspace.targets)
+    ? workspace.targets.flatMap((item) => {
+      const target = asRecord(item);
+      if (!target) return [];
+      const assignmentNumber = readNumber(target.assignment_number);
+      const workspacePath = readString(target.workspace_path);
+      if (!assignmentNumber || !workspacePath) return [];
+      return [{
+        assignmentNumber,
+        assignmentTitle: readString(target.assignment_title) || `Assignment ${assignmentNumber}`,
+        workspacePath,
+        generationMode: isGenerationMode(target.generation_mode) ? target.generation_mode : "mixed",
+        plannedFileCount: readNumber(target.planned_file_count),
+      }];
+    })
+    : [];
+  return {
+    actionId: readString(workspace.action_id) || readString(payload.action_id) || undefined,
+    status: readStatus(workspace.status) || readStatus(payload.status) || "awaiting_approval",
+    targets,
+    copilotResult: copilot,
+    results: Array.isArray(workspace.results) ? workspace.results as AssignmentWorkspaceWriteResult[] : undefined,
+    resultSummary: readString(workspace.result_summary) || readString(payload.result_summary) || undefined,
+    error: readString(workspace.error) || readString(payload.error) || undefined,
+  };
+}
+
 function readPositiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0
     ? value
@@ -99,6 +183,31 @@ function readPositiveInteger(value: unknown): number | null {
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function readNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function readStatus(value: unknown): ChatActionStatus | null {
+  return typeof value === "string" && [
+    "awaiting_approval",
+    "approving",
+    "approved",
+    "running",
+    "completed",
+    "partially_completed",
+    "failed",
+    "cancelled",
+  ].includes(value)
+    ? value as ChatActionStatus
+    : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function isGenerationMode(value: unknown): value is AssignmentGenerationMode {

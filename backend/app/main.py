@@ -344,6 +344,15 @@ class AssignmentWorkspaceGenerateRequest(BaseModel):
     copilot_result: dict
 
 
+class ChatAssignmentAnalyzeRequest(AssignmentCopilotRunRequest):
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    user_message: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class ChatAssignmentActionRequest(BaseModel):
+    chat_run_id: str = Field(..., min_length=1, max_length=128)
+
+
 class DatasetProfileRequest(BaseModel):
     path: str = Field(..., min_length=1)
     sample_rows: int = Field(default=25, ge=1, le=100)
@@ -1052,29 +1061,213 @@ def create_app(
     @application.post("/assignments/copilot/run")
     def assignment_copilot_run(request: AssignmentCopilotRunRequest) -> dict:
         try:
-            workspace_path = _resolve_workspace_path(request.workspace_path) if request.workspace_path else None
-            document_path = _resolve_assignment_path(request.path) if request.path else None
-            dataset_profile = (
-                profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
-                if request.dataset_path
-                else None
-            )
-            result = run_assignment_copilot(
-                text=request.text,
-                path=document_path,
-                selected_assignment=request.selected_assignment,
-                workspace_path=workspace_path,
-                dataset_profile=dataset_profile,
-                project_metadata=request.project_metadata,
-                use_corpus=request.use_corpus,
-                corpus_workspace_root=configured_workspace_root,
-                generation_mode=request.generation_mode,
-            )
+            result = _run_assignment_copilot_request(request)
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return result.model_dump(mode="json")
+
+    @application.post("/chat/assignments/analyze", response_model=ChatRunResponse)
+    def chat_assignment_analyze(
+        request: ChatAssignmentAnalyzeRequest,
+    ) -> ChatRunResponse:
+        try:
+            result_model = _run_assignment_copilot_request(request)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        result = result_model.model_dump(mode="json")
+        created_at = datetime.now(timezone.utc)
+        conversation_id = request.conversation_id or str(uuid4())
+        action = _assignment_chat_action(result)
+        run = ChatRunResponse(
+            run_id=str(uuid4()),
+            conversation_id=conversation_id,
+            user_message=(
+                request.user_message
+                or "Read assignment"
+            ),
+            assistant_response=str(result.get("next_recommended_step") or ""),
+            selected_specialist="assignment_copilot",
+            intent="assignment_analysis",
+            confidence=1.0,
+            rag_used=False,
+            rag_skip_reason="Assignment analysis uses the assignment copilot workflow.",
+            rag_context_count=0,
+            runtime_decision="workspace_action_approval_required",
+            safety_decision="approval_required",
+            used_real_slm=False,
+            slm_provider="not_invoked",
+            slm_fallback_reason="Assignment copilot used deterministic local analysis.",
+            memory_used=False,
+            memory_summary=None,
+            created_at=created_at,
+            trace_summary=[
+                {
+                    "phase": "assignment_analysis",
+                    "title": "Assignment analysis persisted",
+                    "detail": "Stored the structured assignment result and workspace action in chat history.",
+                    "status": "passed",
+                }
+            ],
+            action=action,
+        )
+        repository.store_chat_run(run)
+        return run
+
+    @application.post(
+        "/chat/assignments/workspace/{action_id}/approve",
+        response_model=ChatRunResponse,
+    )
+    def chat_assignment_workspace_approve(
+        action_id: str,
+        request: ChatAssignmentActionRequest,
+    ) -> ChatRunResponse:
+        _require_assignment_action_association(request.chat_run_id, action_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        action = run.action or {}
+        if action.get("status") != "awaiting_approval":
+            raise HTTPException(
+                status_code=400,
+                detail="Assignment workspace action is not awaiting approval.",
+            )
+
+        technical = action.get("technical_details")
+        if not isinstance(technical, dict):
+            raise HTTPException(status_code=400, detail="Assignment action is malformed.")
+        copilot_result = technical.get("copilot_result")
+        workspace_action = technical.get("workspace_action")
+        if not isinstance(copilot_result, dict) or not isinstance(workspace_action, dict):
+            raise HTTPException(status_code=400, detail="Assignment action is malformed.")
+        targets = workspace_action.get("targets")
+        if not isinstance(targets, list) or not targets:
+            raise HTTPException(status_code=400, detail="Assignment action has no workspace targets.")
+
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "running",
+                "error": None,
+                "technical_details": {
+                    "workspace_action": {
+                        **workspace_action,
+                        "status": "running",
+                    }
+                },
+            },
+        )
+
+        results: list[dict] = []
+        try:
+            for target in targets:
+                if not isinstance(target, dict):
+                    raise ValueError("Workspace target is malformed.")
+                generated = _generate_assignment_workspace_from_payload(
+                    AssignmentWorkspaceGenerateRequest(
+                        assignment_number=int(target["assignment_number"]),
+                        workspace_path=str(target["workspace_path"]),
+                        generation_mode=target.get("generation_mode", "mixed"),
+                        overwrite=False,
+                        copilot_result=copilot_result,
+                    )
+                )
+                results.append(_sanitize_assignment_result(generated))
+        except (TypeError, ValueError) as error:
+            summary = (
+                _assignment_workspace_summary(results)
+                if results
+                else None
+            )
+            repository.update_chat_run_action_for_id(
+                request.chat_run_id,
+                action_id,
+                {
+                    "status": "failed",
+                    "result_summary": summary,
+                    "error": str(error),
+                    "technical_details": {
+                        "workspace_action": {
+                            **workspace_action,
+                            "status": "failed",
+                            "results": results,
+                            "result_summary": summary,
+                            "error": str(error),
+                        }
+                    },
+                },
+            )
+            return repository.get_chat_run(request.chat_run_id)
+
+        summary = _assignment_workspace_summary(results)
+        status = "completed"
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": status,
+                "result_summary": summary,
+                "error": None,
+                "technical_details": {
+                    "workspace_action": {
+                        **workspace_action,
+                        "status": status,
+                        "results": results,
+                        "result_summary": summary,
+                        "final_workspace_location": (
+                            results[0].get("workspace_path") if len(results) == 1 else None
+                        ),
+                    }
+                },
+            },
+        )
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post(
+        "/chat/assignments/workspace/{action_id}/cancel",
+        response_model=ChatRunResponse,
+    )
+    def chat_assignment_workspace_cancel(
+        action_id: str,
+        request: ChatAssignmentActionRequest,
+    ) -> ChatRunResponse:
+        _require_assignment_action_association(request.chat_run_id, action_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        action = run.action or {}
+        if action.get("status") != "awaiting_approval":
+            raise HTTPException(
+                status_code=400,
+                detail="Assignment workspace action is not awaiting approval.",
+            )
+        technical = action.get("technical_details")
+        workspace_action = (
+            technical.get("workspace_action")
+            if isinstance(technical, dict)
+            else {}
+        )
+        if not isinstance(workspace_action, dict):
+            workspace_action = {}
+        summary = "Workspace creation cancelled. No files were written."
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id,
+            action_id,
+            {
+                "status": "cancelled",
+                "result_summary": summary,
+                "error": None,
+                "technical_details": {
+                    "workspace_action": {
+                        **workspace_action,
+                        "status": "cancelled",
+                        "result_summary": summary,
+                    }
+                },
+            },
+        )
+        return repository.get_chat_run(request.chat_run_id)
 
     @application.post("/datasets/profile")
     def dataset_profile(request: DatasetProfileRequest) -> dict:
@@ -1119,74 +1312,9 @@ def create_app(
         request: AssignmentWorkspaceGenerateRequest,
     ) -> dict:
         try:
-            root = _resolve_workspace_write_path(request.workspace_path)
-            copilot_mode = request.copilot_result.get("generation_mode")
-            if (
-                copilot_mode is not None
-                and copilot_mode != request.generation_mode
-            ):
-                raise ValueError(
-                    "Requested generation_mode does not match the Copilot result."
-                )
-            raw_blueprints = request.copilot_result.get(
-                "grounded_file_blueprints",
-                [],
-            )
-            if not isinstance(raw_blueprints, list):
-                raise ValueError(
-                    "copilot_result grounded_file_blueprints must be a list."
-                )
-            blueprints = [
-                GroundedFileBlueprint.model_validate(item)
-                for item in raw_blueprints
-                if isinstance(item, dict)
-                and int(item.get("assignment_number", 0))
-                == request.assignment_number
-            ]
-            if not blueprints:
-                raise ValueError(
-                    "No grounded file blueprints were provided for the selected assignment."
-                )
-            raw_summaries = request.copilot_result.get(
-                "corpus_grounding_summary",
-                [],
-            )
-            raw_plans = request.copilot_result.get(
-                "workspace_generation_plan",
-                [],
-            )
-            summary_index = next(
-                (
-                    index
-                    for index, item in enumerate(raw_plans)
-                    if isinstance(item, dict)
-                    and int(item.get("assignment_number", 0))
-                    == request.assignment_number
-                ),
-                None,
-            ) if isinstance(raw_plans, list) else None
-            summary_payload = (
-                raw_summaries[summary_index]
-                if isinstance(raw_summaries, list)
-                and summary_index is not None
-                and len(raw_summaries) > summary_index
-                else {}
-            )
-            summary = CorpusGroundingSummary.model_validate(
-                summary_payload
-            )
-            result = write_grounded_workspace(
-                root,
-                blueprints,
-                grounding_summary=summary,
-                overwrite=request.overwrite,
-            )
+            return _generate_assignment_workspace_from_payload(request)
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return {
-            **result.model_dump(mode="json"),
-            "generation_mode": request.generation_mode,
-        }
 
     @application.post("/assignments/runbook/generate")
     def assignment_runbook_generate(request: AssignmentRunbookGenerateRequest) -> dict:
@@ -2071,6 +2199,254 @@ def create_app(
                 status_code=409,
                 detail="The chat run is not associated with this command plan.",
             )
+
+    def _require_assignment_action_association(
+        chat_run_id: str,
+        action_id: str,
+    ) -> None:
+        if not repository.chat_run_action_matches_id(chat_run_id, action_id):
+            raise HTTPException(
+                status_code=409,
+                detail="The chat run is not associated with this assignment action.",
+            )
+
+    def _run_assignment_copilot_request(
+        request: AssignmentCopilotRunRequest,
+    ):
+        workspace_path = (
+            _resolve_workspace_path(request.workspace_path)
+            if request.workspace_path
+            else None
+        )
+        document_path = _resolve_assignment_path(request.path) if request.path else None
+        dataset_profile = (
+            profile_csv_dataset(_resolve_dataset_path(request.dataset_path))
+            if request.dataset_path
+            else None
+        )
+        return run_assignment_copilot(
+            text=request.text,
+            path=document_path,
+            selected_assignment=request.selected_assignment,
+            workspace_path=workspace_path,
+            dataset_profile=dataset_profile,
+            project_metadata=request.project_metadata,
+            use_corpus=request.use_corpus,
+            corpus_workspace_root=configured_workspace_root,
+            generation_mode=request.generation_mode,
+        )
+
+    def _generate_assignment_workspace_from_payload(
+        request: AssignmentWorkspaceGenerateRequest,
+    ) -> dict:
+        root = _resolve_workspace_write_path(request.workspace_path)
+        copilot_mode = request.copilot_result.get("generation_mode")
+        if copilot_mode is not None and copilot_mode != request.generation_mode:
+            raise ValueError(
+                "Requested generation_mode does not match the Copilot result."
+            )
+        raw_blueprints = request.copilot_result.get("grounded_file_blueprints", [])
+        if not isinstance(raw_blueprints, list):
+            raise ValueError("copilot_result grounded_file_blueprints must be a list.")
+        blueprints = [
+            GroundedFileBlueprint.model_validate(item)
+            for item in raw_blueprints
+            if isinstance(item, dict)
+            and int(item.get("assignment_number", 0)) == request.assignment_number
+        ]
+        if not blueprints:
+            raise ValueError(
+                "No grounded file blueprints were provided for the selected assignment."
+            )
+        raw_summaries = request.copilot_result.get("corpus_grounding_summary", [])
+        raw_plans = request.copilot_result.get("workspace_generation_plan", [])
+        summary_index = (
+            next(
+                (
+                    index
+                    for index, item in enumerate(raw_plans)
+                    if isinstance(item, dict)
+                    and int(item.get("assignment_number", 0))
+                    == request.assignment_number
+                ),
+                None,
+            )
+            if isinstance(raw_plans, list)
+            else None
+        )
+        summary_payload = (
+            raw_summaries[summary_index]
+            if isinstance(raw_summaries, list)
+            and summary_index is not None
+            and len(raw_summaries) > summary_index
+            else {}
+        )
+        summary = CorpusGroundingSummary.model_validate(summary_payload)
+        result = write_grounded_workspace(
+            root,
+            blueprints,
+            grounding_summary=summary,
+            overwrite=request.overwrite,
+        )
+        return {
+            **result.model_dump(mode="json"),
+            "generation_mode": request.generation_mode,
+        }
+
+    def _assignment_chat_action(result: dict) -> dict:
+        analysis = _assignment_analysis_summary(result)
+        targets = _assignment_workspace_targets(result)
+        action_id = str(uuid4())
+        workspace_action = {
+            "action_id": action_id,
+            "status": "awaiting_approval" if targets else "completed",
+            "targets": targets,
+            "planned_file_count": sum(
+                int(target.get("planned_file_count", 0)) for target in targets
+            ),
+            "results": [],
+            "result_summary": None,
+        }
+        status = "awaiting_approval" if targets else "completed"
+        return {
+            "action_id": action_id,
+            "action_type": "assignment",
+            "title": analysis["title"],
+            "summary": analysis["next_recommended_step"],
+            "steps": [
+                "Review the assignment analysis",
+                "Approve workspace creation",
+                "Write starter files without executing generated code",
+            ],
+            "safety_information": {
+                "approval_required": bool(targets),
+                "overwrite": False,
+                "generated_code_executed": False,
+            },
+            "status": status,
+            "approval_required": bool(targets),
+            "result_summary": None,
+            "technical_details": {
+                "assignment_analysis": analysis,
+                "workspace_action": workspace_action,
+                "copilot_result": _sanitize_assignment_result(result),
+            },
+        }
+
+    def _assignment_analysis_summary(result: dict) -> dict:
+        parsed = result.get("parsed_document_summary")
+        if not isinstance(parsed, dict):
+            parsed = {}
+        action_plan = result.get("action_plan")
+        if not isinstance(action_plan, dict):
+            action_plan = {}
+        checklist = action_plan.get("checklist")
+        evidence = result.get("evidence_checklist")
+        if not isinstance(evidence, dict):
+            evidence = {}
+        evidence_summary = evidence.get("summary")
+        if not isinstance(evidence_summary, dict):
+            evidence_summary = {}
+        report = result.get("report_draft")
+        if not isinstance(report, dict):
+            report = {}
+        report_sections = report.get("sections")
+        extracted = result.get("extracted_assignment_sections")
+        return {
+            "title": str(parsed.get("title") or "Assignment analysis"),
+            "section_count": len(extracted) if isinstance(extracted, list) else 0,
+            "task_count": len(checklist) if isinstance(checklist, list) else 0,
+            "evidence_count": int(evidence_summary.get("total_required") or 0),
+            "report_section_count": (
+                len(report_sections) if isinstance(report_sections, list) else 0
+            ),
+            "next_recommended_step": str(result.get("next_recommended_step") or ""),
+        }
+
+    def _assignment_workspace_targets(result: dict) -> list[dict]:
+        if result.get("generation_ready") is False:
+            return []
+        plans = result.get("workspace_generation_plan")
+        if not isinstance(plans, list):
+            return []
+        targets: list[dict] = []
+        seen: set[tuple[int, str]] = set()
+        for item in plans:
+            if not isinstance(item, dict):
+                continue
+            try:
+                assignment_number = int(item.get("assignment_number"))
+            except (TypeError, ValueError):
+                continue
+            workspace_path = str(item.get("workspace_path") or "").strip()
+            if assignment_number not in {1, 2, 3} or not workspace_path:
+                continue
+            key = (assignment_number, workspace_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            files = item.get("files")
+            targets.append(
+                {
+                    "assignment_number": assignment_number,
+                    "assignment_title": str(
+                        item.get("assignment_title") or f"Assignment {assignment_number}"
+                    ),
+                    "workspace_path": workspace_path,
+                    "generation_mode": str(
+                        item.get("generation_mode")
+                        or result.get("generation_mode")
+                        or "mixed"
+                    ),
+                    "planned_file_count": len(files) if isinstance(files, list) else 0,
+                }
+            )
+        return targets
+
+    def _assignment_workspace_summary(results: list[dict]) -> str:
+        created_count = sum(len(item.get("created_files") or []) for item in results)
+        locations = [str(item.get("workspace_path")) for item in results]
+        location = (
+            locations[0]
+            if len(locations) == 1
+            else f"{len(locations)} assignment workspaces"
+        )
+        if created_count:
+            suffix = "" if created_count == 1 else "s"
+            return f"Created {created_count} starter file{suffix} in {location}."
+        return (
+            f"No new files were created in {location}. "
+            "Existing or refused files are listed in the details."
+        )
+
+    def _sanitize_assignment_result(value):
+        if isinstance(value, dict):
+            sanitized = {}
+            for key, item in value.items():
+                if key in {"extracted_text", "raw_text", "file_bytes", "content_bytes"}:
+                    continue
+                if key == "source_path":
+                    sanitized[key] = _safe_workspace_path_string(item)
+                else:
+                    sanitized[key] = _sanitize_assignment_result(item)
+            return sanitized
+        if isinstance(value, list):
+            return [_sanitize_assignment_result(item) for item in value]
+        if isinstance(value, str):
+            return _safe_workspace_path_string(value)
+        return value
+
+    def _safe_workspace_path_string(value):
+        if not isinstance(value, str) or not value:
+            return value
+        try:
+            path = Path(value).expanduser()
+            if path.is_absolute():
+                resolved = path.resolve()
+                return resolved.relative_to(configured_workspace_root).as_posix()
+        except (OSError, ValueError):
+            return value
+        return value
 
     def _plan_chat_action(
         request: ChatRunRequest,

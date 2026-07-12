@@ -45,6 +45,183 @@ def _command_association(run: dict) -> dict:
     }
 
 
+ASSIGNMENT_BRIEF = """
+Assignment 2: PySpark + Snowflake + Streamlit
+Task: Clean data with PySpark, load it into Snowflake, and build a Streamlit dashboard. 25 marks
+Screenshot required: Snowflake worksheet and Streamlit dashboard.
+Analysis question: Explain the data pipeline and dashboard design.
+"""
+
+
+def _assignment_action(run: dict) -> dict:
+    action = run["action"]
+    assert action["action_type"] == "assignment"
+    return action
+
+
+def _workspace_action(run: dict) -> dict:
+    return _assignment_action(run)["technical_details"]["workspace_action"]
+
+
+def test_chat_assignment_analysis_and_workspace_action_are_persisted(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/assignments/analyze",
+            json={
+                "text": ASSIGNMENT_BRIEF,
+                "selected_assignment": 2,
+                "user_message": "Read this assignment",
+            },
+        )
+        runs = _chat_runs(client)
+        detail = client.get(
+            f"/chat/conversations/{response.json()['conversation_id']}",
+        )
+
+    assert response.status_code == 200, response.text
+    assert len(runs) == 1
+    run = runs[0]
+    action = _assignment_action(run)
+    analysis = action["technical_details"]["assignment_analysis"]
+    workspace = action["technical_details"]["workspace_action"]
+    copilot_result = action["technical_details"]["copilot_result"]
+    assert run["run_id"] == response.json()["run_id"]
+    assert action["status"] == "awaiting_approval"
+    assert analysis["title"] == "Assignment 2: PySpark + Snowflake + Streamlit"
+    assert analysis["section_count"] >= 1
+    assert analysis["task_count"] >= 1
+    assert analysis["evidence_count"] >= 1
+    assert analysis["report_section_count"] >= 1
+    assert analysis["next_recommended_step"]
+    assert workspace["status"] == "awaiting_approval"
+    assert workspace["planned_file_count"] > 0
+    assert workspace["targets"][0]["assignment_number"] == 2
+    assert "extracted_text" not in copilot_result["parsed_document_summary"]
+    assert detail.status_code == 200
+    assert (
+        detail.json()["turns"][0]["action"]["technical_details"]["assignment_analysis"]
+        == analysis
+    )
+
+
+def test_chat_assignment_workspace_approval_updates_same_persisted_record(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/assignments/analyze",
+            json={
+                "text": ASSIGNMENT_BRIEF,
+                "selected_assignment": 2,
+                "user_message": "Read this assignment",
+            },
+        ).json()
+        run = _stored_run(client, created["run_id"])
+        action = _assignment_action(run)
+        action_id = action["action_id"]
+
+        approved = client.post(
+            f"/chat/assignments/workspace/{action_id}/approve",
+            json={"chat_run_id": run["run_id"]},
+        )
+        updated = _stored_run(client, run["run_id"])
+        runs = _chat_runs(client)
+        detail = client.get(f"/chat/conversations/{run['conversation_id']}")
+
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["run_id"] == run["run_id"]
+    assert len(runs) == 1
+    updated_action = _assignment_action(updated)
+    workspace = _workspace_action(updated)
+    assert updated_action["status"] == "completed"
+    assert workspace["status"] == "completed"
+    assert updated_action["result_summary"].startswith("Created ")
+    assert workspace["result_summary"] == updated_action["result_summary"]
+    assert workspace["results"][0]["workspace_path"] == "assignment_workspaces/assignment_2"
+    assert workspace["results"][0]["created_files"]
+    assert workspace["results"][0]["commands_executed"] is False
+    assert workspace["results"][0]["generated_code_executed"] is False
+    assert (tmp_path / "assignment_workspaces" / "assignment_2").is_dir()
+    restored_action = detail.json()["turns"][0]["action"]
+    assert restored_action["status"] == "completed"
+    assert (
+        restored_action["technical_details"]["workspace_action"]["results"][0]["created_files"]
+        == workspace["results"][0]["created_files"]
+    )
+
+
+def test_chat_assignment_workspace_cancellation_updates_same_record_without_files(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/assignments/analyze",
+            json={
+                "text": ASSIGNMENT_BRIEF,
+                "selected_assignment": 2,
+                "user_message": "Read this assignment",
+            },
+        ).json()
+        run = _stored_run(client, created["run_id"])
+        action_id = _assignment_action(run)["action_id"]
+
+        cancelled = client.post(
+            f"/chat/assignments/workspace/{action_id}/cancel",
+            json={"chat_run_id": run["run_id"]},
+        )
+        updated = _stored_run(client, run["run_id"])
+        runs = _chat_runs(client)
+
+    assert cancelled.status_code == 200, cancelled.text
+    assert len(runs) == 1
+    assert _assignment_action(updated)["status"] == "cancelled"
+    workspace = _workspace_action(updated)
+    assert workspace["status"] == "cancelled"
+    assert workspace["result_summary"] == "Workspace creation cancelled. No files were written."
+    assert not (tmp_path / "assignment_workspaces").exists()
+
+
+def test_chat_assignment_workspace_rejects_mismatched_run_without_modifying_records(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post(
+            "/chat/assignments/analyze",
+            json={
+                "text": ASSIGNMENT_BRIEF,
+                "selected_assignment": 2,
+                "user_message": "Read first assignment",
+            },
+        ).json()
+        second = client.post(
+            "/chat/assignments/analyze",
+            json={
+                "text": ASSIGNMENT_BRIEF,
+                "selected_assignment": 2,
+                "user_message": "Read second assignment",
+            },
+        ).json()
+        first_before = _stored_run(client, first["run_id"])
+        second_before = _stored_run(client, second["run_id"])
+        action_id = _assignment_action(first_before)["action_id"]
+
+        rejected = client.post(
+            f"/chat/assignments/workspace/{action_id}/approve",
+            json={"chat_run_id": second["run_id"]},
+        )
+        first_after = _stored_run(client, first["run_id"])
+        second_after = _stored_run(client, second["run_id"])
+        runs = _chat_runs(client)
+
+    assert rejected.status_code == 409
+    assert len(runs) == 2
+    assert first_after["action"] == first_before["action"]
+    assert second_after["action"] == second_before["action"]
+    assert not (tmp_path / "assignment_workspaces").exists()
+
+
 @pytest.mark.parametrize("phrase", ["run the test", "run the tests", "run pytest"])
 def test_direct_test_command_is_intercepted_before_chat_workflow(
     tmp_path: Path,

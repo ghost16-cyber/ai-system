@@ -442,6 +442,203 @@ class AnalysisRepository:
                 ),
             )
 
+    def chat_run_action_matches_plan(
+        self,
+        run_id: str,
+        plan_id: str,
+    ) -> bool:
+        """Return whether a stored chat action belongs to a command plan."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT action_json
+                FROM chat_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        if row is None or not row["action_json"]:
+            return False
+
+        try:
+            action = json.loads(row["action_json"])
+        except (TypeError, json.JSONDecodeError):
+            return False
+
+        if not isinstance(action, dict):
+            return False
+
+        technical_details = action.get("technical_details")
+        if not isinstance(technical_details, dict):
+            return False
+
+        command_plan = technical_details.get("command_plan")
+        return (
+            isinstance(command_plan, dict)
+            and command_plan.get("plan_id") == plan_id
+        )
+
+    def get_chat_run(self, run_id: str) -> ChatRunResponse:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM chat_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        if row is None:
+            raise LookupError("Chat run not found.")
+        return self._chat_run_from_row(row)
+
+    def chat_run_action_matches_id(
+        self,
+        run_id: str,
+        action_id: str,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT action_json
+                FROM chat_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        if row is None or not row["action_json"]:
+            return False
+
+        try:
+            action = json.loads(row["action_json"])
+        except (TypeError, json.JSONDecodeError):
+            return False
+
+        return isinstance(action, dict) and action.get("action_id") == action_id
+
+    def update_chat_run_action_for_id(
+        self,
+        run_id: str,
+        action_id: str,
+        updates: dict,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT action_json
+                FROM chat_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+            if row is None or not row["action_json"]:
+                return False
+
+            try:
+                action = json.loads(row["action_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+
+            if not isinstance(action, dict) or action.get("action_id") != action_id:
+                return False
+
+            merged_action = dict(action)
+            technical_details = action.get("technical_details")
+            if not isinstance(technical_details, dict):
+                technical_details = {}
+
+            technical_updates = updates.get("technical_details")
+            if isinstance(technical_updates, dict):
+                merged_details = dict(technical_details)
+                merged_details.update(technical_updates)
+                merged_action["technical_details"] = merged_details
+
+            for key, value in updates.items():
+                if key != "technical_details":
+                    merged_action[key] = value
+
+            connection.execute(
+                """
+                UPDATE chat_runs
+                SET action_json = ?
+                WHERE run_id = ?
+                """,
+                (json.dumps(merged_action, sort_keys=True), run_id),
+            )
+
+        return True
+
+    def update_chat_run_action_for_plan(
+        self,
+        run_id: str,
+        plan_id: str,
+        updates: dict,
+    ) -> bool:
+        """Merge lifecycle updates into a stored chat action.
+
+        The stored action must belong to the supplied command plan. This
+        prevents a client from updating an unrelated chat run by providing
+        another run ID.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT action_json
+                FROM chat_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+            if row is None or not row["action_json"]:
+                return False
+
+            try:
+                action = json.loads(row["action_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+
+            if not isinstance(action, dict):
+                return False
+
+            technical_details = action.get("technical_details")
+            if not isinstance(technical_details, dict):
+                return False
+
+            command_plan = technical_details.get("command_plan")
+            if (
+                not isinstance(command_plan, dict)
+                or command_plan.get("plan_id") != plan_id
+            ):
+                return False
+
+            merged_action = dict(action)
+
+            technical_updates = updates.get("technical_details")
+            if isinstance(technical_updates, dict):
+                merged_details = dict(technical_details)
+                merged_details.update(technical_updates)
+                merged_action["technical_details"] = merged_details
+
+            for key, value in updates.items():
+                if key != "technical_details":
+                    merged_action[key] = value
+
+            connection.execute(
+                """
+                UPDATE chat_runs
+                SET action_json = ?
+                WHERE run_id = ?
+                """,
+                (json.dumps(merged_action, sort_keys=True), run_id),
+            )
+
+        return True
+
     def list_chat_runs(self, *, limit: int) -> list[ChatRunResponse]:
         with self._connect() as connection:
             rows = connection.execute(

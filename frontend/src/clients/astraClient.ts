@@ -353,6 +353,15 @@ export interface AssignmentWorkspaceGenerateRequest {
   copilot_result: AssignmentCopilotResult;
 }
 
+export interface ChatAssignmentAnalyzeRequest extends AssignmentCopilotRequest {
+  conversation_id?: string | null;
+  user_message?: string;
+}
+
+export interface ChatAssignmentActionRequest {
+  chat_run_id: string;
+}
+
 export interface AssignmentWorkspaceWriteResult {
   workspace_path: string;
   created_files: string[];
@@ -683,6 +692,9 @@ export interface AstraClient {
   exportTrainingDataset(format: "jsonl" | "csv"): Promise<TrainingExportResponse>;
   uploadAssignment(file: File): Promise<AssignmentUploadResult>;
   runAssignmentCopilot(request: AssignmentCopilotRequest): Promise<AssignmentCopilotResult>;
+  createChatAssignmentAnalysis(request: ChatAssignmentAnalyzeRequest): Promise<ChatRunResponse>;
+  approveChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest): Promise<ChatRunResponse>;
+  cancelChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest): Promise<ChatRunResponse>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -904,6 +916,18 @@ export class HttpAstraClient implements AstraClient {
 
   async runAssignmentCopilot(request: AssignmentCopilotRequest) {
     return this.postJson<AssignmentCopilotResult>("/assignments/copilot/run", request);
+  }
+
+  async createChatAssignmentAnalysis(request: ChatAssignmentAnalyzeRequest) {
+    return this.postJson<ChatRunResponse>("/chat/assignments/analyze", request);
+  }
+
+  async approveChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/assignments/workspace/${encodeURIComponent(actionId)}/approve`, request);
+  }
+
+  async cancelChatAssignmentWorkspace(actionId: string, request: ChatAssignmentActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/assignments/workspace/${encodeURIComponent(actionId)}/cancel`, request);
   }
 
   async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {

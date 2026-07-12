@@ -93,10 +93,11 @@ test("assignment workspace creation is approval-gated and uses the real backend 
   assert.match(appSource, /Create assignment workspace\?/);
   assert.match(workspaceStateSource, /create assignment workspace/);
   assert.match(appSource, />Create workspace</);
-  assert.match(appSource, /client\.generateAssignmentWorkspace/);
-  assert.match(appSource, /copilot_result:\s*action\.copilotResult/);
+  assert.match(appSource, /client\.approveChatAssignmentWorkspace/);
+  assert.match(appSource, /client\.cancelChatAssignmentWorkspace/);
+  assert.match(appSource, /chat_run_id:\s*chatRunId/);
   assert.match(appSource, /No generated code will be executed/);
-  assert.match(clientSource, /\/assignments\/workspace\/generate/);
+  assert.match(clientSource, /\/chat\/assignments\/workspace\/\$\{encodeURIComponent\(actionId\)\}\/approve/);
   assert.match(stylesSource, /\.workspace-plan-list\s*\{/);
 });
 
@@ -106,4 +107,22 @@ test("workspace creation requests use the native assignment interceptor", () => 
   assert.ok(nativeHandler > -1);
   assert.ok(ordinaryChat > -1);
   assert.match(appSource, /Read or attach an assignment first/);
+});
+
+test("assignment analysis and workspace cards restore from persisted actions", () => {
+  assert.match(clientSource, /\/chat\/assignments\/analyze/);
+  assert.match(appSource, /createChatAssignmentAnalysis/);
+  assert.match(appSource, /assignmentAnalysisFromActionPayload/);
+  assert.match(appSource, /assignmentWorkspaceActionFromPayload/);
+  assert.match(appSource, /continueConversation/);
+});
+
+test("restored workspace cards do not auto-run generation and keep duplicate-click lock", () => {
+  const continueIndex = appSource.indexOf("async function continueConversation");
+  const approveIndex = appSource.indexOf("async function approveWorkspaceAction");
+  assert.ok(continueIndex > -1);
+  assert.ok(approveIndex > -1);
+  assert.equal(appSource.slice(continueIndex, approveIndex).includes("approveChatAssignmentWorkspace"), false);
+  assert.match(appSource, /tryLockCommandAction\(locks\.current, lockId\)/);
+  assert.match(appSource, /assignment-workspace:\$\{action\.actionId\}/);
 });
