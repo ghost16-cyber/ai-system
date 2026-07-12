@@ -20,7 +20,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
-button, textarea, select { font: inherit; }
+button, textarea, select, input { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
@@ -106,6 +106,16 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .action-card .technical-body label pre { max-height: 220px; overflow-y: auto; font-weight: 400; }
 .action-card .technical-body > .json-block { display: none; }
 
+.attachment-chip { display: flex; align-items: center; gap: 9px; width: max-content; max-width: 100%; margin: 0 6px 8px; padding: 8px 10px; border: 1px solid #cfe0d6; border-radius: 10px; color: var(--green-dark); background: var(--green-soft); }
+.attachment-chip > span { display: grid; min-width: 0; }
+.attachment-chip strong { max-width: min(420px, 60vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
+.attachment-chip small { color: var(--muted); font-size: .68rem; }
+.attachment-chip button, .attach-button { display: grid; place-items: center; border: 0; background: transparent; }
+.attachment-chip button { margin-left: auto; padding: 4px; color: var(--muted); }
+.file-input { display: none; }
+.attach-button { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 9px; color: var(--muted); }
+.attach-button:hover { color: var(--green-dark); background: var(--green-soft); }
+
 .composer { position: fixed; z-index: 5; left: 50%; bottom: 0; width: min(900px, 100%); padding: 15px clamp(15px, 3vw, 28px) 20px; transform: translateX(-50%); background: linear-gradient(to bottom, rgb(244 247 245 / 0%), #f4f7f5 25%); }
 .composer-box { display: flex; align-items: flex-end; gap: 10px; padding: 10px 10px 10px 15px; border: 1px solid #bdcec4; border-radius: 16px; background: white; box-shadow: 0 10px 30px rgb(21 48 34 / 12%); }
 .composer textarea { flex: 1; min-height: 30px; max-height: 150px; padding: 5px 0; resize: none; border: 0; outline: 0; color: #17221d; background: transparent; line-height: 1.45; }
@@ -128,4 +138,19 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   .card-heading { display: grid; }
   .info-card dl div { grid-template-columns: 1fr; gap: 3px; }
   .technical-grid { grid-template-columns: 1fr; }
+}
+
+.workspace-plan-list { display: grid; gap: 8px; }
+.workspace-plan-list > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 12px; border: 1px solid #cfe0d6; border-radius: 10px; background: var(--surface-soft); }
+.workspace-plan-list span { display: grid; gap: 4px; min-width: 0; }
+.workspace-plan-list strong { color: #29382f; font-size: .86rem; }
+.workspace-plan-list code { overflow-wrap: anywhere; color: var(--green-dark); font-size: .76rem; }
+.workspace-plan-list small { flex: 0 0 auto; color: var(--muted); font-size: .72rem; }
+.status-partially_completed { color: var(--amber); background: var(--amber-soft); }
+.status-cancelled { color: var(--muted); background: #edf1ef; }
+.result.partially_completed { color: #725315; background: var(--amber-soft); }
+.result.cancelled { color: var(--muted); background: #edf1ef; }
+
+@media (max-width: 640px) {
+  .workspace-plan-list > div { align-items: flex-start; flex-direction: column; }
 }

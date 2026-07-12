@@ -5,7 +5,9 @@ import {
   ChevronDown,
   CircleAlert,
   Database,
+  FileText,
   History,
+  Paperclip,
   Plus,
   Send,
   Server,
@@ -16,6 +18,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   HttpAstraClient,
   type AssignmentCopilotResult,
+  type AssignmentWorkspaceWriteResult,
   type ChatRunResponse,
   type HealthData,
 } from "./clients/astraClient";
@@ -29,6 +32,12 @@ import {
   commandResultPresentation,
   tryLockCommandAction,
 } from "./state/chatCommandState";
+import {
+  deriveAssignmentWorkspaceTargets,
+  isAssignmentWorkspaceRequest,
+  presentAssignmentWorkspaceResults,
+  type AssignmentWorkspaceTarget,
+} from "./state/assignmentWorkspaceState";
 
 interface Settings {
   apiUrl: string;
@@ -44,6 +53,15 @@ interface InfoCard {
   technical?: unknown;
 }
 
+interface AssignmentWorkspaceAction {
+  status: ChatActionStatus;
+  targets: AssignmentWorkspaceTarget[];
+  copilotResult: AssignmentCopilotResult;
+  results?: AssignmentWorkspaceWriteResult[];
+  resultSummary?: string;
+  error?: string;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant";
@@ -51,6 +69,7 @@ interface Message {
   createdAt: string;
   run?: ChatRunResponse;
   action?: ChatAction;
+  workspaceAction?: AssignmentWorkspaceAction;
   info?: InfoCard;
 }
 
@@ -71,6 +90,8 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [awaitingAssignment, setAwaitingAssignment] = useState(false);
   const [assignmentResult, setAssignmentResult] = useState<AssignmentCopilotResult | null>(null);
+  const [selectedAssignmentFile, setSelectedAssignmentFile] = useState<File | null>(null);
+  const assignmentFileInputRef = useRef<HTMLInputElement | null>(null);
   const locks = useRef(new Set<string>());
   const client = useMemo(() => new HttpAstraClient(settings.apiUrl), [settings.apiUrl]);
 
@@ -89,12 +110,25 @@ export default function App() {
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const prompt = input.trim();
-    if (!prompt || loading) return;
+    const attachedFile = selectedAssignmentFile;
+    if ((!prompt && !attachedFile) || loading) return;
+    const submittedText = prompt || `Read assignment: ${attachedFile?.name ?? "attached file"}`;
     setInput("");
     setError(null);
-    setMessages((current) => [...current, makeMessage("user", prompt)]);
+    setMessages((current) => [...current, makeMessage("user", submittedText)]);
     setLoading(true);
     try {
+      if (attachedFile) {
+        const uploaded = await client.uploadAssignment(attachedFile);
+        const result = await client.runAssignmentCopilot({
+          path: uploaded.path,
+          selected_assignment: "all",
+        });
+        showAssignmentAnalysis(result);
+        clearAssignmentFile();
+        setAwaitingAssignment(false);
+        return;
+      }
       if (await handleNativeRequest(prompt)) return;
       await runOrdinaryChat(prompt);
     } catch (caught) {
@@ -104,6 +138,90 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function clearAssignmentFile() {
+    setSelectedAssignmentFile(null);
+    if (assignmentFileInputRef.current) assignmentFileInputRef.current.value = "";
+  }
+
+  function selectAssignmentFile(file: File | null) {
+    if (!file) return;
+    const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] ?? "";
+    if (![".txt", ".md", ".docx"].includes(extension)) {
+      setError("Supported assignment files are .txt, .md, and .docx.");
+      clearAssignmentFile();
+      return;
+    }
+    if (file.size === 0) {
+      setError("The selected assignment file is empty.");
+      clearAssignmentFile();
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("The selected assignment file is larger than 10 MB.");
+      clearAssignmentFile();
+      return;
+    }
+    setError(null);
+    setSelectedAssignmentFile(file);
+  }
+
+  function showAssignmentAnalysis(result: AssignmentCopilotResult) {
+    setAssignmentResult(result);
+    const checklist = Array.isArray(result.action_plan.checklist)
+      ? result.action_plan.checklist
+      : [];
+    const evidenceSummary = isRecord(result.evidence_checklist.summary)
+      ? result.evidence_checklist.summary
+      : {};
+    const reportSections = Array.isArray(result.report_draft.sections)
+      ? result.report_draft.sections
+      : [];
+    const title = readText(result.parsed_document_summary.title) || "Assignment analysis";
+    addInfo({
+      icon: "assignment",
+      title,
+      summary: result.next_recommended_step,
+      rows: [
+        { label: "Sections found", value: String(result.extracted_assignment_sections.length) },
+        { label: "Tasks found", value: String(checklist.length) },
+        { label: "Evidence required", value: String(readNumber(evidenceSummary.total_required)) },
+        { label: "Report sections", value: String(reportSections.length) },
+        { label: "Files written", value: result.files_written ? "Yes" : "No" },
+      ],
+      technical: result,
+    });
+    offerAssignmentWorkspace(result);
+  }
+
+  function offerAssignmentWorkspace(result: AssignmentCopilotResult) {
+    const targets = deriveAssignmentWorkspaceTargets(result);
+    if (!targets.length || result.generation_ready === false) {
+      setMessages((current) => [...current, makeMessage(
+        "assistant",
+        "I understood the assignment, but no safe workspace generation plan is available yet.",
+      )]);
+      return;
+    }
+
+    const key = workspaceTargetKey(targets);
+    setMessages((current) => {
+      const alreadyOffered = current.some((message) =>
+        message.workspaceAction
+          && workspaceTargetKey(message.workspaceAction.targets) === key
+          && !["cancelled", "failed"].includes(message.workspaceAction.status),
+      );
+      if (alreadyOffered) return current;
+      return [...current, {
+        ...makeMessage("assistant", ""),
+        workspaceAction: {
+          status: "awaiting_approval",
+          targets,
+          copilotResult: result,
+        },
+      }];
+    });
   }
 
   async function runOrdinaryChat(prompt: string) {
@@ -140,23 +258,23 @@ export default function App() {
       const result = await client.runAssignmentCopilot(looksLikePath
         ? { path: prompt, selected_assignment: "all" }
         : { text: prompt, selected_assignment: "all" });
-      setAssignmentResult(result);
-      addInfo({
-        icon: "assignment",
-        title: "Assignment analysis",
-        summary: result.next_recommended_step,
-        rows: [
-          { label: "Sections found", value: String(result.extracted_assignment_sections.length) },
-          { label: "Tools executed", value: result.tools_executed ? "Yes" : "No" },
-          { label: "Files written", value: result.files_written ? "Yes" : "No" },
-        ],
-        technical: result,
-      });
+      showAssignmentAnalysis(result);
       return true;
     }
     if (normalized === "read this assignment" || normalized === "read an assignment") {
       setAwaitingAssignment(true);
-      setMessages((current) => [...current, makeMessage("assistant", "Paste the assignment text or send a local .txt, .md, or .docx path in your next message.")]);
+      setMessages((current) => [...current, makeMessage("assistant", "Attach a .txt, .md, or .docx file here, paste the assignment text, or send a local file path in your next message.")]);
+      return true;
+    }
+    if (isAssignmentWorkspaceRequest(normalized)) {
+      if (!assignmentResult) {
+        setMessages((current) => [...current, makeMessage(
+          "assistant",
+          "Read or attach an assignment first. I will then show the exact workspace plan for approval.",
+        )]);
+      } else {
+        offerAssignmentWorkspace(assignmentResult);
+      }
       return true;
     }
     if (normalized === "check assignment readiness") {
@@ -232,7 +350,87 @@ export default function App() {
     setMessages((current) => current.map((item) => item.id === messageId && item.action ? { ...item, action: change(item.action) } : item));
   }
 
-  async function approveAction(messageId: string, action: ChatAction) {
+  function updateWorkspaceAction(
+    messageId: string,
+    change: (action: AssignmentWorkspaceAction) => AssignmentWorkspaceAction,
+  ) {
+    setMessages((current) => current.map((item) =>
+      item.id === messageId && item.workspaceAction
+        ? { ...item, workspaceAction: change(item.workspaceAction) }
+        : item,
+    ));
+  }
+
+  async function approveWorkspaceAction(
+    messageId: string,
+    action: AssignmentWorkspaceAction,
+  ) {
+    if (action.status !== "awaiting_approval") return;
+    const lockId = `assignment-workspace:${workspaceTargetKey(action.targets)}`;
+    if (!action.targets.length || !tryLockCommandAction(locks.current, lockId)) return;
+
+    const results: AssignmentWorkspaceWriteResult[] = [];
+    try {
+      updateWorkspaceAction(messageId, (current) => ({
+        ...current,
+        status: "approving",
+        error: undefined,
+      }));
+      await nextPaint();
+      updateWorkspaceAction(messageId, (current) => ({ ...current, status: "running" }));
+
+      for (const target of action.targets) {
+        results.push(await client.generateAssignmentWorkspace({
+          assignment_number: target.assignmentNumber,
+          workspace_path: target.workspacePath,
+          generation_mode: target.generationMode,
+          overwrite: false,
+          copilot_result: action.copilotResult,
+        }));
+      }
+
+      const presentation = presentAssignmentWorkspaceResults(results);
+      updateWorkspaceAction(messageId, (current) => ({
+        ...current,
+        status: presentation.status,
+        results,
+        resultSummary: presentation.summary,
+      }));
+      if (presentation.createdFileCount > 0) {
+        setAssignmentResult((current) =>
+          current === action.copilotResult ? { ...current, files_written: true } : current,
+        );
+      }
+    } catch (caught) {
+      const partial = results.length > 0 ? presentAssignmentWorkspaceResults(results) : null;
+      updateWorkspaceAction(messageId, (current) => ({
+        ...current,
+        status: partial ? "partially_completed" : "failed",
+        results: partial ? results : current.results,
+        resultSummary: partial
+          ? `${partial.summary} A later workspace could not be created.`
+          : current.resultSummary,
+        error: cleanError(caught),
+      }));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  function cancelWorkspaceAction(messageId: string, action: AssignmentWorkspaceAction) {
+    if (action.status !== "awaiting_approval") return;
+    updateWorkspaceAction(messageId, (current) => ({
+      ...current,
+      status: "cancelled",
+      resultSummary: "Workspace creation cancelled. No files were written.",
+    }));
+  }
+
+  async function approveAction(
+    messageId: string,
+    action: ChatAction,
+    chatRunId?: string,
+  ) {
     if (action.status !== "awaiting_approval") return;
     if (action.actionType === "system_configuration") {
       const lockId = `model:${action.selectedOption ?? ""}`;
@@ -256,7 +454,11 @@ export default function App() {
           execute: (id, request) => client.executeAssignmentCommand(id, request),
         },
         planId: plan.plan_id,
-        association: { assignment_id: plan.assignment_id, workspace_path: plan.workspace || "." },
+        association: {
+          assignment_id: plan.assignment_id,
+          workspace_path: plan.workspace || ".",
+          ...(chatRunId ? { chat_run_id: chatRunId } : {}),
+        },
         onApproved: (approved) => updateAction(messageId, (current) => ({ ...current, status: "approved", commandPlan: approved })),
         beforeExecution: nextPaint,
         onRunning: () => updateAction(messageId, (current) => ({ ...current, status: "running" })),
@@ -268,7 +470,11 @@ export default function App() {
     } finally { locks.current.delete(plan.plan_id); }
   }
 
-  async function cancelAction(messageId: string, action: ChatAction) {
+  async function cancelAction(
+    messageId: string,
+    action: ChatAction,
+    chatRunId?: string,
+  ) {
     if (action.status !== "awaiting_approval") return;
     if (action.actionType === "system_configuration") {
       updateAction(messageId, (current) => ({ ...current, status: "cancelled", resultSummary: "Action cancelled. No setting was changed." }));
@@ -277,7 +483,11 @@ export default function App() {
     const plan = action.commandPlan;
     if (!plan || !tryLockCommandAction(locks.current, plan.plan_id)) return;
     try {
-      const cancelled = await client.cancelAssignmentCommand(plan.plan_id, { assignment_id: plan.assignment_id, workspace_path: plan.workspace || "." });
+      const cancelled = await client.cancelAssignmentCommand(plan.plan_id, {
+        assignment_id: plan.assignment_id,
+        workspace_path: plan.workspace || ".",
+        ...(chatRunId ? { chat_run_id: chatRunId } : {}),
+      });
       updateAction(messageId, (current) => ({ ...current, status: "cancelled", commandPlan: cancelled, resultSummary: "Action cancelled. No command was executed." }));
     } catch (caught) {
       updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
@@ -289,6 +499,8 @@ export default function App() {
     setMessages([]);
     setError(null);
     setAwaitingAssignment(false);
+    setAssignmentResult(null);
+    clearAssignmentFile();
   }
 
   async function continueConversation(selectedConversationId: string) {
@@ -328,12 +540,18 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
           {error && <div className="composer-error"><CircleAlert size={15} />{error}</div>}
-          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Message Astra…" rows={1} disabled={loading} /><button className="send-button" disabled={!input.trim() || loading} aria-label="Send"><Send size={18} /></button></div>
+          {selectedAssignmentFile && <div className="attachment-chip"><FileText size={16} /><span><strong>{selectedAssignmentFile.name}</strong><small>{formatFileSize(selectedAssignmentFile.size)}</small></span><button type="button" onClick={clearAssignmentFile} aria-label="Remove attached assignment"><X size={15} /></button></div>}
+          <div className="composer-box">
+            <input ref={assignmentFileInputRef} className="file-input" type="file" accept=".txt,.md,.docx" onChange={(event) => selectAssignmentFile(event.target.files?.[0] ?? null)} />
+            <button type="button" className="attach-button" onClick={() => assignmentFileInputRef.current?.click()} disabled={loading} aria-label="Attach assignment file"><Paperclip size={18} /></button>
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={selectedAssignmentFile ? "Add a message or send to analyse…" : "Message Astra…"} rows={1} disabled={loading} />
+            <button className="send-button" disabled={(!input.trim() && !selectedAssignmentFile) || loading} aria-label="Send"><Send size={18} /></button>
+          </div>
           <p>Approval required for execution. Unsupported and destructive actions remain blocked.</p>
         </form>
       </main>
@@ -341,13 +559,60 @@ export default function App() {
   );
 }
 
-function ChatMessage({ message, onApprove, onCancel, onOption, onContinue }: { message: Message; onApprove: (id: string, action: ChatAction) => Promise<void>; onCancel: (id: string, action: ChatAction) => Promise<void>; onOption: (option: string) => void; onContinue: (conversationId: string) => Promise<void> }) {
+function ChatMessage({
+  message,
+  onApprove,
+  onCancel,
+  onApproveWorkspace,
+  onCancelWorkspace,
+  onOption,
+  onContinue,
+}: {
+  message: Message;
+  onApprove: (id: string, action: ChatAction, chatRunId?: string) => Promise<void>;
+  onCancel: (id: string, action: ChatAction, chatRunId?: string) => Promise<void>;
+  onApproveWorkspace: (id: string, action: AssignmentWorkspaceAction) => Promise<void>;
+  onCancelWorkspace: (id: string, action: AssignmentWorkspaceAction) => void;
+  onOption: (option: string) => void;
+  onContinue: (conversationId: string) => Promise<void>;
+}) {
   return <article className={`message ${message.role}`}><Avatar role={message.role} /><div className="bubble">
     {message.text && <p className="message-text">{message.text}</p>}
-    {message.action && <ActionCard action={message.action} onApprove={() => void onApprove(message.id, message.action!)} onCancel={() => void onCancel(message.id, message.action!)} onOption={onOption} />}
+    {message.action && <ActionCard action={message.action} onApprove={() => void onApprove(message.id, message.action!, message.run?.run_id)} onCancel={() => void onCancel(message.id, message.action!, message.run?.run_id)} onOption={onOption} />}
+    {message.workspaceAction && <AssignmentWorkspaceCard action={message.workspaceAction} onApprove={() => void onApproveWorkspace(message.id, message.workspaceAction!)} onCancel={() => onCancelWorkspace(message.id, message.workspaceAction!)} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
     {message.run && !message.action && <RunDetails run={message.run} />}
   </div></article>;
+}
+
+function AssignmentWorkspaceCard({
+  action,
+  onApprove,
+  onCancel,
+}: {
+  action: AssignmentWorkspaceAction;
+  onApprove: () => void;
+  onCancel: () => void;
+}) {
+  const busy = ["approving", "approved", "running"].includes(action.status);
+  return <div className="action-card workspace-action-card">
+    <div className="card-heading"><div><span className="eyebrow">Assignment workspace</span><h2>Create assignment workspace?</h2></div><Status status={action.status} /></div>
+    <p>Astra will write the planned starter code, documentation, evidence checklist, report outline, and configuration templates. No generated code will be executed.</p>
+    <div className="workspace-plan-list">
+      {action.targets.map((target) => <div key={`${target.assignmentNumber}:${target.workspacePath}`}>
+        <span><strong>{target.assignmentTitle}</strong><code>{target.workspacePath}</code></span>
+        <small>{target.plannedFileCount} planned files</small>
+      </div>)}
+    </div>
+    {action.status === "awaiting_approval" && <div className="button-row"><button className="primary-button" onClick={onApprove}><ShieldCheck size={16} />Create workspace</button><button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel</button></div>}
+    {busy && <div className="progress-line"><Activity className="spin" size={16} />{workspaceStatusText(action.status)}</div>}
+    {action.resultSummary && <div className={`result ${action.status}`}><CheckCircle2 size={17} />{action.resultSummary}</div>}
+    {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Workspace creation failed</strong><pre>{action.error}</pre></div></div>}
+    {action.results && <details className="technical workspace-technical"><summary><ChevronDown size={15} />Created workspace details</summary><div className="technical-body">
+      {action.results.map((result) => <label key={result.workspace_path}>Location: {result.workspace_path}<pre>{result.created_files.length ? result.created_files.join("\n") : "(no new files)"}</pre>{result.skipped_files.length > 0 && <span>Skipped: {result.skipped_files.join(", ")}</span>}{result.refused_files.length > 0 && <span>Refused: {result.refused_files.join(", ")}</span>}</label>)}
+    </div></details>}
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Overwrite: disabled</span><span>Generated code execution: disabled</span><JsonBlock value={{ targets: action.targets, results: action.results ?? [] }} /></div></details>
+  </div>;
 }
 
 function ActionCard({ action, onApprove, onCancel, onOption }: { action: ChatAction; onApprove: () => void; onCancel: () => void; onOption: (option: string) => void }) {
@@ -369,7 +634,7 @@ function ActionCard({ action, onApprove, onCancel, onOption }: { action: ChatAct
 }
 
 function InfoCardView({ card, onContinue }: { card: InfoCard; onContinue: (conversationId: string) => Promise<void> }) {
-  const Icon = card.icon === "history" ? History : card.icon === "database" ? Database : card.icon === "settings" ? ShieldCheck : Server;
+  const Icon = card.icon === "history" ? History : card.icon === "database" ? Database : card.icon === "settings" ? ShieldCheck : card.icon === "assignment" ? FileText : Server;
   return <div className="info-card"><div className="card-heading"><div className="info-title"><Icon size={18} /><h2>{card.title}</h2></div></div><p>{card.summary}</p><dl>{card.rows.map((row, index) => <div key={`${row.label}-${index}`}><dt>{row.label}</dt><dd>{row.conversationId ? <button className="history-link" onClick={() => void onContinue(row.conversationId!)}>{row.value}</button> : row.value}</dd></div>)}</dl>{card.technical !== undefined && <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><JsonBlock value={card.technical} /></details>}</div>;
 }
 
@@ -386,10 +651,16 @@ function Status({ status }: { status: ChatActionStatus }) { return <span classNa
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
 function withoutPlan(details: Record<string, unknown>) { const rest = { ...details }; delete rest.command_plan; return rest; }
 function statusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : status === "approved" ? "Approved. Starting…" : "Running the approved action…"; }
+function workspaceStatusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : "Creating the approved workspace…"; }
+function workspaceTargetKey(targets: AssignmentWorkspaceTarget[]) { return targets.map((target) => `${target.assignmentNumber}:${target.workspacePath}`).join("|"); }
 function makeMessage(role: Message["role"], text: string): Message { return { id: newId(role), role, text, createdAt: new Date().toISOString() }; }
 function newId(prefix: string) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 function normalize(value: string) { return value.trim().toLowerCase().replace(/[.!?]+$/, "").replace(/\s+/g, " "); }
 function cleanError(error: unknown) { return error instanceof Error ? error.message : String(error); }
 function formatTime(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "Saved chat" : date.toLocaleString(); }
 function nextPaint() { return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function readText(value: unknown) { return typeof value === "string" ? value : ""; }
+function readNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
+function formatFileSize(bytes: number) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`; }
 function loadSettings(): Settings { try { const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null") as Partial<Settings> | null; return { ...defaultSettings, ...(stored ?? {}) }; } catch { return defaultSettings; } }

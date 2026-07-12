@@ -4,6 +4,8 @@ import test from "node:test";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const clientSource = readFileSync(new URL("../src/clients/astraClient.ts", import.meta.url), "utf8");
+const workspaceStateSource = readFileSync(new URL("../src/state/assignmentWorkspaceState.ts", import.meta.url), "utf8");
 
 test("the application shell renders only the chat product", () => {
   assert.match(appSource, /aria-label="Conversation"/);
@@ -67,4 +69,41 @@ test("removed product areas have chat-native request handlers", () => {
   ]) {
     assert.ok(appSource.includes(phrase), `missing chat-native handler for: ${phrase}`);
   }
+});
+
+
+test("command lifecycle uses the persistent backend chat run ID", () => {
+  assert.match(appSource, /message\.run\?\.run_id/);
+  assert.match(appSource, /chat_run_id:\s*chatRunId/);
+});
+
+test("assignment documents attach and upload through the chat composer", () => {
+  assert.match(appSource, /type="file"/);
+  assert.match(appSource, /accept="\.txt,\.md,\.docx"/);
+  assert.match(appSource, /client\.uploadAssignment\(attachedFile\)/);
+  assert.match(appSource, /Read assignment:/);
+  assert.match(clientSource, /application\/octet-stream/);
+  assert.match(clientSource, /\/assignments\/upload\?filename=/);
+  assert.match(stylesSource, /\.attachment-chip\s*\{/);
+});
+
+
+
+test("assignment workspace creation is approval-gated and uses the real backend writer", () => {
+  assert.match(appSource, /Create assignment workspace\?/);
+  assert.match(workspaceStateSource, /create assignment workspace/);
+  assert.match(appSource, />Create workspace</);
+  assert.match(appSource, /client\.generateAssignmentWorkspace/);
+  assert.match(appSource, /copilot_result:\s*action\.copilotResult/);
+  assert.match(appSource, /No generated code will be executed/);
+  assert.match(clientSource, /\/assignments\/workspace\/generate/);
+  assert.match(stylesSource, /\.workspace-plan-list\s*\{/);
+});
+
+test("workspace creation requests use the native assignment interceptor", () => {
+  const nativeHandler = appSource.indexOf("isAssignmentWorkspaceRequest(normalized)");
+  const ordinaryChat = appSource.indexOf("await runOrdinaryChat(prompt)");
+  assert.ok(nativeHandler > -1);
+  assert.ok(ordinaryChat > -1);
+  assert.match(appSource, /Read or attach an assignment first/);
 });

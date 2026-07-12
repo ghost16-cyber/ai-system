@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import hashlib
 import json
 import os
@@ -11,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -259,6 +261,10 @@ class SLMChatWithContextRequest(BaseModel):
     source_filter: str | None = None
 
 
+ASSIGNMENT_DOCUMENT_EXTENSIONS = {".txt", ".md", ".docx"}
+MAX_ASSIGNMENT_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
 class AssignmentParseRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
@@ -462,17 +468,20 @@ class AssignmentCommandApprovalRequest(BaseModel):
     assignment_id: str = Field(..., min_length=1, max_length=128)
     workspace_path: str = Field(..., min_length=1)
     confirmation: str = Field(..., min_length=1)
+    chat_run_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AssignmentCommandAssociationRequest(BaseModel):
     assignment_id: str = Field(..., min_length=1, max_length=128)
     workspace_path: str = Field(..., min_length=1)
+    chat_run_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AssignmentCommandExecuteRequest(BaseModel):
     assignment_id: str = Field(..., min_length=1, max_length=128)
     workspace_path: str = Field(..., min_length=1)
     approval_token: str = Field(..., min_length=1)
+    chat_run_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AssignmentVerifyRequest(BaseModel):
@@ -834,11 +843,68 @@ def create_app(
         runs = repository.list_chat_runs(limit=limit)
         return build_intelligence_dashboard(chat_runs=runs, job_queue=job_queue, limit=limit)
 
+    @application.post("/assignments/upload")
+    async def assignment_upload(
+        request: Request,
+        filename: str = Query(..., min_length=1, max_length=255),
+    ) -> dict:
+        normalized_name = filename.replace("\\", "/")
+        original_name = Path(normalized_name).name.strip()
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in ASSIGNMENT_DOCUMENT_EXTENSIONS:
+            supported = ", ".join(sorted(ASSIGNMENT_DOCUMENT_EXTENSIONS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported assignment document extension. Supported extensions: {supported}.",
+            )
+
+        raw_content_length = request.headers.get("content-length")
+        if raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+            if content_length > MAX_ASSIGNMENT_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Assignment document is too large. Maximum upload size is 10 MB.",
+                )
+
+        content = await request.body()
+        if not content:
+            raise HTTPException(status_code=400, detail="Assignment document is empty.")
+        if len(content) > MAX_ASSIGNMENT_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Assignment document is too large. Maximum upload size is 10 MB.",
+            )
+
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original_name).stem)
+        safe_stem = safe_stem.strip("._-") or "assignment"
+        safe_filename = f"{safe_stem[:120]}{suffix}"
+        upload_directory = (
+            configured_workspace_root
+            / "data"
+            / "assignment_uploads"
+            / str(uuid4())
+        )
+        upload_directory.mkdir(parents=True, exist_ok=False)
+        upload_path = upload_directory / safe_filename
+        upload_path.write_bytes(content)
+        relative_path = upload_path.relative_to(configured_workspace_root).as_posix()
+        return {
+            "filename": safe_filename,
+            "original_filename": original_name,
+            "path": relative_path,
+            "size_bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
     @application.get("/assignments/status")
     def assignment_status() -> dict:
         return {
             "status": "ready",
-            "supported_extensions": [".txt", ".md", ".docx"],
+            "supported_extensions": sorted(ASSIGNMENT_DOCUMENT_EXTENSIONS),
             "supported_dataset_extensions": [".csv", ".txt", ".tsv"],
             "features": ["parse", "extract", "plan", "template_plan", "template_write"],
             "advisory_only": True,
@@ -1346,7 +1412,7 @@ def create_app(
             raw_path,
             base_root=configured_workspace_root,
             expected="file",
-            supported_extensions={".txt", ".md", ".docx"},
+            supported_extensions=ASSIGNMENT_DOCUMENT_EXTENSIONS,
             label="Assignment document",
         )
 
@@ -1430,6 +1496,7 @@ def create_app(
         plan_id: str,
         request: AssignmentCommandApprovalRequest,
     ) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
         try:
             workspace = _resolve_workspace_path(request.workspace_path)
             plan, approval_token = approve_assignment_command(
@@ -1444,6 +1511,18 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+        if request.chat_run_id is not None:
+            repository.update_chat_run_action_for_plan(
+                request.chat_run_id,
+                plan_id,
+                {
+                    "status": "approved",
+                    "result_summary": None,
+                    "technical_details": {"command_plan": plan},
+                },
+            )
+
         return {"plan": plan, "approval_token": approval_token}
 
     @application.post("/assignments/commands/{plan_id}/execute")
@@ -1451,9 +1530,10 @@ def create_app(
         plan_id: str,
         request: AssignmentCommandExecuteRequest,
     ) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
         try:
             workspace = _resolve_workspace_path(request.workspace_path)
-            return execute_assignment_command(
+            result = execute_assignment_command(
                 assignment_command_store,
                 configured_workspace_root,
                 plan_id,
@@ -1466,14 +1546,34 @@ def create_app(
         except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+        if request.chat_run_id is not None:
+            summary, error_tail = _chat_command_result_presentation(result)
+            succeeded = (
+                result.get("exit_code") == 0
+                and result.get("display_state") == "completed"
+            )
+            repository.update_chat_run_action_for_plan(
+                request.chat_run_id,
+                plan_id,
+                {
+                    "status": "completed" if succeeded else "failed",
+                    "result_summary": summary,
+                    "error": error_tail,
+                    "technical_details": {"command_plan": result},
+                },
+            )
+
+        return result
+
     @application.post("/assignments/commands/{plan_id}/cancel")
     def assignment_command_cancel(
         plan_id: str,
         request: AssignmentCommandAssociationRequest,
     ) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
         try:
             workspace = _resolve_workspace_path(request.workspace_path)
-            return cancel_assignment_command(
+            result = cancel_assignment_command(
                 assignment_command_store,
                 plan_id,
                 assignment_id=request.assignment_id,
@@ -1484,6 +1584,22 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (CommandExecutionError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+        if request.chat_run_id is not None:
+            repository.update_chat_run_action_for_plan(
+                request.chat_run_id,
+                plan_id,
+                {
+                    "status": "cancelled",
+                    "result_summary": (
+                        "Action cancelled. No command was executed."
+                    ),
+                    "error": None,
+                    "technical_details": {"command_plan": result},
+                },
+            )
+
+        return result
 
     @application.get("/assignments/commands/{plan_id}")
     def assignment_command_status(
@@ -1848,6 +1964,113 @@ def create_app(
                 for item in search["results"]
             ],
         }
+
+    _PYTEST_TOTAL_PATTERN = re.compile(
+        r"(\d+)\s+(passed|failed|error|errors|skipped|xfailed|xpassed|deselected|warning|warnings)\b"
+    )
+    _PYTEST_DURATION_PATTERN = re.compile(
+        r"\bin\s+([0-9]+(?:\.[0-9]+)?)s\b"
+    )
+
+    def _chat_command_result_presentation(
+        command: dict,
+    ) -> tuple[str, str | None]:
+        """Create a concise persisted command result and relevant error tail."""
+        stdout = str(command.get("stdout") or "")
+        stderr = str(command.get("stderr") or "")
+        output = "\n".join(item for item in (stdout, stderr) if item)
+
+        summary = ""
+        if command.get("action") == "pytest":
+            lines = [
+                line.strip()
+                for line in output.splitlines()
+                if line.strip()
+            ]
+            summary_line = next(
+                (
+                    line
+                    for line in reversed(lines)
+                    if _PYTEST_DURATION_PATTERN.search(line)
+                    and re.search(
+                        r"\b(?:passed|failed|errors?|skipped|xfailed|xpassed|deselected)\b",
+                        line,
+                    )
+                ),
+                None,
+            )
+            if summary_line is not None:
+                totals = [
+                    (int(match.group(1)), match.group(2))
+                    for match in _PYTEST_TOTAL_PATTERN.finditer(summary_line)
+                ]
+                duration_match = _PYTEST_DURATION_PATTERN.search(summary_line)
+                if totals and duration_match:
+                    duration = duration_match.group(1)
+                    if len(totals) == 1 and totals[0][1] == "passed":
+                        count = totals[0][0]
+                        noun = "test" if count == 1 else "tests"
+                        summary = f"{count} {noun} passed in {duration} seconds."
+                    else:
+                        descriptions = [
+                            f"{count} {label}"
+                            for count, label in totals
+                        ]
+                        if len(descriptions) == 1:
+                            joined = descriptions[0]
+                        elif len(descriptions) == 2:
+                            joined = " and ".join(descriptions)
+                        else:
+                            joined = (
+                                ", ".join(descriptions[:-1])
+                                + f", and {descriptions[-1]}"
+                            )
+                        summary = (
+                            f"Pytest finished with {joined} "
+                            f"in {duration} seconds."
+                        )
+
+        succeeded = (
+            command.get("exit_code") == 0
+            and command.get("display_state") == "completed"
+        )
+        if not summary:
+            if succeeded:
+                summary = (
+                    "Command completed successfully with exit code "
+                    f"{command.get('exit_code')}."
+                )
+            else:
+                summary = (
+                    "Command failed with exit code "
+                    f"{command.get('exit_code', 'unavailable')}."
+                )
+
+        error_source = str(
+            command.get("error")
+            or stderr
+            or stdout
+            or ""
+        )
+        error_lines = [
+            line.rstrip()
+            for line in error_source.splitlines()
+            if line.strip()
+        ]
+        error_tail = None if succeeded else "\n".join(error_lines[-8:]) or None
+        return summary, error_tail
+
+    def _require_chat_command_association(
+        chat_run_id: str | None,
+        plan_id: str,
+    ) -> None:
+        if chat_run_id is None:
+            return
+        if not repository.chat_run_action_matches_plan(chat_run_id, plan_id):
+            raise HTTPException(
+                status_code=409,
+                detail="The chat run is not associated with this command plan.",
+            )
 
     def _plan_chat_action(
         request: ChatRunRequest,

@@ -20,6 +20,54 @@ def test_assignments_status_endpoint(tmp_path: Path):
     assert body["tools_executed"] is False
 
 
+
+def test_assignment_upload_saves_supported_file_inside_workspace(tmp_path: Path):
+    content = b"# Uploaded Portfolio\nTask: Build a safe pipeline.\n"
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        uploaded = client.post(
+            "/assignments/upload",
+            params={"filename": "../My Portfolio.md"},
+            content=content,
+            headers={"content-type": "application/octet-stream"},
+        )
+        parsed = client.post(
+            "/assignments/parse",
+            json={"path": uploaded.json()["path"]},
+        )
+
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["filename"] == "My_Portfolio.md"
+    assert body["path"].startswith("data/assignment_uploads/")
+    assert body["size_bytes"] == len(content)
+    saved = tmp_path / body["path"]
+    assert saved.is_file()
+    assert saved.read_bytes() == content
+    assert parsed.status_code == 200
+    assert parsed.json()["title"] == "Uploaded Portfolio"
+
+
+def test_assignment_upload_rejects_unsupported_and_empty_files(tmp_path: Path):
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        unsupported = client.post(
+            "/assignments/upload",
+            params={"filename": "brief.exe"},
+            content=b"not allowed",
+        )
+        empty = client.post(
+            "/assignments/upload",
+            params={"filename": "brief.txt"},
+            content=b"",
+        )
+
+    assert unsupported.status_code == 400
+    assert "Unsupported" in unsupported.json()["detail"]
+    assert empty.status_code == 400
+    assert "empty" in empty.json()["detail"].lower()
+    upload_root = tmp_path / "data" / "assignment_uploads"
+    assert not upload_root.exists()
+
+
 def test_assignments_parse_extract_and_plan_endpoints(tmp_path: Path):
     brief = tmp_path / "brief.md"
     brief.write_text(

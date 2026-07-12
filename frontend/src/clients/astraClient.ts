@@ -284,6 +284,14 @@ export interface TrainingExportResponse {
   format: "jsonl" | "csv";
 }
 
+export interface AssignmentUploadResult {
+  filename: string;
+  original_filename: string;
+  path: string;
+  size_bytes: number;
+  sha256: string;
+}
+
 export interface AssignmentCopilotRequest {
   text?: string;
   path?: string;
@@ -291,6 +299,20 @@ export interface AssignmentCopilotRequest {
   workspace_path?: string;
   dataset_path?: string;
   project_metadata?: Record<string, unknown>;
+}
+
+export type AssignmentGenerationMode = "template_only" | "corpus_grounded" | "mixed";
+
+export interface AssignmentWorkspaceGenerationPlan {
+  assignment_number: number;
+  assignment_title: string;
+  workspace_path: string;
+  generation_mode: AssignmentGenerationMode;
+  technologies?: string[];
+  directories?: string[];
+  files?: Array<Record<string, unknown>>;
+  warnings?: string[];
+  unresolved_requirements?: string[];
 }
 
 export interface AssignmentCopilotResult {
@@ -313,9 +335,36 @@ export interface AssignmentCopilotResult {
   analysis_plans?: Array<Record<string, unknown>>;
   dashboard_specs?: Array<Record<string, unknown>>;
   final_readiness?: Record<string, unknown> | null;
+  workspace_generation_plan?: AssignmentWorkspaceGenerationPlan[];
+  grounded_file_blueprints?: Array<Record<string, unknown>>;
+  corpus_grounding_summary?: Array<Record<string, unknown>>;
+  generation_ready?: boolean;
+  generation_mode?: AssignmentGenerationMode;
   tools_executed: boolean;
   files_written: boolean;
   training_performed: boolean;
+}
+
+export interface AssignmentWorkspaceGenerateRequest {
+  assignment_number: number;
+  workspace_path: string;
+  generation_mode: AssignmentGenerationMode;
+  overwrite: boolean;
+  copilot_result: AssignmentCopilotResult;
+}
+
+export interface AssignmentWorkspaceWriteResult {
+  workspace_path: string;
+  created_files: string[];
+  skipped_files: string[];
+  conflicts: string[];
+  refused_files: string[];
+  grounding_summary: Record<string, unknown>;
+  warnings: string[];
+  overwrite: boolean;
+  commands_executed: boolean;
+  generated_code_executed: boolean;
+  generation_mode: AssignmentGenerationMode;
 }
 
 export interface AssignmentReportExportRequest {
@@ -632,7 +681,9 @@ export interface AstraClient {
   getTrainingExamples(limit?: number): Promise<TrainingExamplesResponse>;
   labelTrainingExample(exampleId: string, request: TrainingLabelRequest): Promise<{ updated: boolean; example: TrainingExample }>;
   exportTrainingDataset(format: "jsonl" | "csv"): Promise<TrainingExportResponse>;
+  uploadAssignment(file: File): Promise<AssignmentUploadResult>;
   runAssignmentCopilot(request: AssignmentCopilotRequest): Promise<AssignmentCopilotResult>;
+  generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
   mapAssignmentDataset(request: Record<string, unknown>): Promise<AssignmentDatasetMapping>;
@@ -838,8 +889,25 @@ export class HttpAstraClient implements AstraClient {
     return this.postJson<TrainingExportResponse>("/training/export", { format });
   }
 
+  async uploadAssignment(file: File) {
+    const response = await fetch(
+      `${this.baseUrl}/assignments/upload?filename=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      },
+    );
+    if (!response.ok) throw new Error(await response.text());
+    return response.json() as Promise<AssignmentUploadResult>;
+  }
+
   async runAssignmentCopilot(request: AssignmentCopilotRequest) {
     return this.postJson<AssignmentCopilotResult>("/assignments/copilot/run", request);
+  }
+
+  async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {
+    return this.postJson<AssignmentWorkspaceWriteResult>("/assignments/workspace/generate", request);
   }
 
   async exportAssignmentReport(request: AssignmentReportExportRequest) {
