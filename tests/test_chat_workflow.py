@@ -4,8 +4,10 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.chat_actions import detect_chat_action
 from backend.app.main import create_app
 
 
@@ -15,6 +17,52 @@ def _ndjson_events(response) -> list[dict]:
         for line in response.text.splitlines()
         if line.strip()
     ]
+
+
+@pytest.mark.parametrize("phrase", ["run the test", "run the tests", "run pytest"])
+def test_direct_test_command_is_intercepted_before_chat_workflow(
+    tmp_path: Path,
+    monkeypatch,
+    phrase: str,
+) -> None:
+    from backend.app import main as main_module
+
+    def ordinary_workflow_must_not_run(*args, **kwargs):
+        raise AssertionError("ordinary specialist, RAG, and SLM workflow was invoked")
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", ordinary_workflow_must_not_run)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post("/chat/run", json={"message": phrase, "use_rag": True})
+        history = client.get("/chat/runs").json()["items"]
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["action"]["status"] == "awaiting_approval"
+    assert body["action"]["technical_details"]["command_plan"]["command"] == "python -m pytest -q"
+    assert body["selected_specialist"] == "command_action"
+    assert body["rag_used"] is False
+    assert body["used_real_slm"] is False
+    assert body["action"]["technical_details"]["command_plan"]["exit_code"] is None
+    assert len(list((tmp_path / "data" / "assignment_command_runs").glob("*.json"))) == 1
+    assert history[0]["action"]["status"] == "awaiting_approval"
+    assert not (tmp_path / "data" / "training" / "intent_examples.jsonl").exists()
+
+
+def test_direct_action_stream_has_one_response_and_no_generated_answer(tmp_path: Path) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post("/chat/stream", json={"message": "pytest", "use_rag": True})
+
+    events = _ndjson_events(response)
+    assert [event["event"] for event in events] == ["run_completed"]
+    assert events[0]["data"]["run"]["action"]["status"] == "awaiting_approval"
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["what does pytest do?", "explain how testing works", "show me a pytest example", "why are tests failing?"],
+)
+def test_informational_test_questions_remain_ordinary_chat(question: str) -> None:
+    assert detect_chat_action(question) is None
 
 
 def test_chat_run_returns_useful_backend_response(tmp_path: Path):

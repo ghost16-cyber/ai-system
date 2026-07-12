@@ -1,13 +1,7 @@
 import type { AssignmentCommandRecord } from "../clients/astraClient";
+import type { ChatActionStatus } from "./chatActionState";
 
-export type ChatCommandStatus =
-  | "awaiting_approval"
-  | "approving"
-  | "approved"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+export type ChatCommandStatus = ChatActionStatus;
 
 export interface CommandResultPresentation {
   summary: string;

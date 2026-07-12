@@ -187,7 +187,8 @@ class AnalysisRepository:
                     memory_used INTEGER NOT NULL DEFAULT 0,
                     memory_summary TEXT,
                     created_at TEXT NOT NULL,
-                    trace_summary_json TEXT NOT NULL
+                    trace_summary_json TEXT NOT NULL,
+                    action_json TEXT
                 )
                 """
             )
@@ -229,6 +230,7 @@ class AnalysisRepository:
                 connection, "chat_runs", "memory_used", "INTEGER NOT NULL DEFAULT 0"
             )
             self._add_column_if_missing(connection, "chat_runs", "memory_summary", "TEXT")
+            self._add_column_if_missing(connection, "chat_runs", "action_json", "TEXT")
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
@@ -386,8 +388,9 @@ class AnalysisRepository:
                     memory_used,
                     memory_summary,
                     created_at,
-                    trace_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trace_summary_json,
+                    action_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -435,6 +438,7 @@ class AnalysisRepository:
                     run.memory_summary,
                     run.created_at.isoformat(),
                     json.dumps(run.trace_summary, sort_keys=True),
+                    json.dumps(run.action, sort_keys=True) if run.action is not None else None,
                 ),
             )
 
@@ -607,6 +611,7 @@ class AnalysisRepository:
             memory_summary=str(row["memory_summary"]) if row["memory_summary"] else None,
             created_at=row["created_at"],
             trace_summary=json.loads(row["trace_summary_json"]),
+            action=(json.loads(row["action_json"]) if row["action_json"] else None),
         )
 
     def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:

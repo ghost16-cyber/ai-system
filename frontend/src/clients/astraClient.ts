@@ -204,6 +204,7 @@ export interface ChatRunResponse {
   memory_summary: string | null;
   created_at: string;
   trace_summary: ChatTraceEntry[];
+  action?: Record<string, unknown> | null;
 }
 
 export type TrainingLabel =

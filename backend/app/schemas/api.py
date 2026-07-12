@@ -123,6 +123,7 @@ class ChatRunResponse(BaseModel):
     memory_summary: str | None = None
     created_at: datetime
     trace_summary: list[dict[str, Any]] = Field(default_factory=list)
+    action: dict[str, Any] | None = None
 
 
 

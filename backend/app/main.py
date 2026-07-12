@@ -95,6 +95,7 @@ from backend.app.commands import (
 )
 from backend.app.core.path_utils import resolve_user_path
 from backend.app.chat_workflow import run_chat_workflow
+from backend.app.chat_actions import DetectedChatAction, detect_chat_action
 from backend.app.database.repository import AnalysisRepository
 from backend.app.debugging import analyze_error_output
 from backend.app.datasets import profile_csv_dataset
@@ -1848,8 +1849,73 @@ def create_app(
             ],
         }
 
+    def _plan_chat_action(
+        request: ChatRunRequest,
+        detected: DetectedChatAction,
+    ) -> ChatRunResponse:
+        created_at = datetime.now(timezone.utc)
+        conversation_id = request.conversation_id or str(uuid4())
+        plan = plan_assignment_command(
+            assignment_command_store,
+            configured_workspace_root,
+            _resolve_workspace_path("."),
+            assignment_id="chat-action",
+            assignment_task=detected.assignment_task,
+            expected_result=detected.expected_result,
+            action=detected.command_action,
+            timeout_seconds=120,
+        )
+        return ChatRunResponse(
+            run_id=str(uuid4()),
+            conversation_id=conversation_id,
+            user_message=request.message,
+            assistant_response=detected.summary,
+            selected_specialist="command_action",
+            intent="command",
+            confidence=1.0,
+            rag_used=False,
+            rag_skip_reason="Direct action intercepted before retrieval.",
+            rag_context_count=0,
+            runtime_decision="approval_required",
+            safety_decision="approval_required",
+            used_real_slm=False,
+            slm_provider="not_invoked",
+            slm_fallback_reason="Direct action did not require model generation.",
+            memory_used=False,
+            memory_summary=None,
+            created_at=created_at,
+            trace_summary=[
+                {
+                    "phase": "action_interception",
+                    "title": "Direct action detected",
+                    "detail": "Created one allowlisted command plan before routing, retrieval, or generation.",
+                    "status": "passed",
+                }
+            ],
+            action={
+                "action_type": detected.action_type,
+                "title": detected.title,
+                "summary": detected.summary,
+                "steps": ["Approve the exact command", "Run once", "Report the result"],
+                "safety_information": {
+                    "approval_required": True,
+                    "destructive_actions_blocked": True,
+                    "expected_file_modifications": "None expected from this command.",
+                },
+                "status": "awaiting_approval",
+                "approval_required": True,
+                "result_summary": None,
+                "technical_details": {"command_plan": plan},
+            },
+        )
+
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
+        detected = detect_chat_action(request.message)
+        if detected is not None:
+            run = _plan_chat_action(request, detected)
+            repository.store_chat_run(run)
+            return run
         previous_turns = (
             repository.list_chat_runs_for_conversation(request.conversation_id)
             if request.conversation_id
@@ -1866,9 +1932,10 @@ def create_app(
 
     @application.post("/chat/stream")
     def chat_stream(request: ChatRunRequest) -> StreamingResponse:
+        detected = detect_chat_action(request.message)
         previous_turns = (
             repository.list_chat_runs_for_conversation(request.conversation_id)
-            if request.conversation_id
+            if request.conversation_id and detected is None
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -1876,14 +1943,18 @@ def create_app(
 
         def worker() -> None:
             try:
-                run = run_chat_workflow(
-                    request,
-                    workspace_root=configured_workspace_root,
-                    previous_turns=previous_turns,
-                    event_sink=events.put,
-                )
+                if detected is not None:
+                    run = _plan_chat_action(request, detected)
+                else:
+                    run = run_chat_workflow(
+                        request,
+                        workspace_root=configured_workspace_root,
+                        previous_turns=previous_turns,
+                        event_sink=events.put,
+                    )
                 repository.store_chat_run(run)
-                _log_training_example(run)
+                if run.action is None:
+                    _log_training_example(run)
                 events.put(
                     {
                         "event": "run_completed",
