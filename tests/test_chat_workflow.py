@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -17,6 +18,31 @@ def _ndjson_events(response) -> list[dict]:
         for line in response.text.splitlines()
         if line.strip()
     ]
+
+
+def _chat_runs(client: TestClient) -> list[dict]:
+    response = client.get("/chat/runs")
+    assert response.status_code == 200, response.text
+    return response.json()["items"]
+
+
+def _stored_run(client: TestClient, run_id: str) -> dict:
+    matches = [item for item in _chat_runs(client) if item["run_id"] == run_id]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _command_plan(run: dict) -> dict:
+    return run["action"]["technical_details"]["command_plan"]
+
+
+def _command_association(run: dict) -> dict:
+    plan = _command_plan(run)
+    return {
+        "assignment_id": plan["assignment_id"],
+        "workspace_path": plan["workspace"],
+        "chat_run_id": run["run_id"],
+    }
 
 
 @pytest.mark.parametrize("phrase", ["run the test", "run the tests", "run pytest"])
@@ -55,6 +81,177 @@ def test_direct_action_stream_has_one_response_and_no_generated_answer(tmp_path:
     events = _ndjson_events(response)
     assert [event["event"] for event in events] == ["run_completed"]
     assert events[0]["data"]["run"]["action"]["status"] == "awaiting_approval"
+
+
+def test_direct_chat_command_creates_one_persisted_awaiting_action(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        response = client.post(
+            "/chat/run",
+            json={"message": "run the tests", "use_rag": True},
+        )
+        runs = _chat_runs(client)
+
+    assert response.status_code == 200, response.text
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["run_id"] == response.json()["run_id"]
+    assert run["action"]["status"] == "awaiting_approval"
+    assert _command_plan(run)["command"] == "python -m pytest -q"
+
+
+def test_chat_command_approval_updates_same_persisted_run(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/run",
+            json={"message": "run the tests", "use_rag": True},
+        ).json()
+        run = _stored_run(client, created["run_id"])
+        plan = _command_plan(run)
+
+        approval = client.post(
+            f"/assignments/commands/{plan['plan_id']}/approve",
+            json={
+                **_command_association(run),
+                "confirmation": f"APPROVE {plan['plan_id']}",
+            },
+        )
+        updated = _stored_run(client, created["run_id"])
+        runs = _chat_runs(client)
+
+    assert approval.status_code == 200, approval.text
+    assert len(runs) == 1
+    assert updated["action"]["status"] == "approved"
+    assert _command_plan(updated)["plan_id"] == plan["plan_id"]
+    assert _command_plan(updated)["status"] == "approved"
+
+
+def test_chat_command_execution_updates_same_run_with_result_summary(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_chat_command_smoke.py").write_text(
+        "def test_fast_chat_command_target():\n"
+        "    assert 2 + 2 == 4\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/run",
+            json={"message": "run the tests", "use_rag": True},
+        ).json()
+        run = _stored_run(client, created["run_id"])
+        plan = _command_plan(run)
+        association = _command_association(run)
+
+        approval = client.post(
+            f"/assignments/commands/{plan['plan_id']}/approve",
+            json={
+                **association,
+                "confirmation": f"APPROVE {plan['plan_id']}",
+            },
+        )
+        assert approval.status_code == 200, approval.text
+
+        execution = client.post(
+            f"/assignments/commands/{plan['plan_id']}/execute",
+            json={
+                **association,
+                "approval_token": approval.json()["approval_token"],
+            },
+        )
+        updated = _stored_run(client, created["run_id"])
+        runs = _chat_runs(client)
+
+    assert execution.status_code == 200, execution.text
+    result = execution.json()
+    assert result["exit_code"] == 0
+    assert len(runs) == 1
+    assert updated["action"]["status"] == "completed"
+    assert re.fullmatch(
+        r"\d+ tests? passed in [0-9.]+ seconds\.",
+        updated["action"]["result_summary"],
+    )
+    persisted_plan = _command_plan(updated)
+    assert persisted_plan["plan_id"] == plan["plan_id"]
+    assert persisted_plan["exit_code"] == 0
+    assert persisted_plan["display_state"] == "completed"
+    assert "1 passed" in persisted_plan["stdout"]
+
+
+def test_chat_command_cancel_updates_same_run_without_execution(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "cancel_marker.txt"
+    (tmp_path / "test_cancel_should_not_run.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_would_write_marker():\n"
+        "    Path('cancel_marker.txt').write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/run",
+            json={"message": "run the tests", "use_rag": True},
+        ).json()
+        run = _stored_run(client, created["run_id"])
+        plan = _command_plan(run)
+
+        cancellation = client.post(
+            f"/assignments/commands/{plan['plan_id']}/cancel",
+            json=_command_association(run),
+        )
+        updated = _stored_run(client, created["run_id"])
+        runs = _chat_runs(client)
+
+    assert cancellation.status_code == 200, cancellation.text
+    assert len(runs) == 1
+    assert updated["action"]["status"] == "cancelled"
+    assert (
+        updated["action"]["result_summary"]
+        == "Action cancelled. No command was executed."
+    )
+    assert _command_plan(updated)["exit_code"] is None
+    assert not marker.exists()
+
+
+def test_chat_command_rejects_mismatched_chat_run_id_without_modifying_runs(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        first = client.post(
+            "/chat/run",
+            json={"message": "run the tests", "use_rag": True},
+        ).json()
+        second = client.post(
+            "/chat/run",
+            json={"message": "run pytest", "use_rag": True},
+        ).json()
+        first_run_before = _stored_run(client, first["run_id"])
+        second_run_before = _stored_run(client, second["run_id"])
+        first_plan = _command_plan(first_run_before)
+
+        rejected = client.post(
+            f"/assignments/commands/{first_plan['plan_id']}/approve",
+            json={
+                **_command_association(first_run_before),
+                "chat_run_id": second["run_id"],
+                "confirmation": f"APPROVE {first_plan['plan_id']}",
+            },
+        )
+
+        first_run_after = _stored_run(client, first["run_id"])
+        second_run_after = _stored_run(client, second["run_id"])
+        runs = _chat_runs(client)
+
+    assert rejected.status_code == 409
+    assert len(runs) == 2
+    assert first_run_after["action"] == first_run_before["action"]
+    assert second_run_after["action"] == second_run_before["action"]
 
 
 @pytest.mark.parametrize(
