@@ -4,6 +4,7 @@ import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
@@ -241,6 +242,40 @@ class AnalysisRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation
                 ON chat_runs (conversation_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_patches (
+                    patch_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    proposal_json TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_patches_conversation
+                ON project_patches (conversation_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    patch_id TEXT,
+                    operation TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL
+                )
                 """
             )
 
@@ -756,6 +791,133 @@ class AnalysisRepository:
                 (conversation_id,),
             )
         return int(cursor.rowcount)
+
+    def store_project_patch(self, proposal: dict[str, Any], snapshot: list[dict[str, Any]] | None = None) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_patches (
+                    patch_id, conversation_id, folder_access_id, status,
+                    proposal_json, snapshot_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    proposal["patch_id"], proposal["conversation_id"], proposal["folder_access_id"],
+                    proposal["status"], json.dumps(proposal, sort_keys=True),
+                    json.dumps(snapshot or [], sort_keys=True), proposal["created_at"], now,
+                ),
+            )
+
+    def get_project_patch(self, patch_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT proposal_json, snapshot_json FROM project_patches WHERE patch_id = ?",
+                (patch_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project patch not found.")
+        proposal = json.loads(row["proposal_json"])
+        snapshot = json.loads(row["snapshot_json"])
+        if not isinstance(proposal, dict) or not isinstance(snapshot, list):
+            raise LookupError("Project patch state is malformed.")
+        return proposal, snapshot
+
+    def update_project_patch(self, proposal: dict[str, Any], snapshot: list[dict[str, Any]] | None = None) -> None:
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT snapshot_json FROM project_patches WHERE patch_id = ?",
+                (proposal["patch_id"],),
+            ).fetchone()
+            if current is None:
+                raise LookupError("Project patch not found.")
+            snapshot_json = json.dumps(snapshot, sort_keys=True) if snapshot is not None else current["snapshot_json"]
+            cursor = connection.execute(
+                """
+                UPDATE project_patches
+                SET status = ?, proposal_json = ?, snapshot_json = ?, updated_at = ?
+                WHERE patch_id = ?
+                """,
+                (
+                    proposal["status"], json.dumps(proposal, sort_keys=True), snapshot_json,
+                    datetime.now().astimezone().isoformat(), proposal["patch_id"],
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise LookupError("Project patch update failed.")
+
+    def transition_project_patch(
+        self,
+        proposal: dict[str, Any],
+        *,
+        expected_status: str,
+        snapshot: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Atomically claim a project patch lifecycle transition."""
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT snapshot_json FROM project_patches WHERE patch_id = ?",
+                (proposal["patch_id"],),
+            ).fetchone()
+            if current is None:
+                return False
+            snapshot_json = json.dumps(snapshot, sort_keys=True) if snapshot is not None else current["snapshot_json"]
+            cursor = connection.execute(
+                """
+                UPDATE project_patches
+                SET status = ?, proposal_json = ?, snapshot_json = ?, updated_at = ?
+                WHERE patch_id = ? AND status = ?
+                """,
+                (
+                    proposal["status"], json.dumps(proposal, sort_keys=True), snapshot_json,
+                    datetime.now().astimezone().isoformat(), proposal["patch_id"], expected_status,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def latest_applied_project_patch(self, conversation_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT proposal_json, snapshot_json FROM project_patches
+                WHERE conversation_id = ? AND status = 'applied'
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("No applied Astra patch is available to roll back.")
+        return json.loads(row["proposal_json"]), json.loads(row["snapshot_json"])
+
+    def store_project_audit_event(self, event: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_audit_events (
+                    event_id, created_at, conversation_id, folder_access_id,
+                    patch_id, operation, status, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event["event_id"], event["created_at"], event["conversation_id"],
+                    event["folder_access_id"], event.get("patch_id"), event["operation"],
+                    event["status"], json.dumps(event.get("metadata") or {}, sort_keys=True),
+                ),
+            )
+
+    def list_project_audit_events(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_audit_events
+                WHERE conversation_id = ? ORDER BY created_at ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [
+            {**dict(row), "metadata": json.loads(row["metadata_json"])}
+            for row in rows
+        ]
 
     def _chat_run_from_row(self, row: sqlite3.Row) -> ChatRunResponse:
         return ChatRunResponse(

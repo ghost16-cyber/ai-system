@@ -296,6 +296,11 @@ def _ignore_reason(path: Path, size: int) -> str | None:
     return None
 
 
+def file_ignore_reason(path: Path, size: int) -> str | None:
+    """Public scanner policy hook shared by safe project readers and patching."""
+    return _ignore_reason(path, size)
+
+
 def classify_file(relative_path: str, suffix: str) -> str:
     lower = relative_path.lower()
     name = Path(lower).name

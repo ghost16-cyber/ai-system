@@ -217,15 +217,29 @@ from backend.app.training_data.schemas import (
 )
 from backend.app.folders import (
     FolderScanError,
+    ProjectPatchError,
+    ProjectSafetyError,
+    apply_project_patch,
     build_inventory,
+    completed_folder_access,
+    create_patch_proposal,
     create_folder_content_unavailable_chat_run,
     create_folder_chat_run,
+    create_project_chat_run,
+    detect_explicit_patch_request,
+    detect_project_intent,
     detect_folder_request,
     diff_inventories,
     has_completed_folder_action,
     is_folder_content_request,
+    project_root_fingerprint,
+    public_patch_proposal,
+    rollback_project_patch,
     validate_folder_root,
+    validate_root_identity,
+    verify_patch_approval,
 )
+from backend.app.folders.audit import audit_event
 from backend.app.workspace import inspect_workspace
 
 
@@ -372,6 +386,44 @@ class ChatFolderRequest(BaseModel):
 
 class ChatFolderActionRequest(BaseModel):
     chat_run_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ProjectPatchChangeRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=500)
+    operation: str = Field(default="modify", min_length=1, max_length=20)
+    content: str | None = Field(default=None, max_length=250_000)
+    explanation: str | None = Field(default=None, max_length=1000)
+
+
+class ProjectPatchProposalRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    user_request: str = Field(..., min_length=1, max_length=2000)
+    changes: list[ProjectPatchChangeRequest] = Field(..., min_length=1, max_length=10)
+    files_inspected: list[str] = Field(default_factory=list, max_length=80)
+    validation_plan: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ProjectPatchApprovalRequest(BaseModel):
+    chat_run_id: str = Field(..., min_length=1, max_length=128)
+    confirmation: str = Field(..., min_length=1, max_length=200)
+
+
+class ProjectPatchApplyRequest(BaseModel):
+    chat_run_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ProjectRollbackRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    user_message: str = Field(default="Undo the last Astra change.", min_length=1, max_length=1000)
+
+
+class ProjectCommandProposalRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    action: str = Field(..., min_length=1, max_length=50)
+    target: str | None = Field(default=None, max_length=500)
+    purpose: str = Field(default="Validate the approved project.", min_length=1, max_length=1000)
+    expected_result: str = Field(default="A bounded validation result.", min_length=1, max_length=1000)
+    timeout_seconds: int = Field(default=120, ge=1, le=120)
 
 
 class DatasetProfileRequest(BaseModel):
@@ -1350,6 +1402,7 @@ def create_app(
             "status": "completed",
             "display_path": scan.get("root_display_name") or folder_action.get("display_path"),
             "approved_root": str(approved_root),
+            "root_fingerprint": project_root_fingerprint(approved_root),
             "approved_root_display": scan.get("root_display_name"),
             "inventory": inventory,
             "summary": scan.get("summary") or {},
@@ -1445,7 +1498,12 @@ def create_app(
         )
 
         try:
-            root = validate_folder_root(approved_root)
+            expected_fingerprint = str(folder_action.get("root_fingerprint") or "")
+            root = (
+                validate_root_identity(approved_root, expected_fingerprint)
+                if expected_fingerprint
+                else validate_folder_root(approved_root)
+            )
             scan = build_inventory(root)
         except FileNotFoundError as error:
             _record_folder_failure(request.chat_run_id, action_id, folder_action, str(error))
@@ -1487,6 +1545,215 @@ def create_app(
             },
         )
         return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/patches/propose", response_model=ChatRunResponse)
+    def chat_project_patch_propose(request: ProjectPatchProposalRequest) -> ChatRunResponse:
+        access = _completed_project_access(request.conversation_id)
+        try:
+            proposal = create_patch_proposal(
+                root=access["approved_root"],
+                conversation_id=request.conversation_id,
+                folder_access_id=access["action_id"],
+                user_request=request.user_request,
+                changes=[change.model_dump() for change in request.changes],
+                files_inspected=request.files_inspected,
+                validation_plan=request.validation_plan,
+            )
+        except (ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        repository.store_project_patch(proposal)
+        run = _project_patch_run(proposal)
+        repository.store_chat_run(run)
+        audit_event(
+            repository, conversation_id=request.conversation_id,
+            folder_access_id=access["action_id"], patch_id=proposal["patch_id"],
+            operation="patch_proposed", status="proposed",
+            metadata={"relative_paths": proposal["file_set"], "file_count": len(proposal["file_set"]), "additions": proposal["additions"], "deletions": proposal["deletions"]},
+        )
+        return run
+
+    @application.post("/chat/projects/patches/{patch_id}/approve", response_model=ChatRunResponse)
+    def chat_project_patch_approve(patch_id: str, request: ProjectPatchApprovalRequest) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, patch_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        proposal, snapshot = _get_project_patch(patch_id)
+        access = _completed_project_access(run.conversation_id)
+        try:
+            verify_patch_approval(
+                proposal, conversation_id=run.conversation_id,
+                folder_access_id=access["action_id"], confirmation=request.confirmation,
+            )
+            validate_root_identity(access["approved_root"], str(proposal["root_fingerprint"]))
+            from backend.app.folders.patches import validate_patch_fresh
+            validate_patch_fresh(access["approved_root"], proposal)
+        except (ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        proposal = {**proposal, "status": "approved", "approved_at": datetime.now(timezone.utc).isoformat()}
+        if not repository.transition_project_patch(proposal, expected_status="proposed", snapshot=snapshot):
+            raise HTTPException(status_code=409, detail="Patch approval was already used or changed concurrently.")
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id, patch_id,
+            {"status": "approved", "approval_required": False, "technical_details": {"project_patch": public_patch_proposal(proposal)}},
+        )
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_approved", status="approved", metadata={"relative_paths": proposal["file_set"]})
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/patches/{patch_id}/apply", response_model=ChatRunResponse)
+    def chat_project_patch_apply(patch_id: str, request: ProjectPatchApplyRequest) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, patch_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        proposal, _snapshot = _get_project_patch(patch_id)
+        access = _completed_project_access(run.conversation_id)
+        claimed = {**proposal, "status": "applying"}
+        if not repository.transition_project_patch(claimed, expected_status="approved"):
+            raise HTTPException(status_code=409, detail="Patch application was already started or completed.")
+        try:
+            updated, snapshot = apply_project_patch(access["approved_root"], proposal)
+        except (ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            failed = {**proposal, "status": "stale" if "stale" in str(error).lower() else "failed"}
+            repository.update_project_patch(failed)
+            repository.update_chat_run_action_for_id(request.chat_run_id, patch_id, {"status": failed["status"], "error": _controlled_project_error(error), "technical_details": {"project_patch": public_patch_proposal(failed)}})
+            audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_failed", status=failed["status"], metadata={"reason": _controlled_project_error(error)})
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        repository.update_project_patch(updated, snapshot)
+        summary = _patch_application_summary(updated)
+        repository.update_chat_run_action_for_id(
+            request.chat_run_id, patch_id,
+            {"status": "completed", "result_summary": summary, "error": None, "technical_details": {"project_patch": public_patch_proposal(updated), "rollback_available": True, "tests_run": False}},
+        )
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_applied", status="applied", metadata={"relative_paths": updated["file_set"], "additions": updated["additions"], "deletions": updated["deletions"]})
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/patches/{patch_id}/reject", response_model=ChatRunResponse)
+    def chat_project_patch_reject(patch_id: str, request: ProjectPatchApplyRequest) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, patch_id)
+        run = repository.get_chat_run(request.chat_run_id)
+        access = _completed_project_access(run.conversation_id)
+        proposal, snapshot = _get_project_patch(patch_id)
+        if proposal.get("status") != "proposed" or proposal.get("conversation_id") != run.conversation_id:
+            raise HTTPException(status_code=409, detail="Only this conversation's pending patch can be rejected.")
+        rejected = {**proposal, "status": "rejected"}
+        if not repository.transition_project_patch(rejected, expected_status="proposed", snapshot=snapshot):
+            raise HTTPException(status_code=409, detail="Patch was already approved, rejected, or changed concurrently.")
+        repository.update_chat_run_action_for_id(request.chat_run_id, patch_id, {"status": "cancelled", "approval_required": False, "result_summary": "Patch rejected. No files were changed.", "technical_details": {"project_patch": public_patch_proposal(rejected)}})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_rejected", status="rejected", metadata={"relative_paths": rejected["file_set"]})
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/rollback/request", response_model=ChatRunResponse)
+    def chat_project_rollback_request(request: ProjectRollbackRequest) -> ChatRunResponse:
+        access = _completed_project_access(request.conversation_id)
+        try:
+            proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        if proposal.get("folder_access_id") != access["action_id"]:
+            raise HTTPException(status_code=409, detail="The patch belongs to a different folder access.")
+        run = _project_rollback_run(proposal, request.user_message)
+        repository.store_chat_run(run)
+        audit_event(repository, conversation_id=request.conversation_id, folder_access_id=access["action_id"], patch_id=proposal["patch_id"], operation="rollback_proposed", status="awaiting_approval", metadata={"relative_paths": proposal["file_set"]})
+        return run
+
+    @application.post("/chat/projects/rollback/{patch_id}/approve", response_model=ChatRunResponse)
+    def chat_project_rollback_approve(patch_id: str, request: ProjectPatchApprovalRequest) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, f"rollback:{patch_id}")
+        run = repository.get_chat_run(request.chat_run_id)
+        access = _completed_project_access(run.conversation_id)
+        proposal, snapshot = _get_project_patch(patch_id)
+        if request.confirmation != f"APPROVE ROLLBACK {patch_id}":
+            raise HTTPException(status_code=400, detail=f"Explicit confirmation must exactly match: APPROVE ROLLBACK {patch_id}")
+        if proposal.get("status") != "applied" or proposal.get("folder_access_id") != access["action_id"]:
+            raise HTTPException(status_code=409, detail="Rollback is unavailable or belongs to another folder access.")
+        approved = {**proposal, "status": "rollback_approved"}
+        if not repository.transition_project_patch(approved, expected_status="applied", snapshot=snapshot):
+            raise HTTPException(status_code=409, detail="Rollback was already started or completed.")
+        try:
+            rolled_back = rollback_project_patch(access["approved_root"], approved, snapshot)
+        except (ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            repository.update_project_patch(proposal, snapshot)
+            audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="rollback_refused", status="conflict", metadata={"reason": _controlled_project_error(error)})
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        repository.update_project_patch(rolled_back, snapshot)
+        summary = f"Rolled back patch {patch_id[:8]} and restored {len(snapshot)} file(s)."
+        repository.update_chat_run_action_for_id(request.chat_run_id, f"rollback:{patch_id}", {"status": "completed", "approval_required": False, "result_summary": summary, "technical_details": {"project_rollback": {"patch_id": patch_id, "relative_paths": rolled_back["file_set"], "status": "rolled_back"}}})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="rollback_completed", status="rolled_back", metadata={"relative_paths": rolled_back["file_set"]})
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/rollback/{patch_id}/reject", response_model=ChatRunResponse)
+    def chat_project_rollback_reject(patch_id: str, request: ProjectPatchApplyRequest) -> ChatRunResponse:
+        _require_folder_action_association(request.chat_run_id, f"rollback:{patch_id}")
+        run = repository.get_chat_run(request.chat_run_id)
+        access = _completed_project_access(run.conversation_id)
+        repository.update_chat_run_action_for_id(request.chat_run_id, f"rollback:{patch_id}", {"status": "cancelled", "approval_required": False, "result_summary": "Rollback cancelled. No files were changed."})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="rollback_refused", status="cancelled", metadata={"reason": "user_cancelled"})
+        return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/projects/commands/propose", response_model=ChatRunResponse)
+    def chat_project_command_propose(request: ProjectCommandProposalRequest) -> ChatRunResponse:
+        access = _completed_project_access(request.conversation_id)
+        try:
+            run = _plan_project_command_run(
+                conversation_id=request.conversation_id, access=access,
+                message=request.purpose, action=request.action, target=request.target,
+                expected_result=request.expected_result, timeout_seconds=request.timeout_seconds,
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        repository.store_chat_run(run)
+        plan = run.action["technical_details"]["command_plan"] if run.action else {}
+        audit_event(repository, conversation_id=request.conversation_id, folder_access_id=access["action_id"], operation="command_planned", status="planned", metadata={"plan_id": plan.get("plan_id"), "action": plan.get("action")})
+        return run
+
+    @application.post("/chat/projects/commands/{plan_id}/approve")
+    def chat_project_command_approve(plan_id: str, request: AssignmentCommandApprovalRequest) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
+        run = repository.get_chat_run(request.chat_run_id or "")
+        access = _completed_project_access(run.conversation_id)
+        try:
+            plan, token = approve_assignment_command(
+                assignment_command_store, plan_id,
+                assignment_id=request.assignment_id, workspace=access["approved_root"],
+                project_root=access["approved_root"], confirmation=request.confirmation,
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "approved", "technical_details": {"command_plan": plan}})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], operation="command_approved", status="approved", metadata={"plan_id": plan_id, "action": plan.get("action")})
+        return {"plan": plan, "approval_token": token}
+
+    @application.post("/chat/projects/commands/{plan_id}/execute")
+    def chat_project_command_execute(plan_id: str, request: AssignmentCommandExecuteRequest) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
+        run = repository.get_chat_run(request.chat_run_id or "")
+        access = _completed_project_access(run.conversation_id)
+        try:
+            result = execute_assignment_command(
+                assignment_command_store, access["approved_root"], plan_id,
+                assignment_id=request.assignment_id, workspace=access["approved_root"],
+                approval_token=request.approval_token,
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        summary, error_tail = _chat_command_result_presentation(result)
+        succeeded = result.get("exit_code") == 0 and result.get("display_state") == "completed"
+        repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "completed" if succeeded else "failed", "result_summary": summary, "error": error_tail, "technical_details": {"command_plan": result}})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], operation="command_executed" if succeeded else "command_failed", status="completed" if succeeded else "failed", metadata={"plan_id": plan_id, "action": result.get("action"), "exit_code": result.get("exit_code"), "duration": result.get("duration_seconds")})
+        return result
+
+    @application.post("/chat/projects/commands/{plan_id}/cancel")
+    def chat_project_command_cancel(plan_id: str, request: AssignmentCommandAssociationRequest) -> dict:
+        _require_chat_command_association(request.chat_run_id, plan_id)
+        run = repository.get_chat_run(request.chat_run_id or "")
+        access = _completed_project_access(run.conversation_id)
+        try:
+            result = cancel_assignment_command(
+                assignment_command_store, plan_id,
+                assignment_id=request.assignment_id, workspace=access["approved_root"],
+                project_root=access["approved_root"],
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "cancelled", "result_summary": "Validation command cancelled. Nothing was executed.", "technical_details": {"command_plan": result}})
+        return result
 
     @application.post("/datasets/profile")
     def dataset_profile(request: DatasetProfileRequest) -> dict:
@@ -2453,6 +2720,135 @@ def create_app(
             raise HTTPException(status_code=400, detail="Folder action is malformed.")
         return folder_action
 
+    def _completed_project_access(conversation_id: str) -> dict:
+        turns = repository.list_chat_runs_for_conversation(conversation_id)
+        access = completed_folder_access(turns)
+        if access is None:
+            raise HTTPException(
+                status_code=409,
+                detail="This conversation does not have an approved connected project folder.",
+            )
+        root = str(access.get("approved_root") or "")
+        fingerprint = str(access.get("root_fingerprint") or "")
+        if not fingerprint:
+            raise HTTPException(status_code=409, detail="The folder access predates secure project-content approval. Reconnect the folder.")
+        try:
+            validate_root_identity(root, fingerprint)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail="The approved project folder no longer exists.") from error
+        except (ProjectSafetyError, FolderScanError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        return access
+
+    def _get_project_patch(patch_id: str) -> tuple[dict, list[dict]]:
+        try:
+            return repository.get_project_patch(patch_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="Project patch not found.") from error
+
+    def _project_patch_run(proposal: dict) -> ChatRunResponse:
+        public = public_patch_proposal(proposal)
+        files = ", ".join(proposal["file_set"])
+        return ChatRunResponse(
+            run_id=str(uuid4()), conversation_id=proposal["conversation_id"],
+            user_message=proposal["user_request"],
+            assistant_response=(
+                f"I prepared an immutable patch preview for {files}. Nothing has been changed yet. "
+                f"Approve only this exact patch with APPROVE PATCH {proposal['patch_id']}."
+            ),
+            selected_specialist="project_workspace", intent="project_patch",
+            confidence=1.0, rag_used=False,
+            rag_skip_reason="Patch evidence came only from the approved project folder.", rag_context_count=0,
+            source_count=len(proposal.get("files_inspected") or []),
+            source_paths=list(proposal.get("files_inspected") or []),
+            grounding_status="grounded" if proposal.get("files_inspected") else "weak",
+            runtime_decision="patch_approval_required", safety_decision="approval_required",
+            used_real_slm=False, slm_provider="not_invoked",
+            slm_fallback_reason="Immutable patch proposal created deterministically.",
+            memory_used=True, memory_summary=None, created_at=datetime.now(timezone.utc),
+            trace_summary=[{
+                "phase": "patch_proposal", "title": "Immutable patch preview created",
+                "detail": f"Prepared {len(proposal['file_set'])} bounded file change(s); no writes occurred.",
+                "status": "passed", "data": {"patch_id": proposal["patch_id"], "relative_paths": proposal["file_set"]},
+            }],
+            action={
+                "action_id": proposal["patch_id"], "action_type": "project_patch",
+                "title": "Review project patch", "summary": "Review the exact bounded diff before changing files.",
+                "steps": ["Review each proposed file change", "Approve the immutable patch", "Apply atomically with rollback snapshot", "Approve validation separately"],
+                "safety_information": {"folder_access_is_not_patch_approval": True, "commands_will_not_run": True, "exact_confirmation": f"APPROVE PATCH {proposal['patch_id']}"},
+                "status": "awaiting_approval", "approval_required": True,
+                "result_summary": None, "error": None,
+                "technical_details": {"project_patch": public},
+            },
+        )
+
+    def _project_rollback_run(proposal: dict, message: str) -> ChatRunResponse:
+        patch_id = str(proposal["patch_id"])
+        return ChatRunResponse(
+            run_id=str(uuid4()), conversation_id=proposal["conversation_id"], user_message=message,
+            assistant_response=f"I prepared a rollback for patch {patch_id[:8]}. No files have been restored yet.",
+            selected_specialist="project_workspace", intent="project_rollback", confidence=1.0,
+            rag_used=False, rag_skip_reason="Rollback uses the bounded Astra snapshot.", rag_context_count=0,
+            source_count=0, source_paths=[], grounding_status="none",
+            runtime_decision="rollback_approval_required", safety_decision="approval_required",
+            used_real_slm=False, slm_provider="not_invoked", slm_fallback_reason="Deterministic rollback proposal.",
+            memory_used=True, memory_summary=None, created_at=datetime.now(timezone.utc),
+            trace_summary=[{"phase": "rollback_proposal", "title": "Rollback approval required", "detail": "Current applied hashes will be verified before restoration.", "status": "passed"}],
+            action={
+                "action_id": f"rollback:{patch_id}", "action_type": "project_rollback",
+                "title": "Rollback Astra patch", "summary": f"Restore {len(proposal['file_set'])} file(s) from the bounded snapshot.",
+                "steps": ["Confirm current files still match Astra's applied hashes", "Restore the bounded snapshot atomically", "Record rollback audit status"],
+                "safety_information": {"exact_confirmation": f"APPROVE ROLLBACK {patch_id}", "git_reset_used": False},
+                "status": "awaiting_approval", "approval_required": True, "result_summary": None, "error": None,
+                "technical_details": {"project_rollback": {"patch_id": patch_id, "relative_paths": proposal["file_set"], "status": "awaiting_approval"}},
+            },
+        )
+
+    def _patch_application_summary(proposal: dict) -> str:
+        created = sum(1 for item in proposal["changes"] if item["operation"] == "create")
+        modified = sum(1 for item in proposal["changes"] if item["operation"] == "modify")
+        deleted = sum(1 for item in proposal["changes"] if item["operation"] == "delete")
+        return (
+            f"Applied patch {proposal['patch_id'][:8]}: {modified} modified, {created} created, "
+            f"{deleted} deleted; +{proposal['additions']}/-{proposal['deletions']}. "
+            "Rollback is available. Tests have not run yet."
+        )
+
+    def _controlled_project_error(error: Exception) -> str:
+        message = str(error).strip()
+        allowed = (
+            "approved", "project", "folder", "patch", "rollback", "file", "path", "symlink",
+            "stale", "expired", "missing", "changed", "limit", "unsafe", "excluded",
+            "command", "timeout", "allowlisted", "package", "shell",
+        )
+        return message[:500] if message and any(term in message.lower() for term in allowed) else "The secure project operation could not be completed."
+
+    def _is_rollback_request(message: str) -> bool:
+        normalized = " ".join(message.lower().strip().split())
+        return (
+            normalized.startswith("rollback patch ")
+            or normalized in {
+                "undo the last astra change", "undo the last astra change.",
+                "restore the files from before that fix", "restore the files from before that fix.",
+                "rollback the last patch", "rollback the last patch.",
+            }
+        )
+
+    def _audit_project_run(run: ChatRunResponse, access: dict) -> None:
+        metadata = {"relative_paths": run.source_paths, "file_count": run.source_count}
+        for operation in ("folder_content_read", "project_search", "project_context_assembled"):
+            audit_event(
+                repository, conversation_id=run.conversation_id,
+                folder_access_id=str(access["action_id"]), operation=operation,
+                status="completed", metadata=metadata,
+            )
+        if run.intent == "project_plan":
+            audit_event(
+                repository, conversation_id=run.conversation_id,
+                folder_access_id=str(access["action_id"]), operation="task_plan_generated",
+                status="completed", metadata=metadata,
+            )
+
     def _record_folder_failure(
         chat_run_id: str,
         action_id: str,
@@ -2745,49 +3141,71 @@ def create_app(
             timeout_seconds=120,
         )
         return ChatRunResponse(
-            run_id=str(uuid4()),
-            conversation_id=conversation_id,
-            user_message=request.message,
-            assistant_response=detected.summary,
-            selected_specialist="command_action",
-            intent="command",
-            confidence=1.0,
-            rag_used=False,
-            rag_skip_reason="Direct action intercepted before retrieval.",
-            rag_context_count=0,
-            runtime_decision="approval_required",
-            safety_decision="approval_required",
-            used_real_slm=False,
-            slm_provider="not_invoked",
-            slm_fallback_reason="Direct action did not require model generation.",
-            memory_used=False,
-            memory_summary=None,
-            created_at=created_at,
-            trace_summary=[
-                {
-                    "phase": "action_interception",
-                    "title": "Direct action detected",
-                    "detail": "Created one allowlisted command plan before routing, retrieval, or generation.",
-                    "status": "passed",
-                }
-            ],
+            run_id=str(uuid4()), conversation_id=conversation_id,
+            user_message=request.message, assistant_response=detected.summary,
+            selected_specialist="command_action", intent="command", confidence=1.0,
+            rag_used=False, rag_skip_reason="Direct action intercepted before retrieval.",
+            rag_context_count=0, runtime_decision="approval_required",
+            safety_decision="approval_required", used_real_slm=False,
+            slm_provider="not_invoked", slm_fallback_reason="Direct action did not require model generation.",
+            memory_used=False, memory_summary=None, created_at=created_at,
+            trace_summary=[{
+                "phase": "action_interception", "title": "Direct action detected",
+                "detail": "Created one allowlisted command plan before routing, retrieval, or generation.",
+                "status": "passed",
+            }],
             action={
-                "action_type": detected.action_type,
-                "title": detected.title,
+                "action_type": detected.action_type, "title": detected.title,
                 "summary": detected.summary,
                 "steps": ["Approve the exact command", "Run once", "Report the result"],
                 "safety_information": {
-                    "approval_required": True,
-                    "destructive_actions_blocked": True,
+                    "approval_required": True, "destructive_actions_blocked": True,
                     "expected_file_modifications": "None expected from this command.",
                 },
-                "status": "awaiting_approval",
-                "approval_required": True,
-                "result_summary": None,
-                "technical_details": {"command_plan": plan},
+                "status": "awaiting_approval", "approval_required": True,
+                "result_summary": None, "technical_details": {"command_plan": plan},
             },
         )
 
+    def _plan_project_command_run(
+        *,
+        conversation_id: str,
+        access: dict,
+        message: str,
+        action: str,
+        expected_result: str,
+        target: str | None = None,
+        timeout_seconds: int = 120,
+    ) -> ChatRunResponse:
+        root = validate_root_identity(access["approved_root"], access["root_fingerprint"])
+        plan = plan_assignment_command(
+            assignment_command_store, root, root,
+            assignment_id=f"project:{access['action_id']}",
+            assignment_task=message.strip(), expected_result=expected_result,
+            action=action, target=target, timeout_seconds=timeout_seconds,
+        )
+        return ChatRunResponse(
+            run_id=str(uuid4()), conversation_id=conversation_id, user_message=message,
+            assistant_response="I prepared one bounded validation command for the approved project. It has not run yet.",
+            selected_specialist="project_workspace", intent="project_command", confidence=1.0,
+            rag_used=False, rag_skip_reason="Command planning does not use RAG.", rag_context_count=0,
+            runtime_decision="command_approval_required", safety_decision="approval_required",
+            used_real_slm=False, slm_provider="not_invoked", slm_fallback_reason="Structured allowlisted command plan.",
+            memory_used=True, memory_summary=None, created_at=datetime.now(timezone.utc),
+            trace_summary=[{
+                "phase": "project_command_plan", "title": "Project validation command planned",
+                "detail": "The working directory is the revalidated approved root; execution requires separate approval.",
+                "status": "passed", "data": {"folder_access_id": access["action_id"], "plan_id": plan["plan_id"], "action": plan["action"]},
+            }],
+            action={
+                "action_type": "project_command", "title": "Validate connected project",
+                "summary": "Run one structured allowlisted command inside the approved project root.",
+                "steps": ["Approve the exact command", "Run once with bounded output and timeout", "Review validation totals"],
+                "safety_information": {"separate_command_approval": True, "shell_used": False, "working_directory": "approved project root", "package_installation_blocked": True},
+                "status": "awaiting_approval", "approval_required": True, "result_summary": None,
+                "technical_details": {"command_plan": plan, "project_scope": {"folder_access_id": access["action_id"]}},
+            },
+        )
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
         previous_turns = (
@@ -2804,20 +3222,54 @@ def create_app(
             )
             repository.store_chat_run(run)
             return run
-        if (
-            request.conversation_id
-            and is_folder_content_request(request.message)
-            and has_completed_folder_action(previous_turns)
-        ):
-            run = create_folder_content_unavailable_chat_run(
+        access = completed_folder_access(previous_turns)
+        if access is not None and _is_rollback_request(request.message):
+            try:
+                proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id or "")
+            except LookupError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            run = _project_rollback_run(proposal, request.message)
+            repository.store_chat_run(run)
+            return run
+        explicit_change = detect_explicit_patch_request(request.message) if access is not None else None
+        if access is not None and explicit_change is not None:
+            access = _completed_project_access(request.conversation_id or "")
+            try:
+                proposal = create_patch_proposal(
+                    root=access["approved_root"], conversation_id=request.conversation_id or "",
+                    folder_access_id=access["action_id"], user_request=request.message,
+                    changes=[explicit_change], files_inspected=[explicit_change["path"]] if explicit_change["operation"] != "create" else [],
+                )
+            except (ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+                raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+            repository.store_project_patch(proposal)
+            run = _project_patch_run(proposal)
+            repository.store_chat_run(run)
+            audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=proposal["patch_id"], operation="patch_proposed", status="proposed", metadata={"relative_paths": proposal["file_set"], "file_count": 1})
+            return run
+        project_intent = detect_project_intent(request.message)
+        if access is not None and (project_intent is not None or is_folder_content_request(request.message)):
+            access = _completed_project_access(request.conversation_id or "")
+            run = create_project_chat_run(
                 message=request.message,
-                conversation_id=request.conversation_id,
+                conversation_id=request.conversation_id or "",
+                folder_access_id=access["action_id"],
+                root=access["approved_root"],
             )
             repository.store_chat_run(run)
+            _audit_project_run(run, access)
             return run
         detected = detect_chat_action(request.message)
         if detected is not None:
-            run = _plan_chat_action(request, detected)
+            run = (
+                _plan_project_command_run(
+                    conversation_id=request.conversation_id or "", access=access,
+                    message=request.message, action=detected.command_action,
+                    expected_result=detected.expected_result, timeout_seconds=120,
+                )
+                if access is not None
+                else _plan_chat_action(request, detected)
+            )
             repository.store_chat_run(run)
             return run
         run = run_chat_workflow(
@@ -2837,15 +3289,16 @@ def create_app(
             else []
         )
         folder_path = detect_folder_request(request.message)
-        folder_content_unavailable = bool(
-            request.conversation_id
-            and is_folder_content_request(request.message)
-            and has_completed_folder_action(conversation_turns)
-        )
+        access = completed_folder_access(conversation_turns)
+        explicit_change = detect_explicit_patch_request(request.message) if access is not None else None
+        project_intent = detect_project_intent(request.message)
+        project_request = bool(access is not None and explicit_change is None and (project_intent is not None or is_folder_content_request(request.message)))
+        patch_request = bool(access is not None and explicit_change is not None)
+        rollback_request = bool(access is not None and _is_rollback_request(request.message))
         detected = detect_chat_action(request.message)
         previous_turns = (
             conversation_turns
-            if detected is None and folder_path is None and not folder_content_unavailable
+            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -2859,13 +3312,36 @@ def create_app(
                         requested_path=folder_path,
                         conversation_id=request.conversation_id,
                     )
-                elif folder_content_unavailable:
-                    run = create_folder_content_unavailable_chat_run(
+                elif rollback_request:
+                    proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id or "")
+                    run = _project_rollback_run(proposal, request.message)
+                elif patch_request:
+                    secure_access = _completed_project_access(request.conversation_id or "")
+                    proposal = create_patch_proposal(
+                        root=secure_access["approved_root"], conversation_id=request.conversation_id or "",
+                        folder_access_id=secure_access["action_id"], user_request=request.message,
+                        changes=[explicit_change], files_inspected=[explicit_change["path"]] if explicit_change["operation"] != "create" else [],
+                    )
+                    repository.store_project_patch(proposal)
+                    run = _project_patch_run(proposal)
+                elif project_request:
+                    secure_access = _completed_project_access(request.conversation_id or "")
+                    run = create_project_chat_run(
                         message=request.message,
-                        conversation_id=request.conversation_id,
+                        conversation_id=request.conversation_id or "",
+                        folder_access_id=secure_access["action_id"],
+                        root=secure_access["approved_root"],
                     )
                 elif detected is not None:
-                    run = _plan_chat_action(request, detected)
+                    run = (
+                        _plan_project_command_run(
+                            conversation_id=request.conversation_id or "", access=access,
+                            message=request.message, action=detected.command_action,
+                            expected_result=detected.expected_result, timeout_seconds=120,
+                        )
+                        if access is not None
+                        else _plan_chat_action(request, detected)
+                    )
                 else:
                     run = run_chat_workflow(
                         request,
@@ -2874,7 +3350,11 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
-                if run.action is None and not folder_content_unavailable:
+                if project_request:
+                    _audit_project_run(run, access)
+                if patch_request:
+                    audit_event(repository, conversation_id=run.conversation_id, folder_access_id=str(access["action_id"]), patch_id=str(proposal["patch_id"]), operation="patch_proposed", status="proposed", metadata={"relative_paths": proposal["file_set"], "file_count": 1})
+                if run.action is None and not project_request and not patch_request and not rollback_request:
                     _log_training_example(run)
                 events.put(
                     {

@@ -377,7 +377,7 @@ def test_folder_approval_scans_and_persists_sanitized_inventory(
         "read the dataset",
     ],
 )
-def test_connected_folder_content_request_is_deterministic_without_specialist_or_action(
+def test_connected_folder_content_request_uses_safe_project_reader_without_general_specialist(
     tmp_path: Path,
     monkeypatch,
     message: str,
@@ -409,12 +409,9 @@ def test_connected_folder_content_request_is_deterministic_without_specialist_or
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["assistant_response"] == (
-        "That folder is connected in metadata-only mode. I can see its inventory, "
-        "but file-content reading is not enabled yet."
-    )
-    assert body["selected_specialist"] == "folder_access"
-    assert body["intent"] == "folder_content_unavailable"
+    assert "No files were modified" in body["assistant_response"] or "no files" in body["assistant_response"].lower()
+    assert body["selected_specialist"] == "project_workspace"
+    assert body["intent"] == "project_question"
     assert body["used_real_slm"] is False
     assert body["slm_provider"] == "not_invoked"
     assert body["rag_used"] is False
@@ -456,7 +453,7 @@ def test_streamed_connected_folder_content_request_bypasses_specialist(
     assert response.status_code == 200, response.text
     assert [event["event"] for event in events] == ["run_completed"]
     run = events[0]["data"]["run"]
-    assert run["intent"] == "folder_content_unavailable"
+    assert run["intent"] == "project_question"
     assert run["used_real_slm"] is False
     assert run["action"] is None
     assert len(runs) == 2

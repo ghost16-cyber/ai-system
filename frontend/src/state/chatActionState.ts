@@ -15,12 +15,17 @@ export type ChatActionType =
   | "command"
   | "assignment"
   | "folder_access"
+  | "project_plan"
+  | "project_patch"
+  | "project_rollback"
+  | "project_command"
   | "system_configuration"
   | "report_generation"
   | "file_creation"
   | "dataset_operation";
 
 export interface ChatAction {
+  actionId?: string;
   actionType: ChatActionType;
   title: string;
   summary: string;
@@ -42,6 +47,7 @@ export function actionFromPayload(payload: Record<string, unknown>): ChatAction 
   const actionType = readString(payload.action_type) as ChatActionType;
   if (!actionType || !readString(payload.title)) return null;
   return {
+    actionId: readString(payload.action_id) || undefined,
     actionType,
     title: readString(payload.title),
     summary: readString(payload.summary),
@@ -52,6 +58,7 @@ export function actionFromPayload(payload: Record<string, unknown>): ChatAction 
     resultSummary: readString(payload.result_summary) || undefined,
     technicalDetails: details,
     commandPlan: readString(plan.plan_id) ? plan : undefined,
+    error: readString(payload.error) || undefined,
   };
 }
 

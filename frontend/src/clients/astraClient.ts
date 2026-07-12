@@ -372,6 +372,11 @@ export interface ChatFolderActionRequest {
   chat_run_id: string;
 }
 
+export interface ProjectPatchApprovalRequest {
+  chat_run_id: string;
+  confirmation: string;
+}
+
 export interface AssignmentWorkspaceWriteResult {
   workspace_path: string;
   created_files: string[];
@@ -709,6 +714,14 @@ export interface AstraClient {
   approveChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
   cancelChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
   rescanChatFolder(actionId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  approveProjectPatch(patchId: string, request: ProjectPatchApprovalRequest): Promise<ChatRunResponse>;
+  applyProjectPatch(patchId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  rejectProjectPatch(patchId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  approveProjectRollback(patchId: string, request: ProjectPatchApprovalRequest): Promise<ChatRunResponse>;
+  rejectProjectRollback(patchId: string, request: ChatFolderActionRequest): Promise<ChatRunResponse>;
+  approveProjectCommand(planId: string, request: Record<string, unknown>): Promise<{ plan: AssignmentCommandRecord; approval_token: string }>;
+  executeProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
+  cancelProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -958,6 +971,44 @@ export class HttpAstraClient implements AstraClient {
 
   async rescanChatFolder(actionId: string, request: ChatFolderActionRequest) {
     return this.postJson<ChatRunResponse>(`/chat/folders/${encodeURIComponent(actionId)}/rescan`, request);
+  }
+
+  async approveProjectPatch(patchId: string, request: ProjectPatchApprovalRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/projects/patches/${encodeURIComponent(patchId)}/approve`, request);
+  }
+
+  async applyProjectPatch(patchId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/projects/patches/${encodeURIComponent(patchId)}/apply`, request);
+  }
+
+  async rejectProjectPatch(patchId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/projects/patches/${encodeURIComponent(patchId)}/reject`, request);
+  }
+
+  async approveProjectRollback(patchId: string, request: ProjectPatchApprovalRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/projects/rollback/${encodeURIComponent(patchId)}/approve`, request);
+  }
+
+  async rejectProjectRollback(patchId: string, request: ChatFolderActionRequest) {
+    return this.postJson<ChatRunResponse>(`/chat/projects/rollback/${encodeURIComponent(patchId)}/reject`, request);
+  }
+
+  async approveProjectCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<{ plan: AssignmentCommandRecord; approval_token: string }>(
+      `/chat/projects/commands/${encodeURIComponent(planId)}/approve`, request,
+    );
+  }
+
+  async executeProjectCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<AssignmentCommandRecord>(
+      `/chat/projects/commands/${encodeURIComponent(planId)}/execute`, request,
+    );
+  }
+
+  async cancelProjectCommand(planId: string, request: Record<string, unknown>) {
+    return this.postJson<AssignmentCommandRecord>(
+      `/chat/projects/commands/${encodeURIComponent(planId)}/cancel`, request,
+    );
   }
 
   async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {

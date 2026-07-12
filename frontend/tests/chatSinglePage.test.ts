@@ -148,6 +148,14 @@ test("folder actions restore from persisted run.action states", () => {
   assert.match(appSource, /Folder scan failed/);
 });
 
+test("project workflow remains chat-native without duplicating folder cards", () => {
+  assert.match(appSource, /project_patch/);
+  assert.match(appSource, /project_rollback/);
+  assert.match(appSource, /ProjectSources/);
+  assert.match(appSource, /genericActionFromRun/);
+  assert.doesNotMatch(appSource, /ProjectManagementPage|PatchApprovalPage|ProjectEditorPage/);
+});
+
 test("restored folder cards do not auto-run scans and keep duplicate-click locks", () => {
   const continueIndex = appSource.indexOf("async function continueConversation");
   const approveIndex = appSource.indexOf("async function approveFolderAction");

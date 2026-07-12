@@ -24,7 +24,10 @@ MAX_TIMEOUT_SECONDS = 120
 APPROVAL_TTL_SECONDS = 600
 MAX_LOG_CHARS = 64_000
 ALLOWED_ACTIONS = frozenset(
-    {"pytest", "python_script", "streamlit", "docker_ps", "docker_compose_up"}
+    {
+        "pytest", "python_script", "streamlit", "docker_ps", "docker_compose_up",
+        "npm_test", "npm_run_lint", "npm_run_build", "npm_run_typecheck", "node_test",
+    }
 )
 COMPOSE_FILES = ("compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml")
 PYTHON_ENTRY_SCRIPTS = (
@@ -397,10 +400,31 @@ def public_command_record(
 
 def _validate_argv(action: str, argv: list[str], workspace: Path) -> None:
     expected_fixed = {
-        "pytest": ["python", "-m", "pytest", "-q"],
         "docker_ps": ["docker", "ps"],
         "docker_compose_up": ["docker", "compose", "up"],
     }
+    if action == "pytest":
+        if argv[:4] != ["python", "-m", "pytest", "-q"] or len(argv) > 5:
+            raise CommandExecutionError("Command arguments do not match the allowlisted pytest action.")
+        if len(argv) == 5:
+            _validate_target(argv[4], workspace, {".py"})
+        return
+    npm_commands = {
+        "npm_test": ["npm", "test"],
+        "npm_run_lint": ["npm", "run", "lint"],
+        "npm_run_build": ["npm", "run", "build"],
+        "npm_run_typecheck": ["npm", "run", "typecheck"],
+    }
+    if action in npm_commands:
+        if argv != npm_commands[action] or not (workspace / "package.json").is_file():
+            raise CommandExecutionError("NPM command does not match an allowlisted project script.")
+        return
+    if action == "node_test":
+        if argv[:2] != ["node", "--test"] or len(argv) > 3:
+            raise CommandExecutionError("Node test arguments are not allowlisted.")
+        if len(argv) == 3:
+            _validate_target(argv[2], workspace, {".js", ".mjs", ".cjs", ".ts"})
+        return
     if action in expected_fixed:
         if argv != expected_fixed[action]:
             raise CommandExecutionError("Command arguments do not match the allowlisted action.")
@@ -439,6 +463,12 @@ def _approved_artifacts(action: str, argv: list[str], workspace: Path) -> list[d
     paths: list[Path] = []
     if action == "python_script":
         paths.append(workspace / argv[1])
+    elif action == "pytest" and len(argv) == 5:
+        paths.append(workspace / argv[4])
+    elif action in {"npm_test", "npm_run_lint", "npm_run_build", "npm_run_typecheck"}:
+        paths.append(workspace / "package.json")
+    elif action == "node_test" and len(argv) == 3:
+        paths.append(workspace / argv[2])
     elif action == "streamlit":
         paths.append(workspace / argv[2])
     elif action == "docker_compose_up":

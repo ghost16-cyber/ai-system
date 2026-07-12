@@ -33,7 +33,20 @@ def suggest_command(
     workdir = _resolve_workdir(root, working_directory)
     action_key = action.strip().lower().replace("-", "_")
     if action_key == "pytest":
-        return _suggest("python -m pytest -q", workdir, "Run the project test suite.", "low", False, "Pytest is a local read/write test command and is explicit.", "Dots and a final pass/fail summary.")
+        suffix = f" {shlex.quote(_safe_relative_target(target))}" if target else ""
+        return _suggest(f"python -m pytest -q{suffix}", workdir, "Run the project test suite.", "low", False, "Pytest is a local validation command and is explicit.", "Dots and a final pass/fail summary.")
+    npm = {
+        "npm_test": ("npm test", "Run the existing npm test script."),
+        "npm_run_lint": ("npm run lint", "Run the existing npm lint script."),
+        "npm_run_build": ("npm run build", "Run the existing npm build script."),
+        "npm_run_typecheck": ("npm run typecheck", "Run the existing npm typecheck script."),
+    }
+    if action_key in npm:
+        command, purpose = npm[action_key]
+        return _suggest(command, workdir, purpose, "low", False, "Runs one exact project-declared npm script without a shell.", "Bounded npm script output.")
+    if action_key == "node_test":
+        suffix = f" {shlex.quote(_safe_relative_target(target))}" if target else ""
+        return _suggest(f"node --test{suffix}", workdir, "Run Node's test runner.", "low", False, "Uses Node's structured test runner without shell evaluation.", "Node test totals and failures.")
     if action_key == "python_script":
         script = _safe_relative_target(target or "main.py")
         return _suggest(f"python {shlex.quote(script)}", workdir, f"Run Python script {script}.", "medium", True, "Runs one explicit project script after confirmation.", "Script logs or a Python traceback.")

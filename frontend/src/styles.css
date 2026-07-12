@@ -166,8 +166,24 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .folder-inventory-row small { color: var(--muted); }
 .folder-inventory-row.ignored { opacity: .78; }
 
+.project-sources, .patch-preview, .rollback-preview { display: grid; gap: 10px; margin-top: 12px; }
+.project-sources > span, .rollback-preview > strong { color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.source-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.source-chips code { max-width: 100%; overflow: hidden; padding: 5px 8px; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 999px; color: var(--green-dark); background: var(--surface-soft); font-size: .72rem; }
+.patch-summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.patch-summary span { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: #fbfcfb; font-size: .76rem; }
+.patch-file { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+.patch-file summary { display: flex; align-items: center; gap: 7px; padding: 10px; cursor: pointer; }
+.patch-file summary code { min-width: 0; overflow-wrap: anywhere; }
+.patch-file summary span { margin-left: auto; color: var(--muted); font-size: .72rem; }
+.patch-file > p, .patch-file > small { display: block; padding-inline: 11px; }
+.patch-diff { max-height: 380px; margin: 8px 10px 10px; padding: 11px; overflow: auto; white-space: pre; border-radius: 8px; background: #f1f5f2; font-size: .7rem; }
+.project-plan-steps { margin: 10px 0; padding-left: 22px; color: #34443b; }
+
 @media (max-width: 640px) {
   .workspace-plan-list > div { align-items: flex-start; flex-direction: column; }
   .folder-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .folder-inventory-row { grid-template-columns: 1fr; }
+  .patch-summary { display: grid; grid-template-columns: 1fr; }
+  .patch-diff { max-width: calc(100vw - 72px); }
 }

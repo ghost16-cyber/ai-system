@@ -516,6 +516,45 @@ export default function App() {
     chatRunId?: string,
   ) {
     if (action.status !== "awaiting_approval") return;
+    if (action.actionType === "project_patch") {
+      const patchId = action.actionId;
+      if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-patch:${patchId}`)) return;
+      try {
+        updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
+        const approved = await client.approveProjectPatch(patchId, {
+          chat_run_id: chatRunId,
+          confirmation: `APPROVE PATCH ${patchId}`,
+        });
+        const approvedAction = approved.action ? actionFromPayload(approved.action) : null;
+        updateAction(messageId, (current) => ({ ...current, ...(approvedAction ?? {}), status: "approved" }));
+        await nextPaint();
+        const applied = await client.applyProjectPatch(patchId, { chat_run_id: chatRunId });
+        const appliedAction = applied.action ? actionFromPayload(applied.action) : null;
+        updateAction(messageId, (current) => ({ ...current, ...(appliedAction ?? {}) }));
+        setMessages((current) => current.map((item) => item.id === messageId ? { ...item, run: applied } : item));
+      } catch (caught) {
+        updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
+      } finally { locks.current.delete(`project-patch:${patchId}`); }
+      return;
+    }
+    if (action.actionType === "project_rollback") {
+      const actionId = action.actionId;
+      const patchId = actionId?.startsWith("rollback:") ? actionId.slice(9) : undefined;
+      if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-rollback:${patchId}`)) return;
+      try {
+        updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
+        const restored = await client.approveProjectRollback(patchId, {
+          chat_run_id: chatRunId,
+          confirmation: `APPROVE ROLLBACK ${patchId}`,
+        });
+        const restoredAction = restored.action ? actionFromPayload(restored.action) : null;
+        updateAction(messageId, (current) => ({ ...current, ...(restoredAction ?? {}) }));
+        setMessages((current) => current.map((item) => item.id === messageId ? { ...item, run: restored } : item));
+      } catch (caught) {
+        updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
+      } finally { locks.current.delete(`project-rollback:${patchId}`); }
+      return;
+    }
     if (action.actionType === "system_configuration") {
       const lockId = `model:${action.selectedOption ?? ""}`;
       if (!action.selectedOption || !tryLockCommandAction(locks.current, lockId)) return;
@@ -534,8 +573,12 @@ export default function App() {
       updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
       const result = await approveAndExecuteCommand({
         calls: {
-          approve: (id, request) => client.approveAssignmentCommand(id, request),
-          execute: (id, request) => client.executeAssignmentCommand(id, request),
+          approve: (id, request) => action.actionType === "project_command"
+            ? client.approveProjectCommand(id, request)
+            : client.approveAssignmentCommand(id, request),
+          execute: (id, request) => action.actionType === "project_command"
+            ? client.executeProjectCommand(id, request)
+            : client.executeAssignmentCommand(id, request),
         },
         planId: plan.plan_id,
         association: {
@@ -560,6 +603,21 @@ export default function App() {
     chatRunId?: string,
   ) {
     if (action.status !== "awaiting_approval") return;
+    if (action.actionType === "project_patch" || action.actionType === "project_rollback") {
+      const rawId = action.actionId;
+      const patchId = rawId?.startsWith("rollback:") ? rawId.slice(9) : rawId;
+      if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-cancel:${rawId}`)) return;
+      try {
+        const updated = action.actionType === "project_patch"
+          ? await client.rejectProjectPatch(patchId, { chat_run_id: chatRunId })
+          : await client.rejectProjectRollback(patchId, { chat_run_id: chatRunId });
+        const updatedAction = updated.action ? actionFromPayload(updated.action) : null;
+        updateAction(messageId, (current) => ({ ...current, ...(updatedAction ?? {}) }));
+      } catch (caught) {
+        updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
+      } finally { locks.current.delete(`project-cancel:${rawId}`); }
+      return;
+    }
     if (action.actionType === "system_configuration") {
       updateAction(messageId, (current) => ({ ...current, status: "cancelled", resultSummary: "Action cancelled. No setting was changed." }));
       return;
@@ -567,11 +625,17 @@ export default function App() {
     const plan = action.commandPlan;
     if (!plan || !tryLockCommandAction(locks.current, plan.plan_id)) return;
     try {
-      const cancelled = await client.cancelAssignmentCommand(plan.plan_id, {
+      const cancelled = await (action.actionType === "project_command"
+        ? client.cancelProjectCommand(plan.plan_id, {
+          assignment_id: plan.assignment_id,
+          workspace_path: plan.workspace || ".",
+          ...(chatRunId ? { chat_run_id: chatRunId } : {}),
+        })
+        : client.cancelAssignmentCommand(plan.plan_id, {
         assignment_id: plan.assignment_id,
         workspace_path: plan.workspace || ".",
         ...(chatRunId ? { chat_run_id: chatRunId } : {}),
-      });
+      }));
       updateAction(messageId, (current) => ({ ...current, status: "cancelled", commandPlan: cancelled, resultSummary: "Action cancelled. No command was executed." }));
     } catch (caught) {
       updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
@@ -674,6 +738,7 @@ function ChatMessage({
     {message.action && <ActionCard action={message.action} onApprove={() => void onApprove(message.id, message.action!, message.run?.run_id)} onCancel={() => void onCancel(message.id, message.action!, message.run?.run_id)} onOption={onOption} />}
     {message.workspaceAction && <AssignmentWorkspaceCard action={message.workspaceAction} onApprove={() => void onApproveWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} onCancel={() => void onCancelWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} />}
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
+    {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
     {message.run && !message.action && !message.folderAction && <RunDetails run={message.run} />}
   </div></article>;
@@ -694,7 +759,7 @@ function FolderAccessCard({
   const completed = action.status === "completed";
   return <div className="action-card folder-action-card">
     <div className="card-heading"><div><span className="eyebrow">Project folder</span><h2>{completed ? "Project folder connected" : action.status === "cancelled" ? "Folder access cancelled" : "Folder access requested"}</h2></div><Status status={action.status as ChatActionStatus} /></div>
-    <p>{completed ? "Astra scanned safe metadata only. File contents were not read or stored." : "Astra needs your approval before scanning this folder in read-only mode."}</p>
+    <p>{completed ? "Astra connected this project for bounded safe reading. Sensitive and excluded files remain blocked." : "Astra needs your approval before scanning and connecting this folder in read-only mode."}</p>
     <div className="folder-request"><FolderOpen size={17} /><span>{completed ? action.displayPath : action.requestedDisplayPath}</span></div>
     {action.status === "awaiting_approval" && <div className="button-row"><button className="primary-button" onClick={onApprove}><ShieldCheck size={16} />Approve read-only scan</button><button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel</button></div>}
     {busy && <div className="progress-line"><Activity className="spin" size={16} />Scanning approved folder metadata…</div>}
@@ -716,7 +781,7 @@ function FolderAccessCard({
     {completed && <div className="button-row"><button className="secondary-button" onClick={onRescan} disabled={busy}><RefreshCw size={16} />Rescan</button></div>}
     {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
     {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
-    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: read-only metadata scan</span><span>Files are addressed by project-relative paths only.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
   </div>;
 }
 
@@ -752,14 +817,19 @@ function AssignmentWorkspaceCard({
 
 function ActionCard({ action, onApprove, onCancel, onOption }: { action: ChatAction; onApprove: () => void; onCancel: () => void; onOption: (option: string) => void }) {
   const plan = action.commandPlan;
+  const patch = projectPatchDetails(action);
+  const rollback = projectRollbackDetails(action);
   const busy = ["approving", "approved", "running"].includes(action.status);
   return <div className="action-card">
     <div className="card-heading"><div><span className="eyebrow">{action.actionType.replace(/_/g, " ")}</span><h2>{action.title}</h2></div><Status status={action.status} /></div>
     <p>{action.summary}</p>
     {plan && <div className="command-preview"><span>Command</span><code>{plan.command}</code></div>}
     {plan && <p className="muted">Working directory: <span className="friendly-location">Project workspace</span></p>}
+    {action.actionType === "project_plan" && <ol className="project-plan-steps">{action.steps.map((step) => <li key={step}>{step}</li>)}</ol>}
+    {patch && <div className="patch-preview"><div className="patch-summary"><span><strong>{patch.changes.length}</strong> files</span><span><strong>+{patch.additions}</strong> additions</span><span><strong>-{patch.deletions}</strong> deletions</span></div>{patch.changes.map((change) => <details key={change.relative_path} className="patch-file"><summary><ChevronDown size={15} /><code>{change.relative_path}</code><span>{change.operation}</span></summary><p>{change.explanation}</p><pre className="patch-diff">{change.unified_diff || "No textual diff."}</pre>{change.diff_truncated && <small>Diff preview truncated.</small>}</details>)}<p className="muted">Nothing has been changed yet. Tests require separate approval.</p></div>}
+    {rollback && <div className="rollback-preview"><strong>Files to restore</strong><div className="source-chips">{rollback.relative_paths.map((path) => <code key={path}>{path}</code>)}</div></div>}
     {action.options && <label className="model-choice">Model profile<select value={action.selectedOption} onChange={(event) => onOption(event.target.value)} disabled={busy}>{action.options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>}
-    {action.status === "awaiting_approval" && <div className="button-row"><button className="primary-button" onClick={onApprove}><ShieldCheck size={16} />{action.actionType === "command" ? "Approve and run" : "Approve change"}</button><button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel</button></div>}
+    {action.status === "awaiting_approval" && <div className="button-row"><button className="primary-button" onClick={onApprove}><ShieldCheck size={16} />{action.actionType === "command" || action.actionType === "project_command" ? "Approve and run" : action.actionType === "project_patch" ? "Approve and apply patch" : action.actionType === "project_rollback" ? "Approve rollback" : "Approve change"}</button><button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel</button></div>}
     {busy && <div className="progress-line"><Activity className={action.status === "approved" ? "" : "spin"} size={16} />{statusText(action.status)}</div>}
     {action.resultSummary && <div className={`result ${action.status}`}><CheckCircle2 size={17} />{action.resultSummary}</div>}
     {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Relevant error</strong><pre>{action.error}</pre></div></div>}
@@ -777,6 +847,10 @@ function RunDetails({ run }: { run: ChatRunResponse }) {
   return <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-grid"><span>Model: {run.slm_model ?? run.slm_provider}</span><span>Specialist: {run.selected_specialist}</span><span>RAG: {run.rag_used ? `${run.rag_context_count} sources` : "not used"}</span><span>Safety: {run.safety_decision}</span><span>Latency: {run.slm_latency_ms === null ? "—" : `${run.slm_latency_ms}ms`}</span><span>Run: {run.run_id}</span></div></details>;
 }
 
+function ProjectSources({ paths }: { paths: string[] }) {
+  return <div className="project-sources"><span>Project evidence</span><div className="source-chips">{paths.slice(0, 12).map((path) => <code key={path}>{path}</code>)}</div></div>;
+}
+
 function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   return <div className="welcome"><span className="welcome-icon"><Bot size={30} /></span><h1>What can I help with?</h1><p>Ask a question, inspect Astra, or request an allowlisted action directly in chat.</p><div className="suggestions">{["Run the tests", "Show system status", "Show recent chats", "What model are you using?"].map((prompt) => <button key={prompt} onClick={() => onPrompt(prompt)}>{prompt}</button>)}</div></div>;
 }
@@ -786,6 +860,25 @@ function Status({ status }: { status: ChatActionStatus }) { return <span classNa
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
 function genericActionFromRun(run: ChatRunResponse) { return run.action?.action_type === "assignment" || run.action?.action_type === "folder_access" ? null : (run.action ? actionFromPayload(run.action) : null); }
 function withoutPlan(details: Record<string, unknown>) { const rest = { ...details }; delete rest.command_plan; return rest; }
+function projectPatchDetails(action: ChatAction) {
+  const value = action.technicalDetails.project_patch;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const patch = value as Record<string, unknown>;
+  const changes = Array.isArray(patch.changes) ? patch.changes.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)).map((item) => ({
+    relative_path: typeof item.relative_path === "string" ? item.relative_path : "unknown",
+    operation: typeof item.operation === "string" ? item.operation : "modify",
+    explanation: typeof item.explanation === "string" ? item.explanation : "Proposed project change.",
+    unified_diff: typeof item.unified_diff === "string" ? item.unified_diff : "",
+    diff_truncated: item.diff_truncated === true,
+  })) : [];
+  return { changes, additions: typeof patch.additions === "number" ? patch.additions : 0, deletions: typeof patch.deletions === "number" ? patch.deletions : 0 };
+}
+function projectRollbackDetails(action: ChatAction) {
+  const value = action.technicalDetails.project_rollback;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const rollback = value as Record<string, unknown>;
+  return { relative_paths: Array.isArray(rollback.relative_paths) ? rollback.relative_paths.filter((item): item is string => typeof item === "string") : [] };
+}
 function statusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : status === "approved" ? "Approved. Starting…" : "Running the approved action…"; }
 function workspaceStatusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : "Creating the approved workspace…"; }
 function makeMessage(role: Message["role"], text: string): Message { return { id: newId(role), role, text, createdAt: new Date().toISOString() }; }

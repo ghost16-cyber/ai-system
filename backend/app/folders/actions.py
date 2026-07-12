@@ -76,6 +76,19 @@ def has_completed_folder_action(previous_turns: list[ChatRunResponse]) -> bool:
     )
 
 
+def completed_folder_access(previous_turns: list[ChatRunResponse]) -> dict | None:
+    """Return the latest valid completed folder access metadata in this conversation."""
+    for turn in reversed(previous_turns):
+        action = turn.action
+        if not isinstance(action, dict) or action.get("action_type") != "folder_access" or action.get("status") != "completed":
+            continue
+        technical = action.get("technical_details")
+        folder = technical.get("folder_action") if isinstance(technical, dict) else None
+        if isinstance(folder, dict) and folder.get("status") == "completed" and folder.get("approved_root"):
+            return {**folder, "action_id": action.get("action_id")}
+    return None
+
+
 def build_folder_action(requested_path: str, *, action_id: str | None = None) -> dict:
     action_id = action_id or str(uuid4())
     display_path = _safe_requested_display(requested_path)
