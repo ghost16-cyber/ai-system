@@ -44,6 +44,10 @@ import {
   type FolderAccessAction,
 } from "./state/folderAccessState";
 import { actionRunFromStreamEvent } from "./state/chatStreamState";
+import {
+  projectJobActionFromPayload,
+  type ProjectJobAction,
+} from "./state/projectJobState";
 
 interface Settings {
   apiUrl: string;
@@ -68,10 +72,12 @@ interface Message {
   action?: ChatAction;
   workspaceAction?: AssignmentWorkspaceAction;
   folderAction?: FolderAccessAction;
+  jobAction?: ProjectJobAction;
   info?: InfoCard;
 }
 
 const SETTINGS_KEY = "astra.chat.settings";
+const ACTIVE_CONVERSATION_KEY = "astra.chat.activeConversation";
 const defaultSettings: Settings = {
   apiUrl: "http://127.0.0.1:8000",
   ragEnabled: true,
@@ -91,6 +97,7 @@ export default function App() {
   const [selectedAssignmentFile, setSelectedAssignmentFile] = useState<File | null>(null);
   const assignmentFileInputRef = useRef<HTMLInputElement | null>(null);
   const locks = useRef(new Set<string>());
+  const restoredConversation = useRef(false);
   const client = useMemo(() => new HttpAstraClient(settings.apiUrl), [settings.apiUrl]);
 
   useEffect(() => {
@@ -103,6 +110,24 @@ export default function App() {
     void refresh();
     const timer = window.setInterval(refresh, 15_000);
     return () => { active = false; window.clearInterval(timer); };
+  }, [client]);
+
+  useEffect(() => {
+    if (conversationId) localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (restoredConversation.current) return;
+    restoredConversation.current = true;
+    const savedConversationId = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
+    if (!savedConversationId) return;
+    setLoading(true);
+    void client.getChatRuns(100).then((savedRuns) => {
+      const runs = savedRuns.filter((run) => run.conversation_id === savedConversationId).reverse();
+      setConversationId(savedConversationId);
+      setMessages(restoreConversationMessages(runs, assignmentAnalysisInfoFromRun));
+      setError(null);
+    }).catch((caught) => setError(cleanError(caught))).finally(() => setLoading(false));
   }, [client]);
 
   async function submit(event?: FormEvent) {
@@ -213,27 +238,27 @@ export default function App() {
       const actionRun = actionRunFromStreamEvent(event);
       if (!actionRun) return;
       setConversationId(actionRun.conversation_id);
-      setMessages((current) => current.map((item) => item.id === assistantId ? {
-        ...item,
-        text: "",
-        createdAt: actionRun.created_at,
-        run: actionRun,
-        action: genericActionFromRun(actionRun) ?? undefined,
-        workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
-        folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
-      } : item));
+      setMessages((current) => mergeProjectJobRun(current, actionRun, assistantId) ?? current.map((item) => item.id === assistantId ? {
+          ...item,
+          text: "",
+          createdAt: actionRun.created_at,
+          run: actionRun,
+          action: genericActionFromRun(actionRun) ?? undefined,
+          workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
+          folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
+        } : item));
     });
     setConversationId(run.conversation_id);
     const action = genericActionFromRun(run);
     const folderAction = run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined;
-    setMessages((current) => current.map((item) => item.id === assistantId ? {
-      ...item,
-      text: action || folderAction ? "" : run.assistant_response,
-      createdAt: run.created_at,
-      run,
-      action: action ?? undefined,
-      folderAction,
-    } : item));
+    setMessages((current) => mergeProjectJobRun(current, run, assistantId) ?? current.map((item) => item.id === assistantId ? {
+        ...item,
+        text: action || folderAction ? "" : run.assistant_response,
+        createdAt: run.created_at,
+        run,
+        action: action ?? undefined,
+        folderAction,
+      } : item));
   }
 
   async function handleNativeRequest(prompt: string): Promise<boolean> {
@@ -356,6 +381,72 @@ export default function App() {
         ? { ...item, folderAction: change(item.folderAction) }
         : item,
     ));
+  }
+
+  async function refreshProjectJob(jobId: string) {
+    const job = await client.getProjectJob(jobId);
+    const parsed = projectJobActionFromPayload({
+      action_type: "project_job",
+      technical_details: { project_job: job },
+    });
+    if (!parsed) return;
+    setMessages((current) => current.map((item) =>
+      item.jobAction?.jobId === jobId ? { ...item, jobAction: parsed } : item,
+    ));
+  }
+
+  async function prepareProjectJob(job: ProjectJobAction) {
+    if (!conversationId || !["planned", "blocked"].includes(job.status)) return;
+    const lockId = `project-job-prepare:${job.jobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const patchRun = await client.prepareProjectJob(job.jobId, conversationId);
+      setMessages((current) => [...current, {
+        ...makeMessage("assistant", ""),
+        createdAt: patchRun.created_at,
+        run: patchRun,
+        action: genericActionFromRun(patchRun) ?? undefined,
+      }]);
+      await refreshProjectJob(job.jobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  async function validateProjectJob(job: ProjectJobAction) {
+    if (!conversationId || job.status !== "implementing") return;
+    const lockId = `project-job-validation:${job.jobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const commandRun = await client.proposeProjectJobValidation(job.jobId, conversationId);
+      setMessages((current) => [...current, {
+        ...makeMessage("assistant", ""),
+        createdAt: commandRun.created_at,
+        run: commandRun,
+        action: genericActionFromRun(commandRun) ?? undefined,
+      }]);
+      await refreshProjectJob(job.jobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
+  async function cancelProjectJob(job: ProjectJobAction) {
+    if (!conversationId || ["completed", "cancelled"].includes(job.status)) return;
+    const lockId = `project-job-cancel:${job.jobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.cancelProjectJob(job.jobId, conversationId);
+      await refreshProjectJob(job.jobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+    } finally {
+      locks.current.delete(lockId);
+    }
   }
 
   async function approveWorkspaceAction(
@@ -533,6 +624,7 @@ export default function App() {
     if (action.status !== "awaiting_approval") return;
     if (action.actionType === "project_patch") {
       const patchId = action.actionId;
+      const jobId = projectJobIdFromAction(action);
       if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-patch:${patchId}`)) return;
       try {
         updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
@@ -547,6 +639,7 @@ export default function App() {
         const appliedAction = applied.action ? actionFromPayload(applied.action) : null;
         updateAction(messageId, (current) => ({ ...current, ...(appliedAction ?? {}) }));
         setMessages((current) => current.map((item) => item.id === messageId ? { ...item, run: applied } : item));
+        if (jobId) await refreshProjectJob(jobId);
       } catch (caught) {
         updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
       } finally { locks.current.delete(`project-patch:${patchId}`); }
@@ -583,6 +676,7 @@ export default function App() {
       return;
     }
     const plan = action.commandPlan;
+    const jobId = projectJobIdFromAction(action);
     if (!plan || !tryLockCommandAction(locks.current, plan.plan_id)) return;
     try {
       updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
@@ -607,6 +701,7 @@ export default function App() {
       });
       const presentation = commandResultPresentation(result);
       updateAction(messageId, (current) => ({ ...current, status: result.exit_code === 0 ? "completed" : "failed", commandPlan: result, resultSummary: presentation.summary, error: presentation.errorTail || undefined }));
+      if (jobId) await refreshProjectJob(jobId);
     } catch (caught) {
       updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
     } finally { locks.current.delete(plan.plan_id); }
@@ -620,6 +715,7 @@ export default function App() {
     if (action.status !== "awaiting_approval") return;
     if (action.actionType === "project_patch" || action.actionType === "project_rollback") {
       const rawId = action.actionId;
+      const jobId = projectJobIdFromAction(action);
       const patchId = rawId?.startsWith("rollback:") ? rawId.slice(9) : rawId;
       if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-cancel:${rawId}`)) return;
       try {
@@ -628,6 +724,7 @@ export default function App() {
           : await client.rejectProjectRollback(patchId, { chat_run_id: chatRunId });
         const updatedAction = updated.action ? actionFromPayload(updated.action) : null;
         updateAction(messageId, (current) => ({ ...current, ...(updatedAction ?? {}) }));
+        if (jobId) await refreshProjectJob(jobId);
       } catch (caught) {
         updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
       } finally { locks.current.delete(`project-cancel:${rawId}`); }
@@ -658,6 +755,7 @@ export default function App() {
   }
 
   function newChat() {
+    localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
     setConversationId(null);
     setMessages([]);
     setError(null);
@@ -672,18 +770,7 @@ export default function App() {
       const runs = (await client.getChatRuns(100))
         .filter((run) => run.conversation_id === selectedConversationId)
         .reverse();
-      const restored = runs.flatMap<Message>((run) => [
-        { ...makeMessage("user", run.user_message), createdAt: run.created_at },
-        {
-          ...makeMessage("assistant", run.action ? "" : run.assistant_response),
-          createdAt: run.created_at,
-          run,
-          action: genericActionFromRun(run) ?? undefined,
-          info: assignmentAnalysisInfoFromRun(run),
-          workspaceAction: run.action ? assignmentWorkspaceActionFromPayload(run.action) ?? undefined : undefined,
-          folderAction: run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined,
-        },
-      ]);
+      const restored = restoreConversationMessages(runs, assignmentAnalysisInfoFromRun);
       setConversationId(selectedConversationId);
       setMessages(restored);
       setError(null);
@@ -706,7 +793,7 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
@@ -734,6 +821,9 @@ function ChatMessage({
   onApproveFolder,
   onCancelFolder,
   onRescanFolder,
+  onPrepareJob,
+  onValidateJob,
+  onCancelJob,
   onOption,
   onContinue,
 }: {
@@ -745,6 +835,9 @@ function ChatMessage({
   onApproveFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
   onCancelFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
   onRescanFolder: (id: string, action: FolderAccessAction, chatRunId?: string) => Promise<void>;
+  onPrepareJob: (action: ProjectJobAction) => Promise<void>;
+  onValidateJob: (action: ProjectJobAction) => Promise<void>;
+  onCancelJob: (action: ProjectJobAction) => Promise<void>;
   onOption: (option: string) => void;
   onContinue: (conversationId: string) => Promise<void>;
 }) {
@@ -753,9 +846,10 @@ function ChatMessage({
     {message.action && <ActionCard action={message.action} onApprove={() => void onApprove(message.id, message.action!, message.run?.run_id)} onCancel={() => void onCancel(message.id, message.action!, message.run?.run_id)} onOption={onOption} />}
     {message.workspaceAction && <AssignmentWorkspaceCard action={message.workspaceAction} onApprove={() => void onApproveWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} onCancel={() => void onCancelWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} />}
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
+    {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && !message.folderAction && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && !message.jobAction && <RunDetails run={message.run} />}
   </div></article>;
 }
 
@@ -797,6 +891,43 @@ function FolderAccessCard({
     {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
     {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
     <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+  </div>;
+}
+
+function ProjectJobCard({
+  action,
+  onPrepare,
+  onValidate,
+  onCancel,
+}: {
+  action: ProjectJobAction;
+  onPrepare: () => void;
+  onValidate: () => void;
+  onCancel: () => void;
+}) {
+  const terminal = ["completed", "cancelled"].includes(action.status);
+  const canPrepare = ["planned", "blocked"].includes(action.status)
+    && action.revisionCount < action.maxRevisionCycles;
+  const canValidate = action.status === "implementing" && action.validationPlan.length > 0;
+  const completion = action.completionSummary;
+  return <div className="action-card project-job-card">
+    <div className="card-heading"><div><span className="eyebrow">Project job</span><h2>{action.status === "completed" ? "Client-ready completion" : "Integrated project work"}</h2></div><span className={`status status-${action.status}`}>{action.status.replace(/_/g, " ")}</span></div>
+    <section className="job-section"><h3>Objective</h3><p>{action.objective}</p></section>
+    {action.status === "needs_clarification" && action.clarification?.question && <div className="job-clarification"><CircleAlert size={17} /><div><strong>Clarification needed</strong><p>{action.clarification.question}</p><small>Reply naturally in this chat. Astra asks one focused question at a time.</small></div></div>}
+    <section className="job-section"><h3>Requirements</h3><div className="job-columns"><div><strong>Deliverables</strong><List items={action.deliverables} /></div><div><strong>Acceptance criteria</strong><List items={action.acceptanceCriteria} /></div></div></section>
+    <section className="job-section"><h3>Plan</h3><ol className="project-plan-steps">{action.plan.steps.map((step) => <li key={step}>{step}</li>)}</ol>{action.plan.safetyImpact && <p className="muted">{action.plan.safetyImpact}</p>}</section>
+    {action.relevantPaths.length > 0 && <ProjectSources paths={action.relevantPaths} />}
+    {action.patchIds.length > 0 && <section className="job-section"><h3>Proposed changes</h3><p>{action.patchIds.length} immutable patch proposal{action.patchIds.length === 1 ? "" : "s"} linked to this job. Every patch retains its own approval.</p></section>}
+    {action.status === "implementing" && <section className="job-section"><h3>Applied changes</h3><p>The approved patch was applied atomically. Tests have not run automatically, and rollback is available.</p></section>}
+    {action.validationResults.length > 0 && <section className="job-section"><h3>Validation</h3>{action.validationResults.map((result, index) => <div className={`validation-summary ${result.status === "passed" ? "passed" : "failed"}`} key={`${String(result.command_plan_id)}-${index}`}><strong>{String(result.status ?? "recorded")}</strong><span>{String(result.summary ?? "Bounded validation result recorded.")}</span></div>)}</section>}
+    {action.status === "blocked" && <div className="result failed"><CircleAlert size={17} /><div><strong>Controlled diagnosis</strong><p>{String(action.validationResults[action.validationResults.length - 1]?.recommended_next_step ?? "Review the bounded failure and prepare a revised patch preview.")}</p><small>Revision {action.revisionCount} of {action.maxRevisionCycles}; no edit or command will repeat automatically.</small></div></div>}
+    {completion && <section className="job-section completion-report"><h3>Completion</h3><dl><div><dt>Work completed</dt><dd>{joinSummary(completion.work_completed)}</dd></div><div><dt>Files changed</dt><dd>{joinSummary(completion.files_changed)}</dd></div><div><dt>Validation outcome</dt><dd>{String(completion.validation_outcome ?? "Not recorded")}</dd></div><div><dt>Rollback</dt><dd>{completion.rollback_available === true ? "Available" : "Not available"}</dd></div><div><dt>Items not tested</dt><dd>{joinSummary(completion.items_not_tested, "None recorded")}</dd></div><div><dt>Manual checks</dt><dd>{joinSummary(completion.suggested_manual_checks)}</dd></div></dl></section>}
+    <div className="button-row">
+      {canPrepare && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare patch preview</button>}
+      {canValidate && <button className="primary-button" onClick={onValidate}><ShieldCheck size={16} />Propose validation</button>}
+      {!terminal && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel job</button>}
+    </div>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Job: {action.jobId}</span><span>Revision limit: {action.revisionCount}/{action.maxRevisionCycles}</span><JsonBlock value={action.technical} /></div></details>
   </div>;
 }
 
@@ -866,6 +997,10 @@ function ProjectSources({ paths }: { paths: string[] }) {
   return <div className="project-sources"><span>Project evidence</span><div className="source-chips">{paths.slice(0, 12).map((path) => <code key={path}>{path}</code>)}</div></div>;
 }
 
+function List({ items }: { items: string[] }) {
+  return items.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <p className="muted">None identified.</p>;
+}
+
 function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
   return <div className="welcome"><span className="welcome-icon"><Bot size={30} /></span><h1>What can I help with?</h1><p>Ask a question, inspect Astra, or request an allowlisted action directly in chat.</p><div className="suggestions">{["Run the tests", "Show system status", "Show recent chats", "What model are you using?"].map((prompt) => <button key={prompt} onClick={() => onPrompt(prompt)}>{prompt}</button>)}</div></div>;
 }
@@ -873,7 +1008,66 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
 function Status({ status }: { status: ChatActionStatus }) { return <span className={`status status-${status}`}>{status.replace(/_/g, " ")}</span>; }
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
-function genericActionFromRun(run: ChatRunResponse) { return run.action?.action_type === "assignment" || run.action?.action_type === "folder_access" ? null : (run.action ? actionFromPayload(run.action) : null); }
+function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
+function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantId: string): Message[] | null {
+  const incoming = run.action ? projectJobActionFromPayload(run.action) : null;
+  if (!incoming) return null;
+  const existing = current.find((item) => item.id !== assistantId && item.jobAction?.jobId === incoming.jobId);
+  return current.map((item) => {
+    if (existing && item.id === existing.id) return { ...item, jobAction: incoming };
+    if (item.id !== assistantId) return item;
+    return {
+      ...item,
+      text: existing ? run.assistant_response : "",
+      createdAt: run.created_at,
+      run,
+      jobAction: existing ? undefined : incoming,
+      action: undefined,
+      workspaceAction: undefined,
+      folderAction: undefined,
+    };
+  });
+}
+function restoreConversationMessages(
+  runs: ChatRunResponse[],
+  assignmentInfo: (run: ChatRunResponse) => InfoCard | undefined,
+): Message[] {
+  const latestJobs = new Map<string, ProjectJobAction>();
+  for (const run of runs) {
+    const job = run.action ? projectJobActionFromPayload(run.action) : null;
+    if (job) latestJobs.set(job.jobId, job);
+  }
+  const renderedJobs = new Set<string>();
+  return runs.flatMap<Message>((run) => {
+    const job = run.action ? projectJobActionFromPayload(run.action) : null;
+    const showJob = job && !renderedJobs.has(job.jobId);
+    if (showJob) renderedJobs.add(job.jobId);
+    const restoredJob = showJob ? latestJobs.get(job.jobId) : undefined;
+    return [
+      { ...makeMessage("user", run.user_message), createdAt: run.created_at },
+      {
+        ...makeMessage("assistant", restoredJob || genericActionFromRun(run) || (run.action && !job) ? "" : run.assistant_response),
+        createdAt: run.created_at,
+        run,
+        action: genericActionFromRun(run) ?? undefined,
+        info: assignmentInfo(run),
+        workspaceAction: run.action ? assignmentWorkspaceActionFromPayload(run.action) ?? undefined : undefined,
+        folderAction: run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined,
+        jobAction: restoredJob,
+      },
+    ];
+  });
+}
+function projectJobIdFromAction(action: ChatAction): string | undefined {
+  const patch = action.technicalDetails.project_patch;
+  if (patch && typeof patch === "object" && !Array.isArray(patch) && typeof (patch as Record<string, unknown>).job_id === "string") return (patch as Record<string, unknown>).job_id as string;
+  const scope = action.technicalDetails.project_scope;
+  if (scope && typeof scope === "object" && !Array.isArray(scope) && typeof (scope as Record<string, unknown>).job_id === "string") return (scope as Record<string, unknown>).job_id as string;
+  return undefined;
+}
+function joinSummary(value: unknown, fallback = "None"): string {
+  return Array.isArray(value) ? value.map(String).join(", ") || fallback : typeof value === "string" && value ? value : fallback;
+}
 function withoutPlan(details: Record<string, unknown>) { const rest = { ...details }; delete rest.command_plan; return rest; }
 function projectPatchDetails(action: ChatAction) {
   const value = action.technicalDetails.project_patch;

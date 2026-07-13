@@ -8,6 +8,7 @@ const clientSource = readFileSync(new URL("../src/clients/astraClient.ts", impor
 const workspaceStateSource = readFileSync(new URL("../src/state/assignmentWorkspaceState.ts", import.meta.url), "utf8");
 const folderStateSource = readFileSync(new URL("../src/state/folderAccessState.ts", import.meta.url), "utf8");
 const streamStateSource = readFileSync(new URL("../src/state/chatStreamState.ts", import.meta.url), "utf8");
+const projectJobStateSource = readFileSync(new URL("../src/state/projectJobState.ts", import.meta.url), "utf8");
 
 test("the application shell renders only the chat product", () => {
   assert.match(appSource, /aria-label="Conversation"/);
@@ -189,4 +190,40 @@ test("folder card avoids raw absolute scanned paths and keeps details collapsed"
   assert.doesNotMatch(appSource, /approved_root\}/);
   assert.doesNotMatch(appSource, /<details[^>]*\sopen/);
   assert.doesNotMatch(appSource, /open=\{/);
+});
+
+test("project jobs remain integrated in the single chat with independent approvals", () => {
+  assert.match(appSource, /ProjectJobCard/);
+  assert.match(appSource, /Prepare patch preview/);
+  assert.match(appSource, /Propose validation/);
+  assert.match(appSource, /Clarification needed/);
+  assert.match(appSource, /Client-ready completion/);
+  assert.match(appSource, /project-job-prepare:\$\{job\.jobId\}/);
+  assert.match(appSource, /project-job-validation:\$\{job\.jobId\}/);
+  assert.match(clientSource, /\/chat\/projects\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/prepare/);
+  assert.match(clientSource, /\/chat\/projects\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/validation/);
+  assert.doesNotMatch(appSource, /ProjectJobPage|JobDashboard|ExecutionConsole/);
+});
+
+test("project job cards deduplicate stream and reload state by job id", () => {
+  assert.match(appSource, /mergeProjectJobRun\(current, actionRun, assistantId\)/);
+  assert.match(appSource, /latestJobs = new Map<string, ProjectJobAction>/);
+  assert.match(appSource, /renderedJobs = new Set<string>/);
+  assert.match(projectJobStateSource, /action\.action_type !== "project_job"/);
+  assert.match(projectJobStateSource, /normalized\.startsWith\("\/"\)/);
+});
+
+test("the active conversation is restored automatically after a page reload", () => {
+  assert.match(appSource, /ACTIVE_CONVERSATION_KEY/);
+  assert.match(appSource, /localStorage\.setItem\(ACTIVE_CONVERSATION_KEY, conversationId\)/);
+  assert.match(appSource, /client\.getChatRuns\(100\)/);
+  assert.match(appSource, /run\.conversation_id === savedConversationId/);
+  assert.match(appSource, /localStorage\.removeItem\(ACTIVE_CONVERSATION_KEY\)/);
+});
+
+test("project job layout preserves the existing mobile composer", () => {
+  assert.match(stylesSource, /\.project-job-card\s*\{/);
+  assert.match(stylesSource, /\.job-columns\s*\{[^}]*grid-template-columns:\s*repeat\(2/s);
+  assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*\.job-columns\s*\{[^}]*grid-template-columns:\s*1fr/s);
+  assert.match(stylesSource, /\.completion-report dl div\s*\{/);
 });

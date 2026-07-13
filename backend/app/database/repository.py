@@ -21,6 +21,20 @@ from backend.app.schemas.api import (
 )
 
 
+PROJECT_JOB_TRANSITIONS = {
+    "intake": {"needs_clarification", "planned", "cancelled"},
+    "needs_clarification": {"planned", "cancelled"},
+    "planned": {"patch_proposed", "cancelled"},
+    "patch_proposed": {"patch_approved", "planned", "cancelled"},
+    "patch_approved": {"implementing", "blocked", "cancelled"},
+    "implementing": {"validating", "blocked", "cancelled"},
+    "validating": {"completed", "blocked", "implementing", "cancelled"},
+    "blocked": {"planned", "patch_proposed", "cancelled"},
+    "completed": set(),
+    "cancelled": set(),
+}
+
+
 class AnalysisRepository:
     """SQLite storage for analysis metadata; submitted source is not persisted."""
 
@@ -250,6 +264,7 @@ class AnalysisRepository:
                     patch_id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
                     folder_access_id TEXT NOT NULL,
+                    job_id TEXT,
                     status TEXT NOT NULL,
                     proposal_json TEXT NOT NULL,
                     snapshot_json TEXT NOT NULL DEFAULT '[]',
@@ -258,6 +273,7 @@ class AnalysisRepository:
                 )
                 """
             )
+            self._add_column_if_missing(connection, "project_patches", "job_id", "TEXT")
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_project_patches_conversation
@@ -272,10 +288,42 @@ class AnalysisRepository:
                     conversation_id TEXT NOT NULL,
                     folder_access_id TEXT NOT NULL,
                     patch_id TEXT,
+                    job_id TEXT,
+                    command_plan_id TEXT,
                     operation TEXT NOT NULL,
                     status TEXT NOT NULL,
                     metadata_json TEXT NOT NULL
                 )
+                """
+            )
+            self._add_column_if_missing(connection, "project_audit_events", "job_id", "TEXT")
+            self._add_column_if_missing(connection, "project_audit_events", "command_plan_id", "TEXT")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    action_run_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    root_fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    revision_count INTEGER NOT NULL DEFAULT 0,
+                    job_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_jobs_conversation
+                ON project_jobs (conversation_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_jobs_folder_access
+                ON project_jobs (folder_access_id, created_at DESC)
                 """
             )
 
@@ -798,16 +846,134 @@ class AnalysisRepository:
             connection.execute(
                 """
                 INSERT INTO project_patches (
-                    patch_id, conversation_id, folder_access_id, status,
+                    patch_id, conversation_id, folder_access_id, job_id, status,
                     proposal_json, snapshot_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal["patch_id"], proposal["conversation_id"], proposal["folder_access_id"],
-                    proposal["status"], json.dumps(proposal, sort_keys=True),
+                    proposal.get("job_id"), proposal["status"], json.dumps(proposal, sort_keys=True),
                     json.dumps(snapshot or [], sort_keys=True), proposal["created_at"], now,
                 ),
             )
+
+    def store_project_job(self, job: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_jobs (
+                    job_id, action_run_id, conversation_id, folder_access_id,
+                    root_fingerprint, status, revision_count, job_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job["job_id"], job["action_run_id"], job["conversation_id"],
+                    job["folder_access_id"], job["root_fingerprint"], job["status"],
+                    int(job.get("revision_count") or 0), json.dumps(job, sort_keys=True),
+                    job["created_at"], job["updated_at"],
+                ),
+            )
+
+    def get_project_job(self, job_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT job_json FROM project_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project job not found.")
+        job = json.loads(row["job_json"])
+        if not isinstance(job, dict):
+            raise LookupError("Project job state is malformed.")
+        return job
+
+    def list_project_jobs_for_conversation(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT job_json FROM project_jobs
+                WHERE conversation_id = ? ORDER BY created_at ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        jobs = [json.loads(row["job_json"]) for row in rows]
+        return [job for job in jobs if isinstance(job, dict)]
+
+    def latest_active_project_job(self, conversation_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT job_json FROM project_jobs
+                WHERE conversation_id = ? AND status NOT IN ('completed', 'cancelled')
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        job = json.loads(row["job_json"])
+        return job if isinstance(job, dict) else None
+
+    def update_project_job(self, job: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE project_jobs
+                SET status = ?, revision_count = ?, job_json = ?, updated_at = ?
+                WHERE job_id = ? AND conversation_id = ? AND folder_access_id = ?
+                """,
+                (
+                    job["status"], int(job.get("revision_count") or 0),
+                    json.dumps(job, sort_keys=True), job["updated_at"], job["job_id"],
+                    job["conversation_id"], job["folder_access_id"],
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise LookupError("Project job update failed or its security binding changed.")
+
+    def transition_project_job(
+        self,
+        job: dict[str, Any],
+        *,
+        expected_statuses: set[str] | tuple[str, ...] | list[str],
+    ) -> bool:
+        expected = tuple(expected_statuses)
+        if not expected:
+            return False
+        target = str(job.get("status") or "")
+        if target not in PROJECT_JOB_TRANSITIONS:
+            raise ValueError("Unknown project job status.")
+        if any(target not in PROJECT_JOB_TRANSITIONS.get(status, set()) for status in expected):
+            raise ValueError("Invalid project job status transition.")
+        placeholders = ", ".join("?" for _ in expected)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE project_jobs
+                SET status = ?, revision_count = ?, job_json = ?, updated_at = ?
+                WHERE job_id = ? AND conversation_id = ? AND folder_access_id = ?
+                  AND status IN ({placeholders})
+                """,
+                (
+                    job["status"], int(job.get("revision_count") or 0),
+                    json.dumps(job, sort_keys=True), job["updated_at"], job["job_id"],
+                    job["conversation_id"], job["folder_access_id"], *expected,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def list_project_patches_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT proposal_json FROM project_patches
+                WHERE job_id = ? ORDER BY created_at ASC
+                """,
+                (job_id,),
+            ).fetchall()
+        patches = [json.loads(row["proposal_json"]) for row in rows]
+        return [patch for patch in patches if isinstance(patch, dict)]
 
     def get_project_patch(self, patch_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         with self._connect() as connection:
@@ -895,13 +1061,14 @@ class AnalysisRepository:
                 """
                 INSERT INTO project_audit_events (
                     event_id, created_at, conversation_id, folder_access_id,
-                    patch_id, operation, status, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    patch_id, job_id, command_plan_id, operation, status, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"], event["created_at"], event["conversation_id"],
-                    event["folder_access_id"], event.get("patch_id"), event["operation"],
-                    event["status"], json.dumps(event.get("metadata") or {}, sort_keys=True),
+                    event["folder_access_id"], event.get("patch_id"), event.get("job_id"),
+                    event.get("command_plan_id"), event["operation"], event["status"],
+                    json.dumps(event.get("metadata") or {}, sort_keys=True),
                 ),
             )
 

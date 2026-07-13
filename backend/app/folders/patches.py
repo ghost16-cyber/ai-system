@@ -66,6 +66,7 @@ def create_patch_proposal(
     changes: list[dict[str, Any]],
     files_inspected: list[str] | None = None,
     validation_plan: list[str] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     approved = Path(root).resolve()
     root_fingerprint = project_root_fingerprint(approved)
@@ -145,6 +146,7 @@ def create_patch_proposal(
     proposal = {
         "patch_id": patch_id, "conversation_id": conversation_id,
         "folder_access_id": folder_access_id, "root_fingerprint": root_fingerprint,
+        "job_id": job_id,
         "user_request": user_request.strip(), "files_inspected": sorted(verified_inspected),
         "changes": normalized, "file_set": sorted(seen), "additions": additions,
         "deletions": deletions, "total_changed_bytes": total_bytes,
@@ -287,6 +289,8 @@ def _proposal_fingerprint(proposal: dict[str, Any]) -> str:
         str(proposal.get("folder_access_id")), str(proposal.get("root_fingerprint")),
         str(proposal.get("user_request")), str(proposal.get("expires_at")),
     ]
+    if proposal.get("job_id"):
+        fields.append(str(proposal["job_id"]))
     for change in proposal.get("changes", []):
         fields.extend(str(change.get(key)) for key in ("relative_path", "operation", "before_hash", "after_hash"))
     return hashlib.sha256("\n".join(fields).encode("utf-8")).hexdigest()

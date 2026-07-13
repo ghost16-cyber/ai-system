@@ -97,7 +97,7 @@ def test_project_file_instructions_are_evidence_and_cannot_approve_actions(tmp_p
     assert (project / "app.py").read_text(encoding="utf-8").endswith("value = 1\n")
 
 
-def test_implementation_request_creates_non_mutating_bounded_plan(tmp_path: Path) -> None:
+def test_implementation_request_creates_non_mutating_persistent_job_plan(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     target = project / "auth.py"
@@ -110,10 +110,13 @@ def test_implementation_request_creates_non_mutating_bounded_plan(tmp_path: Path
         )
     assert response.status_code == 200, response.text
     action = response.json()["action"]
-    assert action["action_type"] == "project_plan"
-    assert action["status"] == "completed"
+    assert action["action_type"] == "project_job"
+    assert action["status"] == "planned"
     assert action["approval_required"] is False
-    assert action["technical_details"]["project_plan"]["commands_require_approval"] is True
+    job = action["technical_details"]["project_job"]
+    assert job["implementation_plan"]["safety_impact"].startswith("Planning is read-only")
+    assert action["safety_information"]["patch_approval_required"] is True
+    assert action["safety_information"]["command_approval_required"] is True
     assert target.read_text(encoding="utf-8") == "def authenticate(user):\n    return False\n"
 
 

@@ -240,6 +240,19 @@ from backend.app.folders import (
     verify_patch_approval,
 )
 from backend.app.folders.audit import audit_event
+from backend.app.project_jobs import (
+    ProjectJobError,
+    answer_clarification,
+    build_completion_summary,
+    build_job_action,
+    build_job_chat_run,
+    create_project_job,
+    detect_project_job_followup,
+    detect_project_task,
+    interpret_validation_result,
+    prepare_job_patch_changes,
+    public_project_job,
+)
 from backend.app.workspace import inspect_workspace
 
 
@@ -424,6 +437,14 @@ class ProjectCommandProposalRequest(BaseModel):
     purpose: str = Field(default="Validate the approved project.", min_length=1, max_length=1000)
     expected_result: str = Field(default="A bounded validation result.", min_length=1, max_length=1000)
     timeout_seconds: int = Field(default=120, ge=1, le=120)
+
+
+class ProjectJobActionRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ProjectJobClarificationRequest(ProjectJobActionRequest):
+    answer: str = Field(..., min_length=1, max_length=2000)
 
 
 class DatasetProfileRequest(BaseModel):
@@ -1572,11 +1593,134 @@ def create_app(
         )
         return run
 
+    @application.get("/chat/projects/jobs/{job_id}")
+    def chat_project_job_get(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        return public_project_job(job)
+
+    @application.get("/chat/conversations/{conversation_id}/project-jobs")
+    def chat_project_jobs_list(conversation_id: str) -> dict:
+        jobs = repository.list_project_jobs_for_conversation(conversation_id)
+        for job in jobs:
+            _validated_project_job(str(job["job_id"]), conversation_id=conversation_id)
+        return {"items": [public_project_job(job) for job in jobs], "count": len(jobs)}
+
+    @application.post("/chat/projects/jobs/{job_id}/clarify", response_model=ChatRunResponse)
+    def chat_project_job_clarify(job_id: str, request: ProjectJobClarificationRequest) -> ChatRunResponse:
+        job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        try:
+            updated = answer_clarification(job, request.answer)
+        except ProjectJobError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if not repository.transition_project_job(updated, expected_statuses={"needs_clarification"}):
+            raise HTTPException(status_code=409, detail="The clarification was already answered or replayed.")
+        _sync_project_job_action(updated)
+        run = build_job_chat_run(
+            updated, message=request.answer,
+            response="Clarification recorded. I refreshed the evidence-backed plan; no files were modified.",
+            run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        repository.store_chat_run(run)
+        audit_event(
+            repository, conversation_id=updated["conversation_id"],
+            folder_access_id=access["action_id"], job_id=job_id,
+            operation="clarification_answered", status="completed",
+            metadata={"answer_recorded": True},
+        )
+        audit_event(
+            repository, conversation_id=updated["conversation_id"],
+            folder_access_id=access["action_id"], job_id=job_id,
+            operation="plan_creation", status="completed",
+            metadata={"relative_paths": updated["relevant_paths"], "step_count": len(updated["implementation_plan"]["steps"])},
+        )
+        return run
+
+    @application.post("/chat/projects/jobs/{job_id}/prepare", response_model=ChatRunResponse)
+    def chat_project_job_prepare(job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
+        job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        try:
+            changes = prepare_job_patch_changes(access["approved_root"], job)
+            proposal = create_patch_proposal(
+                root=access["approved_root"], conversation_id=job["conversation_id"],
+                folder_access_id=access["action_id"], user_request=job["user_task"],
+                changes=changes,
+                files_inspected=[change["path"] for change in changes if change["operation"] != "create"],
+                validation_plan=[str(item.get("purpose") or item.get("action")) for item in job.get("validation_plan") or []],
+                job_id=job_id,
+            )
+        except (ProjectJobError, ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        repository.store_project_patch(proposal)
+        updated = {**job, "status": "patch_proposed", "patch_ids": [*job.get("patch_ids", []), proposal["patch_id"]], "updated_at": datetime.now(timezone.utc).isoformat()}
+        if not repository.transition_project_job(updated, expected_statuses={"planned", "blocked"}):
+            raise HTTPException(status_code=409, detail="Patch preparation was already started or replayed.")
+        _sync_project_job_action(updated)
+        run = _project_patch_run(proposal)
+        repository.store_chat_run(run)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, patch_id=proposal["patch_id"], operation="patch_relationship",
+            status="proposed", metadata={"relative_paths": proposal["file_set"]},
+        )
+        return run
+
+    @application.post("/chat/projects/jobs/{job_id}/validation", response_model=ChatRunResponse)
+    def chat_project_job_validation(job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
+        job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        if job.get("status") != "implementing":
+            raise HTTPException(status_code=409, detail="Apply an approved job patch before proposing validation.")
+        plans = list(job.get("validation_plan") or [])
+        if not plans:
+            raise HTTPException(status_code=409, detail="No allowlisted validation command was detected for this project job.")
+        selected = plans[0]
+        try:
+            run = _plan_project_command_run(
+                conversation_id=job["conversation_id"], access=access,
+                message=str(selected.get("purpose") or "Validate the project job."),
+                action=str(selected["action"]), target=selected.get("target"),
+                expected_result=str(selected.get("expected_result") or "A bounded validation result."),
+                timeout_seconds=120, job_id=job_id,
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        plan = run.action["technical_details"]["command_plan"] if run.action else {}
+        updated = {
+            **job, "status": "validating",
+            "command_plan_ids": [*job.get("command_plan_ids", []), plan.get("plan_id")],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not repository.transition_project_job(updated, expected_statuses={"implementing"}):
+            raise HTTPException(status_code=409, detail="Validation was already proposed or replayed.")
+        _sync_project_job_action(updated)
+        repository.store_chat_run(run)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, command_plan_id=plan.get("plan_id"), operation="validation_proposal",
+            status="planned", metadata={"action": plan.get("action")},
+        )
+        return run
+
+    @application.post("/chat/projects/jobs/{job_id}/cancel")
+    def chat_project_job_cancel(job_id: str, request: ProjectJobActionRequest) -> dict:
+        job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        if job.get("status") in {"completed", "cancelled"}:
+            raise HTTPException(status_code=409, detail="The project job is already terminal.")
+        updated = {**job, "status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}
+        if not repository.transition_project_job(updated, expected_statuses={str(job["status"])}):
+            raise HTTPException(status_code=409, detail="The project job changed concurrently or cancellation was replayed.")
+        _sync_project_job_action(updated)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, operation="job_cancelled", status="cancelled", metadata={},
+        )
+        return public_project_job(updated)
+
     @application.post("/chat/projects/patches/{patch_id}/approve", response_model=ChatRunResponse)
     def chat_project_patch_approve(patch_id: str, request: ProjectPatchApprovalRequest) -> ChatRunResponse:
         _require_folder_action_association(request.chat_run_id, patch_id)
         run = repository.get_chat_run(request.chat_run_id)
         proposal, snapshot = _get_project_patch(patch_id)
+        job_relation = _job_for_patch(proposal)
         access = _completed_project_access(run.conversation_id)
         try:
             verify_patch_approval(
@@ -1595,6 +1739,12 @@ def create_app(
             request.chat_run_id, patch_id,
             {"status": "approved", "approval_required": False, "technical_details": {"project_patch": public_patch_proposal(proposal)}},
         )
+        if job_relation is not None:
+            job, _job_access = job_relation
+            updated_job = {**job, "status": "patch_approved", "updated_at": datetime.now(timezone.utc).isoformat()}
+            if not repository.transition_project_job(updated_job, expected_statuses={"patch_proposed"}):
+                raise HTTPException(status_code=409, detail="The project job patch approval was already used or changed concurrently.")
+            _sync_project_job_action(updated_job)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_approved", status="approved", metadata={"relative_paths": proposal["file_set"]})
         return repository.get_chat_run(request.chat_run_id)
 
@@ -1603,6 +1753,7 @@ def create_app(
         _require_folder_action_association(request.chat_run_id, patch_id)
         run = repository.get_chat_run(request.chat_run_id)
         proposal, _snapshot = _get_project_patch(patch_id)
+        job_relation = _job_for_patch(proposal)
         access = _completed_project_access(run.conversation_id)
         claimed = {**proposal, "status": "applying"}
         if not repository.transition_project_patch(claimed, expected_status="approved"):
@@ -1614,6 +1765,16 @@ def create_app(
             repository.update_project_patch(failed)
             repository.update_chat_run_action_for_id(request.chat_run_id, patch_id, {"status": failed["status"], "error": _controlled_project_error(error), "technical_details": {"project_patch": public_patch_proposal(failed)}})
             audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_failed", status=failed["status"], metadata={"reason": _controlled_project_error(error)})
+            if job_relation is not None:
+                job, _job_access = job_relation
+                blocked = {**job, "status": "blocked", "revision_count": int(job.get("revision_count") or 0) + 1, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(blocked)
+                _sync_project_job_action(blocked)
+                audit_event(
+                    repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                    job_id=job["job_id"], patch_id=patch_id, operation="job_blocked", status="blocked",
+                    metadata={"reason": "patch_application_failed", "revision_count": blocked["revision_count"]},
+                )
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         repository.update_project_patch(updated, snapshot)
         summary = _patch_application_summary(updated)
@@ -1621,6 +1782,12 @@ def create_app(
             request.chat_run_id, patch_id,
             {"status": "completed", "result_summary": summary, "error": None, "technical_details": {"project_patch": public_patch_proposal(updated), "rollback_available": True, "tests_run": False}},
         )
+        if job_relation is not None:
+            job, _job_access = job_relation
+            implementing = {**job, "status": "implementing", "updated_at": datetime.now(timezone.utc).isoformat()}
+            if not repository.transition_project_job(implementing, expected_statuses={"patch_approved"}):
+                raise HTTPException(status_code=409, detail="The project job changed before patch application completed.")
+            _sync_project_job_action(implementing)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_applied", status="applied", metadata={"relative_paths": updated["file_set"], "additions": updated["additions"], "deletions": updated["deletions"]})
         return repository.get_chat_run(request.chat_run_id)
 
@@ -1630,12 +1797,18 @@ def create_app(
         run = repository.get_chat_run(request.chat_run_id)
         access = _completed_project_access(run.conversation_id)
         proposal, snapshot = _get_project_patch(patch_id)
+        job_relation = _job_for_patch(proposal)
         if proposal.get("status") != "proposed" or proposal.get("conversation_id") != run.conversation_id:
             raise HTTPException(status_code=409, detail="Only this conversation's pending patch can be rejected.")
         rejected = {**proposal, "status": "rejected"}
         if not repository.transition_project_patch(rejected, expected_status="proposed", snapshot=snapshot):
             raise HTTPException(status_code=409, detail="Patch was already approved, rejected, or changed concurrently.")
         repository.update_chat_run_action_for_id(request.chat_run_id, patch_id, {"status": "cancelled", "approval_required": False, "result_summary": "Patch rejected. No files were changed.", "technical_details": {"project_patch": public_patch_proposal(rejected)}})
+        if job_relation is not None:
+            job, _job_access = job_relation
+            planned = {**job, "status": "planned", "updated_at": datetime.now(timezone.utc).isoformat()}
+            repository.update_project_job(planned)
+            _sync_project_job_action(planned)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_rejected", status="rejected", metadata={"relative_paths": rejected["file_set"]})
         return repository.get_chat_run(request.chat_run_id)
 
@@ -1708,6 +1881,7 @@ def create_app(
         _require_chat_command_association(request.chat_run_id, plan_id)
         run = repository.get_chat_run(request.chat_run_id or "")
         access = _completed_project_access(run.conversation_id)
+        job_id = _validate_job_command(plan_id, run, access)
         try:
             plan, token = approve_assignment_command(
                 assignment_command_store, plan_id,
@@ -1717,7 +1891,7 @@ def create_app(
         except (CommandExecutionError, ValueError, FileNotFoundError) as error:
             raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
         repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "approved", "technical_details": {"command_plan": plan}})
-        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], operation="command_approved", status="approved", metadata={"plan_id": plan_id, "action": plan.get("action")})
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job_id, command_plan_id=plan_id, operation="command_approved", status="approved", metadata={"action": plan.get("action")})
         return {"plan": plan, "approval_token": token}
 
     @application.post("/chat/projects/commands/{plan_id}/execute")
@@ -1725,6 +1899,7 @@ def create_app(
         _require_chat_command_association(request.chat_run_id, plan_id)
         run = repository.get_chat_run(request.chat_run_id or "")
         access = _completed_project_access(run.conversation_id)
+        preflight_job_id = _validate_job_command(plan_id, run, access)
         try:
             result = execute_assignment_command(
                 assignment_command_store, access["approved_root"], plan_id,
@@ -1736,7 +1911,46 @@ def create_app(
         summary, error_tail = _chat_command_result_presentation(result)
         succeeded = result.get("exit_code") == 0 and result.get("display_state") == "completed"
         repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "completed" if succeeded else "failed", "result_summary": summary, "error": error_tail, "technical_details": {"command_plan": result}})
-        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], operation="command_executed" if succeeded else "command_failed", status="completed" if succeeded else "failed", metadata={"plan_id": plan_id, "action": result.get("action"), "exit_code": result.get("exit_code"), "duration": result.get("duration_seconds")})
+        job_id = _job_id_from_command(result)
+        if job_id != preflight_job_id:
+            raise HTTPException(status_code=409, detail="The command-to-job association changed before execution.")
+        if job_id:
+            job, _job_access = _validated_project_job(job_id, conversation_id=run.conversation_id)
+            if plan_id not in job.get("command_plan_ids", []):
+                raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
+            interpretation = interpret_validation_result(result)
+            validation_results = [*job.get("validation_results", []), interpretation]
+            if succeeded:
+                patches = repository.list_project_patches_for_job(job_id)
+                completed_job = {
+                    **job, "status": "completed", "validation_results": validation_results,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                completed_job["completion_summary"] = build_completion_summary(completed_job, patches)
+                if not repository.transition_project_job(completed_job, expected_statuses={"validating"}):
+                    raise HTTPException(status_code=409, detail="The project job validation result was already recorded or replayed.")
+                _sync_project_job_action(completed_job)
+                audit_event(
+                    repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                    job_id=job_id, command_plan_id=plan_id, operation="job_completed", status="completed",
+                    metadata={"relative_paths": completed_job["completion_summary"]["files_changed"], "validation_status": "passed"},
+                )
+            else:
+                blocked_job = {
+                    **job, "status": "blocked", "validation_results": validation_results,
+                    "revision_count": int(job.get("revision_count") or 0) + 1,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if not repository.transition_project_job(blocked_job, expected_statuses={"validating"}):
+                    raise HTTPException(status_code=409, detail="The project job validation result was already recorded or replayed.")
+                _sync_project_job_action(blocked_job)
+                audit_event(
+                    repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                    job_id=job_id, command_plan_id=plan_id, operation="job_blocked", status="blocked",
+                    metadata={"validation_status": "failed", "relative_paths": interpretation["likely_affected_paths"], "revision_count": blocked_job["revision_count"]},
+                )
+        audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job_id, command_plan_id=plan_id, operation="validation_interpretation" if job_id else ("command_executed" if succeeded else "command_failed"), status="completed" if succeeded else "failed", metadata={"action": result.get("action"), "exit_code": result.get("exit_code"), "duration": result.get("duration_seconds")})
         return result
 
     @application.post("/chat/projects/commands/{plan_id}/cancel")
@@ -1744,6 +1958,7 @@ def create_app(
         _require_chat_command_association(request.chat_run_id, plan_id)
         run = repository.get_chat_run(request.chat_run_id or "")
         access = _completed_project_access(run.conversation_id)
+        preflight_job_id = _validate_job_command(plan_id, run, access)
         try:
             result = cancel_assignment_command(
                 assignment_command_store, plan_id,
@@ -1753,6 +1968,16 @@ def create_app(
         except (CommandExecutionError, ValueError, FileNotFoundError) as error:
             raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
         repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "cancelled", "result_summary": "Validation command cancelled. Nothing was executed.", "technical_details": {"command_plan": result}})
+        job_id = _job_id_from_command(result)
+        if job_id != preflight_job_id:
+            raise HTTPException(status_code=409, detail="The command-to-job association changed before cancellation.")
+        if job_id:
+            job, _job_access = _validated_project_job(job_id, conversation_id=run.conversation_id)
+            if plan_id not in job.get("command_plan_ids", []):
+                raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
+            implementing = {**job, "status": "implementing", "updated_at": datetime.now(timezone.utc).isoformat()}
+            if repository.transition_project_job(implementing, expected_statuses={"validating"}):
+                _sync_project_job_action(implementing)
         return result
 
     @application.post("/datasets/profile")
@@ -2740,6 +2965,137 @@ def create_app(
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         return access
 
+    def _validated_project_job(
+        job_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> tuple[dict, dict]:
+        try:
+            job = repository.get_project_job(job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="Project job not found.") from error
+        if conversation_id is not None and job.get("conversation_id") != conversation_id:
+            raise HTTPException(status_code=409, detail="The project job belongs to a different conversation.")
+        access = _completed_project_access(str(job.get("conversation_id") or ""))
+        if job.get("folder_access_id") != access.get("action_id"):
+            raise HTTPException(status_code=409, detail="The project job belongs to a different folder access.")
+        if job.get("root_fingerprint") != access.get("root_fingerprint"):
+            raise HTTPException(status_code=409, detail="The approved project root identity has changed for this job.")
+        return job, access
+
+    def _sync_project_job_action(job: dict) -> None:
+        action = build_job_action(job)
+        updated_count = 0
+        for run in repository.list_chat_runs_for_conversation(str(job["conversation_id"])):
+            if isinstance(run.action, dict) and run.action.get("action_id") == job.get("job_id"):
+                if repository.update_chat_run_action_for_id(run.run_id, str(job["job_id"]), action):
+                    updated_count += 1
+        if updated_count == 0:
+            raise HTTPException(status_code=409, detail="The persisted project job card could not be updated.")
+
+    def _job_for_patch(proposal: dict) -> tuple[dict, dict] | None:
+        job_id = proposal.get("job_id")
+        if not job_id:
+            return None
+        job, access = _validated_project_job(str(job_id), conversation_id=str(proposal.get("conversation_id") or ""))
+        if proposal.get("patch_id") not in job.get("patch_ids", []):
+            raise HTTPException(status_code=409, detail="This patch is not associated with the project job.")
+        return job, access
+
+    def _job_id_from_command(command: dict) -> str | None:
+        assignment_id = str(command.get("assignment_id") or "")
+        prefix = "project-job:"
+        return assignment_id[len(prefix):] if assignment_id.startswith(prefix) else None
+
+    def _validate_job_command(plan_id: str, run: ChatRunResponse, access: dict) -> str | None:
+        try:
+            command = get_assignment_command(
+                assignment_command_store, plan_id, project_root=access["approved_root"],
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        job_id = _job_id_from_command(command)
+        if not job_id:
+            return None
+        job, _job_access = _validated_project_job(job_id, conversation_id=run.conversation_id)
+        if plan_id not in job.get("command_plan_ids", []):
+            raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
+        return job_id
+
+    def _project_job_intercept(message: str, conversation_id: str, access: dict) -> ChatRunResponse | None:
+        active = repository.latest_active_project_job(conversation_id)
+        if active is not None and active.get("status") == "needs_clarification" and not detect_project_task(message):
+            job, _validated_access = _validated_project_job(str(active["job_id"]), conversation_id=conversation_id)
+            try:
+                updated = answer_clarification(job, message)
+            except ProjectJobError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            if not repository.transition_project_job(updated, expected_statuses={"needs_clarification"}):
+                raise HTTPException(status_code=409, detail="The clarification was already answered or replayed.")
+            _sync_project_job_action(updated)
+            audit_event(
+                repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                job_id=updated["job_id"], operation="clarification_answered", status="completed",
+                metadata={"answer_recorded": True},
+            )
+            audit_event(
+                repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                job_id=updated["job_id"], operation="plan_creation", status="completed",
+                metadata={"relative_paths": updated["relevant_paths"], "step_count": len(updated["implementation_plan"]["steps"])},
+            )
+            return build_job_chat_run(
+                updated, message=message,
+                response="Clarification recorded. The evidence-backed plan is ready; no files were modified.",
+                run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+            )
+        if detect_project_job_followup(message) and active is not None:
+            job, _validated_access = _validated_project_job(str(active["job_id"]), conversation_id=conversation_id)
+            if (
+                job.get("status") == "blocked"
+                and int(job.get("revision_count") or 0) >= int(job.get("max_revision_cycles") or 3)
+                and message.lower().strip().startswith("continue working")
+            ):
+                job = {**job, "max_revision_cycles": int(job.get("max_revision_cycles") or 3) + 1, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(job)
+                _sync_project_job_action(job)
+            return build_job_chat_run(
+                job, message=message,
+                response=f"This project job is {str(job['status']).replace('_', ' ')}. Review the current card for the next approval-gated step.",
+                run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+            )
+        if not detect_project_task(message):
+            return None
+        action_run_id = str(uuid4())
+        job = create_project_job(
+            root=access["approved_root"], conversation_id=conversation_id,
+            folder_access_id=access["action_id"], user_task=message,
+            action_run_id=action_run_id,
+        )
+        repository.store_project_job(job)
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="job_created", status=job["status"],
+            metadata={"relative_paths": job["relevant_paths"]},
+        )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="requirement_extraction", status="completed",
+            metadata={"relative_paths": job["relevant_paths"], "requirement_count": len(job["requirement_summaries"])},
+        )
+        if job["status"] == "needs_clarification":
+            audit_event(
+                repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                job_id=job["job_id"], operation="clarification_requested", status="pending",
+                metadata={"missing_information_count": len(job["missing_information"])},
+            )
+        else:
+            audit_event(
+                repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                job_id=job["job_id"], operation="plan_creation", status="completed",
+                metadata={"relative_paths": job["relevant_paths"], "step_count": len(job["implementation_plan"]["steps"])},
+            )
+        return build_job_chat_run(job, message=message)
+
     def _get_project_patch(patch_id: str) -> tuple[dict, list[dict]]:
         try:
             return repository.get_project_patch(patch_id)
@@ -2819,7 +3175,8 @@ def create_app(
         allowed = (
             "approved", "project", "folder", "patch", "rollback", "file", "path", "symlink",
             "stale", "expired", "missing", "changed", "limit", "unsafe", "excluded",
-            "command", "timeout", "allowlisted", "package", "shell",
+            "command", "timeout", "allowlisted", "package", "shell", "job", "revision",
+            "deterministic", "refine", "evidence",
         )
         return message[:500] if message and any(term in message.lower() for term in allowed) else "The secure project operation could not be completed."
 
@@ -3176,11 +3533,12 @@ def create_app(
         expected_result: str,
         target: str | None = None,
         timeout_seconds: int = 120,
+        job_id: str | None = None,
     ) -> ChatRunResponse:
         root = validate_root_identity(access["approved_root"], access["root_fingerprint"])
         plan = plan_assignment_command(
             assignment_command_store, root, root,
-            assignment_id=f"project:{access['action_id']}",
+            assignment_id=f"project-job:{job_id}" if job_id else f"project:{access['action_id']}",
             assignment_task=message.strip(), expected_result=expected_result,
             action=action, target=target, timeout_seconds=timeout_seconds,
         )
@@ -3203,7 +3561,7 @@ def create_app(
                 "steps": ["Approve the exact command", "Run once with bounded output and timeout", "Review validation totals"],
                 "safety_information": {"separate_command_approval": True, "shell_used": False, "working_directory": "approved project root", "package_installation_blocked": True},
                 "status": "awaiting_approval", "approval_required": True, "result_summary": None,
-                "technical_details": {"command_plan": plan, "project_scope": {"folder_access_id": access["action_id"]}},
+                "technical_details": {"command_plan": plan, "project_scope": {"folder_access_id": access["action_id"], **({"job_id": job_id} if job_id else {})}},
             },
         )
     @application.post("/chat/run", response_model=ChatRunResponse)
@@ -3247,6 +3605,12 @@ def create_app(
             repository.store_chat_run(run)
             audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=proposal["patch_id"], operation="patch_proposed", status="proposed", metadata={"relative_paths": proposal["file_set"], "file_count": 1})
             return run
+        if access is not None:
+            secure_access = _completed_project_access(request.conversation_id or "")
+            job_run = _project_job_intercept(request.message, request.conversation_id or "", secure_access)
+            if job_run is not None:
+                repository.store_chat_run(job_run)
+                return job_run
         project_intent = detect_project_intent(request.message)
         if access is not None and (project_intent is not None or is_folder_content_request(request.message)):
             access = _completed_project_access(request.conversation_id or "")
@@ -3290,19 +3654,28 @@ def create_app(
             else []
         )
         access = completed_folder_access(conversation_turns) if folder_path is None else None
+        active_job = repository.latest_active_project_job(request.conversation_id or "") if access is not None else None
+        job_request = bool(
+            access is not None
+            and (
+                detect_project_task(request.message)
+                or detect_project_job_followup(request.message)
+                or (active_job is not None and active_job.get("status") == "needs_clarification")
+            )
+        )
         explicit_change = (
             detect_explicit_patch_request(request.message)
             if folder_path is None and access is not None
             else None
         )
-        project_intent = detect_project_intent(request.message) if folder_path is None else None
+        project_intent = detect_project_intent(request.message) if folder_path is None and not job_request else None
         project_request = bool(folder_path is None and access is not None and explicit_change is None and (project_intent is not None or is_folder_content_request(request.message)))
         patch_request = bool(folder_path is None and access is not None and explicit_change is not None)
         rollback_request = bool(folder_path is None and access is not None and _is_rollback_request(request.message))
         detected = detect_chat_action(request.message) if folder_path is None else None
         previous_turns = (
             conversation_turns
-            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request
+            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request and not job_request
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -3328,6 +3701,11 @@ def create_app(
                     )
                     repository.store_project_patch(proposal)
                     run = _project_patch_run(proposal)
+                elif job_request:
+                    secure_access = _completed_project_access(request.conversation_id or "")
+                    run = _project_job_intercept(request.message, request.conversation_id or "", secure_access)
+                    if run is None:
+                        raise RuntimeError("Project job interception did not produce a run.")
                 elif project_request:
                     secure_access = _completed_project_access(request.conversation_id or "")
                     run = create_project_chat_run(
@@ -3354,6 +3732,16 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
+                if job_request and run.action is not None:
+                    job_payload = run.action.get("technical_details", {}).get("project_job", {})
+                    job_status = job_payload.get("status") if isinstance(job_payload, dict) else None
+                    event_name = "project_job_created" if run.user_message == job_payload.get("user_task") else "project_job_updated"
+                    event_data = {"run": run.model_dump(mode="json"), "job": job_payload}
+                    events.put({"event": event_name, "data": event_data})
+                    if job_status == "needs_clarification":
+                        events.put({"event": "clarification_required", "data": event_data})
+                    elif job_status == "planned":
+                        events.put({"event": "project_plan_ready", "data": event_data})
                 if project_request:
                     _audit_project_run(run, access)
                 if patch_request:

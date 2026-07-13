@@ -81,6 +81,8 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .status-approving, .status-approved, .status-running { color: #265b86; background: #e8f2fb; }
 .status-completed { color: var(--green); background: var(--green-soft); }
 .status-failed { color: var(--red); background: var(--red-soft); }
+.status-needs_clarification, .status-blocked { color: var(--amber); background: var(--amber-soft); }
+.status-planned, .status-patch_proposed, .status-patch_approved, .status-implementing, .status-validating { color: #265b86; background: #e8f2fb; }
 .progress-line { gap: 8px; padding: 10px 12px; border-radius: 9px; color: #265b86; background: #edf6fd; }
 .result { gap: 9px; padding: 11px 12px; border-radius: 9px; color: var(--green-dark); background: var(--green-soft); }
 .result.failed { align-items: flex-start; color: var(--red); background: var(--red-soft); }
@@ -179,6 +181,23 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .patch-file > p, .patch-file > small { display: block; padding-inline: 11px; }
 .patch-diff { max-height: 380px; margin: 8px 10px 10px; padding: 11px; overflow: auto; white-space: pre; border-radius: 8px; background: #f1f5f2; font-size: .7rem; }
 .project-plan-steps { margin: 10px 0; padding-left: 22px; color: #34443b; }
+.project-job-card { border-color: #b9d5c5; }
+.job-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.job-section h3 { margin: 0; color: #29382f; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+.job-section p { margin: 0; }
+.job-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.job-columns > div { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfb; }
+.job-columns ul, .job-section ul { margin: 8px 0 0; padding-left: 19px; }
+.job-clarification { display: flex; align-items: flex-start; gap: 9px; padding: 12px; border-radius: 10px; color: #725315; background: var(--amber-soft); }
+.job-clarification p { margin: 4px 0; }
+.validation-summary { display: grid; gap: 4px; padding: 10px 12px; border-radius: 9px; background: var(--surface-soft); }
+.validation-summary.passed { color: var(--green-dark); background: var(--green-soft); }
+.validation-summary.failed { color: var(--red); background: var(--red-soft); }
+.completion-report dl { display: grid; gap: 0; margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+.completion-report dl div { display: grid; grid-template-columns: minmax(120px, .3fr) 1fr; gap: 12px; padding: 9px 11px; border-bottom: 1px solid var(--line); }
+.completion-report dl div:last-child { border-bottom: 0; }
+.completion-report dt { color: var(--muted); }
+.completion-report dd { margin: 0; overflow-wrap: anywhere; }
 
 @media (max-width: 640px) {
   .workspace-plan-list > div { align-items: flex-start; flex-direction: column; }
@@ -186,4 +205,6 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   .folder-inventory-row { grid-template-columns: 1fr; }
   .patch-summary { display: grid; grid-template-columns: 1fr; }
   .patch-diff { max-width: calc(100vw - 72px); }
+  .job-columns { grid-template-columns: 1fr; }
+  .completion-report dl div { grid-template-columns: 1fr; gap: 3px; }
 }

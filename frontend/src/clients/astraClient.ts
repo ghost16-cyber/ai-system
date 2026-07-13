@@ -628,6 +628,14 @@ export interface ChatStreamEvent {
     | "safety_completed"
     | "response_delta"
     | "action_required"
+    | "project_job_created"
+    | "project_job_updated"
+    | "clarification_required"
+    | "project_plan_ready"
+    | "project_patch_proposed"
+    | "validation_proposed"
+    | "validation_completed"
+    | "project_job_completed"
     | "run_completed"
     | "run_failed"
     | string;
@@ -723,6 +731,10 @@ export interface AstraClient {
   approveProjectCommand(planId: string, request: Record<string, unknown>): Promise<{ plan: AssignmentCommandRecord; approval_token: string }>;
   executeProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
   cancelProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
+  getProjectJob(jobId: string): Promise<Record<string, unknown>>;
+  prepareProjectJob(jobId: string, conversationId: string): Promise<ChatRunResponse>;
+  proposeProjectJobValidation(jobId: string, conversationId: string): Promise<ChatRunResponse>;
+  cancelProjectJob(jobId: string, conversationId: string): Promise<Record<string, unknown>>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -1009,6 +1021,33 @@ export class HttpAstraClient implements AstraClient {
   async cancelProjectCommand(planId: string, request: Record<string, unknown>) {
     return this.postJson<AssignmentCommandRecord>(
       `/chat/projects/commands/${encodeURIComponent(planId)}/cancel`, request,
+    );
+  }
+
+  async getProjectJob(jobId: string) {
+    return this.getJson<Record<string, unknown>>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}`,
+    );
+  }
+
+  async prepareProjectJob(jobId: string, conversationId: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}/prepare`,
+      { conversation_id: conversationId },
+    );
+  }
+
+  async proposeProjectJobValidation(jobId: string, conversationId: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}/validation`,
+      { conversation_id: conversationId },
+    );
+  }
+
+  async cancelProjectJob(jobId: string, conversationId: string) {
+    return this.postJson<Record<string, unknown>>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}/cancel`,
+      { conversation_id: conversationId },
     );
   }
 
