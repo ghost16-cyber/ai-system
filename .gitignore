@@ -60,3 +60,19 @@ models/specialists/
 *.sqlite3
 .venv/
 .venv*/
+
+# Local Astra assignment runtime artifacts
+/assignment_workspaces/
+/data/assignment_uploads/
+/data/assignment_verification/
+/astra-assignment-*.zip
+/astra-assignment-*.patch
+*:Zone.Identifier
+
+# Local Astra assignment runtime artifacts
+/assignment_workspaces/
+/data/assignment_uploads/
+/data/assignment_verification/
+/astra-assignment-*.zip
+/astra-assignment-*.patch
+*:Zone.Identifier
