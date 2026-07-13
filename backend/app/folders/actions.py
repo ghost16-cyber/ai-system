@@ -5,12 +5,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from backend.app.core.path_utils import normalize_path_for_platform
 from backend.app.folders.scanner import safe_display_path
 from backend.app.schemas.api import ChatRunResponse
 
 
 _FOLDER_REQUEST_PATTERNS = (
     re.compile(r"^\s*use\s+(?P<path>.+?)\s*$", re.IGNORECASE),
+    re.compile(
+        r"^\s*(?:please\s+)?connect\s+(?:the\s+)?(?:project\s+)?folder\s*:?[ \t]+(?P<path>.+?)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:please\s+)?open\s+(?:the\s+)?project\s+(?:at|in)\s+(?P<path>.+?)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:please\s+)?give\s+astra\s+(?:read-only\s+)?access\s+to\s+(?P<path>.+?)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:please\s+)?(?:read|open|inspect|summari[sz]e|analy[sz]e)\s+"
+        r"(?:all\s+)?(?:the\s+)?files\s+(?:at|in|under|from)\s+(?P<path>.+?)\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(r"^\s*open\s+this\s+project\s+folder\s*:?\s+(?P<path>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*connect\s+this\s+folder\s+in\s+read-only\s+mode\s*:?\s+(?P<path>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*connect\s+this\s+folder\s+in\s+readonly\s+mode\s*:?\s+(?P<path>.+?)\s*$", re.IGNORECASE),
@@ -18,6 +36,11 @@ _FOLDER_REQUEST_PATTERNS = (
 )
 
 _FOLDER_CONTENT_REQUEST_PATTERNS = (
+    re.compile(
+        r"^\s*(?:please\s+)?list\s+and\s+summari[sz]e\s+(?:the\s+)?files\s+"
+        r"in\s+(?:the\s+)?(?:connected\s+)?project\s*[.!?]*\s*$",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"^\s*(?:please\s+)?(?:read|open|inspect|summari[sz]e|analy[sz]e)\s+"
         r"(?:(?:all|the|those|these)\s+)?(?:folder\s+)?files\s*[.!?]*\s*$",
@@ -245,6 +268,6 @@ def _looks_like_folder_path(value: str) -> bool:
 
 def _safe_requested_display(value: str) -> str:
     try:
-        return safe_display_path(Path(value.strip()))
+        return safe_display_path(normalize_path_for_platform(value.strip()).path)
     except Exception:
-        return value.strip()
+        return safe_display_path(Path(value.strip()))

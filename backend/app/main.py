@@ -3208,11 +3208,6 @@ def create_app(
         )
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
-        previous_turns = (
-            repository.list_chat_runs_for_conversation(request.conversation_id)
-            if request.conversation_id
-            else []
-        )
         folder_path = detect_folder_request(request.message)
         if folder_path is not None:
             run = create_folder_chat_run(
@@ -3222,6 +3217,11 @@ def create_app(
             )
             repository.store_chat_run(run)
             return run
+        previous_turns = (
+            repository.list_chat_runs_for_conversation(request.conversation_id)
+            if request.conversation_id
+            else []
+        )
         access = completed_folder_access(previous_turns)
         if access is not None and _is_rollback_request(request.message):
             try:
@@ -3283,19 +3283,23 @@ def create_app(
 
     @application.post("/chat/stream")
     def chat_stream(request: ChatRunRequest) -> StreamingResponse:
+        folder_path = detect_folder_request(request.message)
         conversation_turns = (
             repository.list_chat_runs_for_conversation(request.conversation_id)
-            if request.conversation_id
+            if request.conversation_id and folder_path is None
             else []
         )
-        folder_path = detect_folder_request(request.message)
-        access = completed_folder_access(conversation_turns)
-        explicit_change = detect_explicit_patch_request(request.message) if access is not None else None
-        project_intent = detect_project_intent(request.message)
-        project_request = bool(access is not None and explicit_change is None and (project_intent is not None or is_folder_content_request(request.message)))
-        patch_request = bool(access is not None and explicit_change is not None)
-        rollback_request = bool(access is not None and _is_rollback_request(request.message))
-        detected = detect_chat_action(request.message)
+        access = completed_folder_access(conversation_turns) if folder_path is None else None
+        explicit_change = (
+            detect_explicit_patch_request(request.message)
+            if folder_path is None and access is not None
+            else None
+        )
+        project_intent = detect_project_intent(request.message) if folder_path is None else None
+        project_request = bool(folder_path is None and access is not None and explicit_change is None and (project_intent is not None or is_folder_content_request(request.message)))
+        patch_request = bool(folder_path is None and access is not None and explicit_change is not None)
+        rollback_request = bool(folder_path is None and access is not None and _is_rollback_request(request.message))
+        detected = detect_chat_action(request.message) if folder_path is None else None
         previous_turns = (
             conversation_turns
             if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request
@@ -3356,6 +3360,16 @@ def create_app(
                     audit_event(repository, conversation_id=run.conversation_id, folder_access_id=str(access["action_id"]), patch_id=str(proposal["patch_id"]), operation="patch_proposed", status="proposed", metadata={"relative_paths": proposal["file_set"], "file_count": 1})
                 if run.action is None and not project_request and not patch_request and not rollback_request:
                     _log_training_example(run)
+                if run.action is not None:
+                    events.put(
+                        {
+                            "event": "action_required",
+                            "data": {
+                                "run": run.model_dump(mode="json"),
+                                "action": run.action,
+                            },
+                        }
+                    )
                 events.put(
                     {
                         "event": "run_completed",

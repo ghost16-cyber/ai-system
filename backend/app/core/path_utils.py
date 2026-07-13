@@ -10,6 +10,10 @@ from typing import Literal
 PathExpectation = Literal["file", "directory", "any"]
 
 WINDOWS_DRIVE_RE = re.compile(r"^(?P<drive>[a-zA-Z]):[\\/](?P<rest>.*)$")
+WSL_UNC_RE = re.compile(
+    r"^[\\/]{2}wsl(?:\.localhost)?[\\/](?P<distribution>[^\\/]+)[\\/](?P<rest>.*)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -34,8 +38,26 @@ def windows_path_to_wsl(value: str | os.PathLike[str]) -> str:
     return f"/mnt/{drive}/{rest}"
 
 
+def wsl_unc_path_to_linux(value: str | os.PathLike[str]) -> str:
+    """Translate a WSL share path to its in-distribution absolute Linux path."""
+    raw = str(value).strip()
+    match = WSL_UNC_RE.match(raw)
+    if not match:
+        return raw
+    rest = match.group("rest").replace("\\", "/").lstrip("/")
+    return f"/{rest}"
+
+
 def normalize_path_for_platform(value: str | os.PathLike[str]) -> NormalizedPath:
     raw = str(value).strip()
+    if WSL_UNC_RE.match(raw) and os.name != "nt":
+        suggested = wsl_unc_path_to_linux(raw)
+        return NormalizedPath(
+            raw_path=raw,
+            path=Path(suggested).expanduser(),
+            windows_path_detected=True,
+            suggested_path=suggested,
+        )
     if is_windows_path(raw) and os.name != "nt":
         suggested = windows_path_to_wsl(raw)
         return NormalizedPath(

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.chat_actions import detect_chat_action
+from backend.app.folders.actions import detect_folder_request
 from backend.app.main import create_app
 
 
@@ -320,6 +321,129 @@ def test_folder_request_creates_awaiting_action_without_scanning(
     assert details["status"] == "awaiting_approval"
     assert details["inventory"] == []
     assert details["scan_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Connect the project folder /home/palla/projects/test-folder", "/home/palla/projects/test-folder"),
+        ("Connect folder /home/palla/projects/test-folder", "/home/palla/projects/test-folder"),
+        ("Open the project at /home/palla/projects/test-folder", "/home/palla/projects/test-folder"),
+        ("Give Astra access to /home/palla/projects/test-folder", "/home/palla/projects/test-folder"),
+        ("Read the files in /home/palla/projects/test-folder", "/home/palla/projects/test-folder"),
+        (
+            r'Connect the project folder "\\wsl.localhost\Ubuntu\home\palla\projects\test-folder"',
+            r"\\wsl.localhost\Ubuntu\home\palla\projects\test-folder",
+        ),
+    ],
+)
+def test_folder_request_natural_chat_forms(message: str, expected: str) -> None:
+    assert detect_folder_request(message) == expected
+
+
+def test_exact_folder_prompt_intercepts_sync_and_stream_before_other_workflows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app import main as main_module
+
+    calls: list[str] = []
+
+    def forbidden(name: str):
+        def fail(*args, **kwargs):
+            calls.append(name)
+            raise AssertionError(f"{name} was invoked")
+        return fail
+
+    for name in (
+        "run_chat_workflow",
+        "completed_folder_access",
+        "detect_chat_action",
+        "detect_project_intent",
+        "validate_folder_root",
+        "build_inventory",
+    ):
+        monkeypatch.setattr(main_module, name, forbidden(name))
+
+    prompt = "Connect the project folder /home/palla/projects/test-folder"
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        sync = client.post(
+            "/chat/run",
+            json={"message": prompt, "conversation_id": "sync-conversation", "use_rag": True},
+        )
+        streamed = client.post(
+            "/chat/stream",
+            json={"message": prompt, "conversation_id": "stream-conversation", "use_rag": True},
+        )
+        events = _ndjson_events(streamed)
+        runs = _chat_runs(client)
+
+    assert sync.status_code == 200, sync.text
+    assert streamed.status_code == 200, streamed.text
+    sync_run = sync.json()
+    stream_run = events[-1]["data"]["run"]
+    assert [event["event"] for event in events] == ["action_required", "run_completed"]
+    for run, conversation_id in (
+        (sync_run, "sync-conversation"),
+        (stream_run, "stream-conversation"),
+    ):
+        assert run["conversation_id"] == conversation_id
+        assert run["selected_specialist"] == "folder_access"
+        assert run["rag_used"] is False
+        assert run["rag_context_count"] == 0
+        assert run["source_paths"] == []
+        assert run["used_real_slm"] is False
+        assert run["action"]["action_type"] == "folder_access"
+        assert run["action"]["status"] == "awaiting_approval"
+        assert _folder_details(run)["inventory"] == []
+    assert events[0]["data"]["action"] == stream_run["action"]
+    assert len(runs) == 2
+    assert calls == []
+
+
+def test_approval_then_exact_project_summary_keeps_one_folder_card(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app import main as main_module
+
+    project = _make_folder_project(tmp_path)
+
+    def ordinary_workflow_must_not_run(*args, **kwargs):
+        raise AssertionError("ordinary specialist, repository RAG, or SLM workflow was invoked")
+
+    monkeypatch.setattr(main_module, "run_chat_workflow", ordinary_workflow_must_not_run)
+    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        created = client.post(
+            "/chat/run",
+            json={"message": f"Connect the project folder {project}", "use_rag": True},
+        ).json()
+        approval = _approve_folder(client, created)
+        summary = client.post(
+            "/chat/run",
+            json={
+                "message": "List and summarize the files in the connected project.",
+                "conversation_id": created["conversation_id"],
+                "use_rag": True,
+            },
+        )
+        history = client.get(f"/chat/conversations/{created['conversation_id']}").json()["turns"]
+
+    assert approval.status_code == 200, approval.text
+    assert summary.status_code == 200, summary.text
+    summary_run = summary.json()
+    assert summary_run["selected_specialist"] == "project_workspace"
+    assert summary_run["rag_used"] is False
+    assert summary_run["used_real_slm"] is False
+    assert summary_run["action"] is None
+    assert summary_run["source_paths"]
+    assert all(not Path(path).is_absolute() for path in summary_run["source_paths"])
+    folder_cards = [
+        turn for turn in history
+        if (turn.get("action") or {}).get("action_type") == "folder_access"
+    ]
+    assert len(folder_cards) == 1
+    assert folder_cards[0]["action"]["status"] == "completed"
 
 
 def test_folder_approval_scans_and_persists_sanitized_inventory(
@@ -660,8 +784,9 @@ def test_direct_action_stream_has_one_response_and_no_generated_answer(tmp_path:
         response = client.post("/chat/stream", json={"message": "pytest", "use_rag": True})
 
     events = _ndjson_events(response)
-    assert [event["event"] for event in events] == ["run_completed"]
-    assert events[0]["data"]["run"]["action"]["status"] == "awaiting_approval"
+    assert [event["event"] for event in events] == ["action_required", "run_completed"]
+    assert events[0]["data"]["action"]["action_type"] == "command"
+    assert events[-1]["data"]["run"]["action"]["status"] == "awaiting_approval"
 
 
 def test_direct_chat_command_creates_one_persisted_awaiting_action(

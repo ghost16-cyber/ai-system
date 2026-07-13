@@ -43,6 +43,7 @@ import {
   folderAccessActionFromPayload,
   type FolderAccessAction,
 } from "./state/folderAccessState";
+import { actionRunFromStreamEvent } from "./state/chatStreamState";
 
 interface Settings {
   apiUrl: string;
@@ -203,10 +204,24 @@ export default function App() {
       safety_mode: settings.safetyMode,
       conversation_id: conversationId,
     }, (event) => {
-      if (event.event !== "response_delta") return;
-      const delta = typeof event.data.delta === "string" ? event.data.delta : "";
-      streamed += delta;
-      setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: streamed } : item));
+      if (event.event === "response_delta") {
+        const delta = typeof event.data.delta === "string" ? event.data.delta : "";
+        streamed += delta;
+        setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: streamed } : item));
+        return;
+      }
+      const actionRun = actionRunFromStreamEvent(event);
+      if (!actionRun) return;
+      setConversationId(actionRun.conversation_id);
+      setMessages((current) => current.map((item) => item.id === assistantId ? {
+        ...item,
+        text: "",
+        createdAt: actionRun.created_at,
+        run: actionRun,
+        action: genericActionFromRun(actionRun) ?? undefined,
+        workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
+        folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
+      } : item));
     });
     setConversationId(run.conversation_id);
     const action = genericActionFromRun(run);

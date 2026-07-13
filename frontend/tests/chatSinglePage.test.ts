@@ -7,6 +7,7 @@ const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url),
 const clientSource = readFileSync(new URL("../src/clients/astraClient.ts", import.meta.url), "utf8");
 const workspaceStateSource = readFileSync(new URL("../src/state/assignmentWorkspaceState.ts", import.meta.url), "utf8");
 const folderStateSource = readFileSync(new URL("../src/state/folderAccessState.ts", import.meta.url), "utf8");
+const streamStateSource = readFileSync(new URL("../src/state/chatStreamState.ts", import.meta.url), "utf8");
 
 test("the application shell renders only the chat product", () => {
   assert.match(appSource, /aria-label="Conversation"/);
@@ -136,6 +137,13 @@ test("awaiting folder card renders in the conversation with approval controls", 
   assert.match(appSource, /client\.cancelChatFolder/);
   assert.match(clientSource, /\/chat\/folders\/\$\{encodeURIComponent\(actionId\)\}\/approve/);
   assert.match(clientSource, /\/chat\/folders\/\$\{encodeURIComponent\(actionId\)\}\/cancel/);
+});
+
+test("action-only streams populate the existing assistant message", () => {
+  assert.match(streamStateSource, /event\.event !== "action_required"/);
+  assert.match(appSource, /actionRunFromStreamEvent\(event\)/);
+  assert.match(appSource, /item\.id === assistantId/);
+  assert.match(appSource, /folderAccessActionFromPayload\(actionRun\.action\)/);
 });
 
 test("folder actions restore from persisted run.action states", () => {

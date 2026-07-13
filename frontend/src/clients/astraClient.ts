@@ -627,6 +627,7 @@ export interface ChatStreamEvent {
     | "rag_completed"
     | "safety_completed"
     | "response_delta"
+    | "action_required"
     | "run_completed"
     | "run_failed"
     | string;

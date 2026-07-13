@@ -7,6 +7,7 @@ import pytest
 from backend.app.core.path_utils import (
     normalize_path_for_platform,
     resolve_user_path,
+    wsl_unc_path_to_linux,
     windows_path_to_wsl,
 )
 
@@ -21,6 +22,13 @@ def test_windows_forward_slash_path_converts_to_wsl_suggestion():
     assert windows_path_to_wsl("C:/Users/palla/Desktop/file.csv") == "/mnt/c/Users/palla/Desktop/file.csv"
     normalized = normalize_path_for_platform("C:/Users/palla/Desktop/file.csv")
     assert normalized.suggested_path == "/mnt/c/Users/palla/Desktop/file.csv"
+
+
+def test_wsl_unc_path_converts_to_linux_path():
+    raw = r"\\wsl.localhost\Ubuntu\home\palla\projects\test-folder"
+    assert wsl_unc_path_to_linux(raw) == "/home/palla/projects/test-folder"
+    normalized = normalize_path_for_platform(raw)
+    assert str(normalized.path) == "/home/palla/projects/test-folder"
 
 
 def test_linux_path_remains_valid(tmp_path: Path):
