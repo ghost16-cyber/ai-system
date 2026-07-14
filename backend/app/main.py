@@ -296,6 +296,17 @@ from backend.app.project_delivery import (
     revise_scope as revise_delivery_scope,
     record_verification as record_delivery_verification,
     submit_clarification as submit_delivery_clarification,
+    record_scope_change as record_delivery_scope_change,
+)
+from backend.app.client_engagement import (
+    EngagementError,
+    EngagementService,
+    EngagementState,
+    ScopeRevision as EngagementScopeRevision,
+    build_engagement_chat_run,
+    detect_engagement_request,
+    public_engagement,
+    stage9_task_from_scope,
 )
 from backend.app.workspace import inspect_workspace
 
@@ -508,6 +519,47 @@ class ProjectDeliveryVerificationRequest(ProjectJobActionRequest):
     criterion_id: str = Field(..., min_length=1, max_length=80)
 
 
+class EngagementCreateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    client_request: str = Field(..., min_length=1, max_length=6000)
+    user_id: str = Field(default="local-user", min_length=1, max_length=256)
+    display_name: str | None = Field(default=None, max_length=256)
+    organization: str | None = Field(default=None, max_length=256)
+    constraints: list[str] = Field(default_factory=list, max_length=30)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class EngagementVersionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    expected_state_version: int = Field(..., ge=1)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class EngagementAnswerRequest(EngagementVersionRequest):
+    answers: dict[str, str] = Field(default_factory=dict)
+    use_reasonable_assumptions: bool = False
+    answered_by: str = Field(default="local-user", min_length=1, max_length=256)
+
+
+class EngagementApprovalRequest(EngagementVersionRequest):
+    revision_id: str = Field(..., min_length=1, max_length=128)
+    scope_hash: str = Field(..., min_length=64, max_length=64)
+    approving_user: str = Field(default="local-user", min_length=1, max_length=256)
+
+
+class EngagementRejectionRequest(EngagementVersionRequest):
+    revision_id: str = Field(..., min_length=1, max_length=128)
+    reason: str = Field(..., min_length=1, max_length=2000)
+    rejecting_user: str = Field(default="local-user", min_length=1, max_length=256)
+
+
+class EngagementScopeChangeApiRequest(EngagementVersionRequest):
+    requested_change: str = Field(..., min_length=1, max_length=4000)
+    requested_by: str = Field(default="local-user", min_length=1, max_length=256)
+
+
 class DatasetProfileRequest(BaseModel):
     path: str = Field(..., min_length=1)
     sample_rows: int = Field(default=25, ge=1, le=100)
@@ -712,9 +764,11 @@ def create_app(
     job_queue = JobQueue(configured_path)
     synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
+    engagement_service = EngagementService(repository, model_gateway=synthesis_gateway)
     synthesis_lock = threading.Lock()
     repair_lock = threading.Lock()
     delivery_lock = threading.Lock()
+    engagement_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1635,6 +1689,164 @@ def create_app(
             },
         )
         return repository.get_chat_run(request.chat_run_id)
+
+    @application.post("/chat/client-engagements", response_model=ChatRunResponse)
+    def chat_engagement_create(request: EngagementCreateRequest) -> ChatRunResponse:
+        conversation_id = request.conversation_id or uuid4().hex
+        access = _optional_project_access(conversation_id)
+        with engagement_lock:
+            try:
+                engagement = engagement_service.create(
+                    conversation_id=conversation_id, original_request=request.client_request,
+                    user_id=request.user_id, display_name=request.display_name,
+                    organization=request.organization,
+                    folder_root=str(access["approved_root"]) if access else None,
+                    folder_access_id=str(access["action_id"]) if access else None,
+                    constraints=request.constraints, idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        run = build_engagement_chat_run(engagement, message=request.client_request)
+        repository.store_chat_run(run)
+        return run
+
+    @application.get("/chat/client-engagements/{engagement_id}")
+    def chat_engagement_get(engagement_id: str, conversation_id: str = Query(..., min_length=1, max_length=128)) -> dict:
+        engagement = _validated_engagement(engagement_id, conversation_id)
+        return public_engagement(engagement).model_dump(mode="json")
+
+    @application.get("/chat/client-engagements/{engagement_id}/history")
+    def chat_engagement_history(engagement_id: str, conversation_id: str = Query(..., min_length=1, max_length=128), limit: int = Query(default=50, ge=1, le=100)) -> dict:
+        _validated_engagement(engagement_id, conversation_id)
+        items = repository.list_client_engagement_audit_events(engagement_id, limit=limit)
+        return {"engagement_id": engagement_id, "items": items, "count": len(items)}
+
+    @application.post("/chat/client-engagements/{engagement_id}/analyze", response_model=ChatRunResponse)
+    def chat_engagement_analyze(engagement_id: str, request: EngagementVersionRequest) -> ChatRunResponse:
+        current = _validated_engagement(engagement_id, request.conversation_id)
+        access = _optional_project_access(request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.analyze(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    folder_root=str(access["approved_root"]) if access else None,
+                    idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Reanalyze this engagement.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/clarifications", response_model=ChatRunResponse)
+    def chat_engagement_answers(engagement_id: str, request: EngagementAnswerRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.submit_answers(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    answers=request.answers, answered_by=request.answered_by,
+                    use_reasonable_assumptions=request.use_reasonable_assumptions,
+                    idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Submit engagement clarification answers.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/scope", response_model=ChatRunResponse)
+    def chat_engagement_scope(engagement_id: str, request: EngagementVersionRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.generate_scope(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Regenerate the client scope.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/scope/approve", response_model=ChatRunResponse)
+    def chat_engagement_approve(engagement_id: str, request: EngagementApprovalRequest) -> ChatRunResponse:
+        before = _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.approve_scope(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    revision_id=request.revision_id, scope_hash=request.scope_hash,
+                    approving_user=request.approving_user, idempotency_key=request.idempotency_key,
+                )
+                if before.get("project_launch") and before.get("current_scope", {}).get("revision_id") == request.revision_id:
+                    _notify_delivery_scope_change(before, stored)
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Approve the exact displayed client scope.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/scope/reject", response_model=ChatRunResponse)
+    def chat_engagement_reject(engagement_id: str, request: EngagementRejectionRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.reject_scope(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    revision_id=request.revision_id, reason=request.reason,
+                    rejecting_user=request.rejecting_user, idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Reject this client scope.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/launch", response_model=ChatRunResponse)
+    def chat_engagement_launch(engagement_id: str, request: EngagementVersionRequest) -> ChatRunResponse:
+        current = _validated_engagement(engagement_id, request.conversation_id)
+        access = _completed_project_access(request.conversation_id)
+        if current.get("folder_access_id") and current.get("folder_access_id") != access.get("action_id"):
+            raise HTTPException(status_code=409, detail={"code": "workspace_mismatch", "message": "The approved scope belongs to a different folder authorization."})
+        with engagement_lock, delivery_lock:
+            try:
+                stored, _delivery = engagement_service.launch(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    launch_stage9=lambda engagement, revision: _launch_engagement_delivery(engagement, revision, access),
+                    idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Launch the approved scope as a Stage 9 project.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/scope-changes", response_model=ChatRunResponse)
+    def chat_engagement_scope_change(engagement_id: str, request: EngagementScopeChangeApiRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.request_scope_change(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    requested_change=request.requested_change, requested_by=request.requested_by,
+                    idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, request.requested_change)
+
+    @application.post("/chat/client-engagements/{engagement_id}/cancel", response_model=ChatRunResponse)
+    def chat_engagement_cancel(engagement_id: str, request: EngagementVersionRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.cancel(
+                    engagement_id=engagement_id, expected_version=request.expected_state_version,
+                    actor="local-user", idempotency_key=request.idempotency_key,
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Cancel this client engagement.")
+
+    @application.post("/chat/client-engagements/{engagement_id}/recover", response_model=ChatRunResponse)
+    def chat_engagement_recover(engagement_id: str, request: EngagementVersionRequest) -> ChatRunResponse:
+        _validated_engagement(engagement_id, request.conversation_id)
+        with engagement_lock:
+            try:
+                stored = engagement_service.recover(engagement_id=engagement_id, conversation_id=request.conversation_id)
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+        return _engagement_run(stored, "Recover this client engagement.")
 
     @application.post("/chat/projects/deliveries", response_model=ChatRunResponse)
     def chat_project_delivery_start(request: ProjectDeliveryStartRequest) -> ChatRunResponse:
@@ -3624,6 +3836,97 @@ def create_app(
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         return access
 
+    def _optional_project_access(conversation_id: str) -> dict | None:
+        turns = repository.list_chat_runs_for_conversation(conversation_id)
+        if completed_folder_access(turns) is None:
+            return None
+        return _completed_project_access(conversation_id)
+
+    def _start_client_engagement(message: str, conversation_id: str, access: dict | None) -> ChatRunResponse:
+        engagement = engagement_service.create(
+            conversation_id=conversation_id, original_request=message, user_id="local-user",
+            folder_root=str(access["approved_root"]) if access else None,
+            folder_access_id=str(access["action_id"]) if access else None,
+            idempotency_key=f"chat:{conversation_id}:{hashlib.sha256(message.encode('utf-8')).hexdigest()}",
+        )
+        return build_engagement_chat_run(engagement, message=message)
+
+    def _is_scope_change_message(message: str) -> bool:
+        normalized = " ".join(str(message or "").lower().split())
+        return bool(re.search(r"^(?:please\s+)?(?:add|include|support|remove|drop|change)\b", normalized))
+
+    def _validated_engagement(engagement_id: str, conversation_id: str) -> dict:
+        try:
+            engagement = repository.get_client_engagement(engagement_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Client engagement not found."}) from error
+        if engagement.get("conversation_id") != conversation_id:
+            raise HTTPException(status_code=409, detail={"code": "ownership_mismatch", "message": "The engagement belongs to a different conversation."})
+        if engagement.get("folder_access_id"):
+            access = _completed_project_access(conversation_id)
+            if access.get("action_id") != engagement.get("folder_access_id"):
+                raise HTTPException(status_code=409, detail={"code": "workspace_mismatch", "message": "The engagement belongs to a different folder authorization."})
+        return engagement
+
+    def _engagement_run(engagement: dict, message: str) -> ChatRunResponse:
+        run = build_engagement_chat_run(engagement, message=message)
+        repository.store_chat_run(run)
+        _sync_engagement_action(engagement)
+        return run
+
+    def _sync_engagement_action(engagement: dict) -> None:
+        from backend.app.client_engagement import build_engagement_action
+        action = build_engagement_action(engagement)
+        for run in repository.list_chat_runs_for_conversation(str(engagement["conversation_id"])):
+            if isinstance(run.action, dict) and run.action.get("action_id") == engagement.get("engagement_id"):
+                repository.update_chat_run_action_for_id(run.run_id, str(engagement["engagement_id"]), action)
+
+    def _engagement_http_error(error: EngagementError) -> HTTPException:
+        status = 404 if error.code == "not_found" else 400 if error.code in {"invalid_request", "hash_mismatch"} else 409
+        return HTTPException(status_code=status, detail={"code": error.code, "message": str(error)})
+
+    def _launch_engagement_delivery(engagement: dict, revision: EngagementScopeRevision, access: dict) -> dict:
+        task = stage9_task_from_scope(revision)
+        run = _start_project_delivery(task, str(engagement["conversation_id"]), access, persist_run=False)
+        details = (run.action or {}).get("technical_details", {}).get("project_delivery", {})
+        delivery_id = str(details.get("delivery_job_id") or "")
+        delivery = repository.get_project_delivery_job(delivery_id)
+        linked = json.loads(json.dumps(delivery))
+        linked["client_engagement"] = {
+            "engagement_id": engagement["engagement_id"], "scope_revision_id": revision.revision_id,
+            "scope_hash": revision.scope_hash,
+            "acceptance_criterion_map": {
+                criterion.criterion_id: criterion.statement
+                for deliverable in revision.scope.deliverables
+                for criterion in deliverable.acceptance_criteria
+            },
+            "evidence_references": sorted({value for refs in revision.scope.evidence_traceability.values() for value in refs}),
+        }
+        linked["updated_at"] = datetime.now(timezone.utc).isoformat()
+        stored = repository.transition_project_delivery_job(linked, expected_version=int(delivery.get("state_version") or 1))
+        if stored is None:
+            raise EngagementError("The Stage 9 project changed concurrently during launch.", code="conflict")
+        _persist_delivery_records(stored)
+        _delivery_audit(stored, "client_engagement_launch", "linked", linked["client_engagement"])
+        return stored
+
+    def _notify_delivery_scope_change(before: dict, after: dict) -> None:
+        launch = before.get("project_launch") or {}
+        delivery_id = str(launch.get("delivery_job_id") or "")
+        if not delivery_id:
+            return
+        try:
+            delivery, _access = _validated_project_delivery(delivery_id, conversation_id=str(before["conversation_id"]))
+            change = (after.get("scope_changes") or [])[-1]
+            revised = record_delivery_scope_change(
+                delivery, work_unit_id=None, reason_code=str(change.get("classification") or "engagement_scope_change"),
+                explanation=str(change.get("requested_change") or "Approved Stage 10 scope revision."),
+                affected_paths=[], material=True,
+            )
+            _save_delivery_transition(delivery, revised, "engagement_scope_change", "replanning_required", {"engagement_id": after["engagement_id"], "revision_id": after.get("approved_scope_revision_id")})
+        except (ProjectDeliveryError, HTTPException):
+            raise EngagementError("The revised scope was approved, but the linked Stage 9 project could not be notified safely.", code="scope_change_notification_failed")
+
     def _start_project_delivery(
         message: str,
         conversation_id: str,
@@ -4809,6 +5112,45 @@ def create_app(
             repository.store_chat_run(run)
             audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=proposal["patch_id"], operation="patch_proposed", status="proposed", metadata={"relative_paths": proposal["file_set"], "file_count": 1})
             return run
+        active_engagement = repository.latest_active_client_engagement(request.conversation_id or "") if request.conversation_id else None
+        if active_engagement is not None and active_engagement.get("state") == EngagementState.CLARIFICATION_REQUIRED.value and not detect_engagement_request(request.message):
+            pending = [item for item in active_engagement.get("questions") or [] if item.get("status") == "pending"]
+            if pending:
+                use_assumptions = "reasonable assumption" in request.message.lower()
+                supplied = {} if use_assumptions else {str(pending[0]["question_id"]): request.message}
+                try:
+                    engagement = engagement_service.submit_answers(
+                        engagement_id=str(active_engagement["engagement_id"]),
+                        expected_version=int(active_engagement["state_version"]), answers=supplied,
+                        answered_by="local-user", use_reasonable_assumptions=use_assumptions,
+                        idempotency_key=f"chat-answer:{uuid4().hex}",
+                    )
+                except EngagementError as error:
+                    raise _engagement_http_error(error) from error
+                run = build_engagement_chat_run(engagement, message=request.message)
+                repository.store_chat_run(run)
+                _sync_engagement_action(engagement)
+                return run
+        if active_engagement is not None and active_engagement.get("state") in {EngagementState.SCOPE_APPROVED.value, EngagementState.PROJECT_LAUNCHED.value} and _is_scope_change_message(request.message):
+            try:
+                engagement = engagement_service.request_scope_change(
+                    engagement_id=str(active_engagement["engagement_id"]),
+                    expected_version=int(active_engagement["state_version"]), requested_change=request.message,
+                    requested_by="local-user", idempotency_key=f"chat-change:{uuid4().hex}",
+                )
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+            run = build_engagement_chat_run(engagement, message=request.message)
+            repository.store_chat_run(run)
+            _sync_engagement_action(engagement)
+            return run
+        if detect_engagement_request(request.message):
+            try:
+                run = _start_client_engagement(request.message, request.conversation_id or uuid4().hex, _completed_project_access(request.conversation_id or "") if access is not None else None)
+            except EngagementError as error:
+                raise _engagement_http_error(error) from error
+            repository.store_chat_run(run)
+            return run
         if access is not None:
             secure_access = _completed_project_access(request.conversation_id or "")
             active_delivery = repository.latest_active_project_delivery_job(request.conversation_id or "")
@@ -4877,6 +5219,18 @@ def create_app(
         access = completed_folder_access(conversation_turns) if folder_path is None else None
         active_job = repository.latest_active_project_job(request.conversation_id or "") if access is not None else None
         active_delivery = repository.latest_active_project_delivery_job(request.conversation_id or "") if access is not None else None
+        active_engagement = repository.latest_active_client_engagement(request.conversation_id or "") if request.conversation_id else None
+        engagement_request = bool(folder_path is None and detect_engagement_request(request.message))
+        engagement_clarification = bool(
+            active_engagement is not None
+            and active_engagement.get("state") == EngagementState.CLARIFICATION_REQUIRED.value
+            and not engagement_request
+        )
+        engagement_change = bool(
+            active_engagement is not None
+            and active_engagement.get("state") in {EngagementState.SCOPE_APPROVED.value, EngagementState.PROJECT_LAUNCHED.value}
+            and _is_scope_change_message(request.message)
+        )
         delivery_clarification = bool(
             active_delivery is not None
             and active_delivery.get("status") == DeliveryStatus.CLARIFICATION.value
@@ -4905,7 +5259,7 @@ def create_app(
         detected = detect_chat_action(request.message) if folder_path is None else None
         previous_turns = (
             conversation_turns
-            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request and not job_request and not delivery_request and not delivery_clarification
+            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request and not job_request and not delivery_request and not delivery_clarification and not engagement_request and not engagement_clarification and not engagement_change
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -4922,6 +5276,31 @@ def create_app(
                 elif rollback_request:
                     proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id or "")
                     run = _project_rollback_run(proposal, request.message)
+                elif engagement_request:
+                    secure_access = _completed_project_access(request.conversation_id or "") if access is not None else None
+                    run = _start_client_engagement(request.message, request.conversation_id or uuid4().hex, secure_access)
+                elif engagement_clarification:
+                    if active_engagement is None:
+                        raise RuntimeError("The pending engagement clarification disappeared.")
+                    pending = [item for item in active_engagement.get("questions") or [] if item.get("status") == "pending"]
+                    use_assumptions = "reasonable assumption" in request.message.lower()
+                    supplied = {} if use_assumptions else ({str(pending[0]["question_id"]): request.message} if pending else {})
+                    engagement = engagement_service.submit_answers(
+                        engagement_id=str(active_engagement["engagement_id"]), expected_version=int(active_engagement["state_version"]),
+                        answers=supplied, answered_by="local-user", use_reasonable_assumptions=use_assumptions,
+                        idempotency_key=f"stream-answer:{uuid4().hex}",
+                    )
+                    run = build_engagement_chat_run(engagement, message=request.message)
+                    _sync_engagement_action(engagement)
+                elif engagement_change:
+                    if active_engagement is None:
+                        raise RuntimeError("The active engagement disappeared.")
+                    engagement = engagement_service.request_scope_change(
+                        engagement_id=str(active_engagement["engagement_id"]), expected_version=int(active_engagement["state_version"]),
+                        requested_change=request.message, requested_by="local-user", idempotency_key=f"stream-change:{uuid4().hex}",
+                    )
+                    run = build_engagement_chat_run(engagement, message=request.message)
+                    _sync_engagement_action(engagement)
                 elif patch_request:
                     secure_access = _completed_project_access(request.conversation_id or "")
                     proposal = create_patch_proposal(
@@ -4979,6 +5358,8 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
+                if (engagement_request or engagement_clarification or engagement_change) and run.action is not None:
+                    events.put({"event": "client_engagement_updated", "data": {"run": run.model_dump(mode="json"), "engagement": run.action.get("technical_details", {}).get("client_engagement", {})}})
                 if (delivery_request or delivery_clarification) and run.action is not None:
                     events.put({"event": "project_delivery_updated", "data": {"run": run.model_dump(mode="json"), "delivery": run.action.get("technical_details", {}).get("project_delivery", {})}})
                 if job_request and run.action is not None and run.action.get("action_type") == "project_job":

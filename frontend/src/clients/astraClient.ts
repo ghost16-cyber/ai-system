@@ -764,6 +764,13 @@ export interface AstraClient {
   verifyProjectDelivery(deliveryJobId: string, conversationId: string, criterionId: string): Promise<ChatRunResponse>;
   generateProjectDeliveryHandoff(deliveryJobId: string, conversationId: string): Promise<ChatRunResponse>;
   cancelProjectDelivery(deliveryJobId: string, conversationId: string): Promise<Record<string, unknown>>;
+  getClientEngagement(engagementId: string, conversationId: string): Promise<Record<string, unknown>>;
+  submitEngagementAnswers(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  approveEngagementScope(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  rejectEngagementScope(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  launchEngagement(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  requestEngagementScopeChange(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  cancelEngagement(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -1139,6 +1146,36 @@ export class HttpAstraClient implements AstraClient {
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/cancel`,
       { conversation_id: conversationId },
     );
+  }
+
+  async getClientEngagement(engagementId: string, conversationId: string) {
+    return this.getJson<Record<string, unknown>>(
+      `/chat/client-engagements/${encodeURIComponent(engagementId)}?conversation_id=${encodeURIComponent(conversationId)}`,
+    );
+  }
+
+  async submitEngagementAnswers(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/clarifications`, request);
+  }
+
+  async approveEngagementScope(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/scope/approve`, request);
+  }
+
+  async rejectEngagementScope(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/scope/reject`, request);
+  }
+
+  async launchEngagement(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/launch`, request);
+  }
+
+  async requestEngagementScopeChange(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/scope-changes`, request);
+  }
+
+  async cancelEngagement(engagementId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/cancel`, request);
   }
 
   async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {

@@ -517,6 +517,164 @@ class AnalysisRepository:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagements (
+                    engagement_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT,
+                    state TEXT NOT NULL,
+                    state_version INTEGER NOT NULL DEFAULT 1,
+                    engagement_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_client_engagement_conversation
+                ON client_engagements (conversation_id, updated_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_evidence (
+                    evidence_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    content_hash TEXT,
+                    evidence_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_engagement_evidence ON client_engagement_evidence (engagement_id, source_type, evidence_id)")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_requirements (
+                    requirement_id TEXT NOT NULL,
+                    engagement_id TEXT NOT NULL,
+                    requirement_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (engagement_id, requirement_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_questions (
+                    question_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    semantic_key TEXT NOT NULL,
+                    question_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (engagement_id, semantic_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_answers (
+                    answer_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    question_id TEXT NOT NULL,
+                    answer_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (engagement_id, question_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_scope_revisions (
+                    revision_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    revision_number INTEGER NOT NULL,
+                    scope_hash TEXT NOT NULL,
+                    revision_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (engagement_id, revision_number),
+                    UNIQUE (engagement_id, scope_hash)
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_engagement_scope_revisions ON client_engagement_scope_revisions (engagement_id, revision_number ASC)")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_scope_approvals (
+                    approval_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    scope_hash TEXT NOT NULL,
+                    approval_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (engagement_id, revision_id, scope_hash)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_scope_rejections (
+                    rejection_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    rejection_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_scope_changes (
+                    change_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    classification TEXT NOT NULL,
+                    change_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_launches (
+                    launch_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    scope_hash TEXT NOT NULL,
+                    delivery_job_id TEXT NOT NULL UNIQUE,
+                    launch_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (engagement_id, revision_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_idempotency (
+                    engagement_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (engagement_id, operation, idempotency_key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_engagement_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    engagement_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_engagement_audit ON client_engagement_audit_events (engagement_id, created_at ASC)")
 
     def _add_column_if_missing(
         self, connection: sqlite3.Connection, table: str, column: str, definition: str
@@ -1222,6 +1380,184 @@ class AnalysisRepository:
             ).fetchall()
         return [{
             "event_id": row["event_id"], "delivery_job_id": row["delivery_job_id"],
+            "conversation_id": row["conversation_id"], "operation": row["operation"],
+            "status": row["status"], "metadata": json.loads(row["metadata_json"]),
+            "created_at": row["created_at"],
+        } for row in rows]
+
+    def store_client_engagement(self, engagement: dict[str, Any]) -> dict[str, Any]:
+        stored = dict(engagement)
+        stored.setdefault("state_version", 1)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO client_engagements (
+                    engagement_id, conversation_id, folder_access_id, state,
+                    state_version, engagement_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored["engagement_id"], stored["conversation_id"], stored.get("folder_access_id"),
+                    stored["state"], int(stored["state_version"]), json.dumps(stored, sort_keys=True),
+                    stored["created_at"], stored["updated_at"],
+                ),
+            )
+        return stored
+
+    def get_client_engagement(self, engagement_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT engagement_json FROM client_engagements WHERE engagement_id = ?",
+                (engagement_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Client engagement not found.")
+        value = json.loads(row["engagement_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Client engagement state is malformed.")
+        return value
+
+    def list_client_engagements_for_conversation(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT engagement_json FROM client_engagements WHERE conversation_id = ? ORDER BY created_at ASC",
+                (conversation_id,),
+            ).fetchall()
+        values = [json.loads(row["engagement_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def latest_active_client_engagement(self, conversation_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT engagement_json FROM client_engagements WHERE conversation_id = ? AND state NOT IN ('cancelled', 'failed') ORDER BY updated_at DESC LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["engagement_json"])
+        return value if isinstance(value, dict) else None
+
+    def transition_client_engagement(self, engagement: dict[str, Any], *, expected_version: int) -> dict[str, Any] | None:
+        stored = dict(engagement)
+        stored["state_version"] = expected_version + 1
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE client_engagements
+                SET state = ?, state_version = ?, engagement_json = ?, updated_at = ?
+                WHERE engagement_id = ? AND conversation_id = ? AND state_version = ?
+                """,
+                (
+                    stored["state"], stored["state_version"], json.dumps(stored, sort_keys=True),
+                    stored["updated_at"], stored["engagement_id"], stored["conversation_id"], expected_version,
+                ),
+            )
+        return stored if cursor.rowcount == 1 else None
+
+    def store_client_engagement_records(self, engagement: dict[str, Any]) -> None:
+        now = str(engagement.get("updated_at") or datetime.now().astimezone().isoformat())
+        engagement_id = str(engagement["engagement_id"])
+        with self._connect() as connection:
+            for item in engagement.get("evidence") or []:
+                if not isinstance(item, dict) or not item.get("evidence_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_evidence (evidence_id, engagement_id, source_type, content_hash, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(evidence_id) DO NOTHING",
+                    (item["evidence_id"], engagement_id, item.get("source_type", "unknown"), item.get("content_hash"), json.dumps(item, sort_keys=True), item.get("collected_at", now)),
+                )
+            for item in engagement.get("requirements") or []:
+                if not isinstance(item, dict) or not item.get("requirement_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_requirements (requirement_id, engagement_id, requirement_json, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(engagement_id, requirement_id) DO NOTHING",
+                    (item["requirement_id"], engagement_id, json.dumps(item, sort_keys=True), now),
+                )
+            for item in engagement.get("questions") or []:
+                if not isinstance(item, dict) or not item.get("question_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_questions (question_id, engagement_id, semantic_key, question_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(question_id) DO NOTHING",
+                    (item["question_id"], engagement_id, item.get("semantic_key", "unknown"), json.dumps(item, sort_keys=True), item.get("created_at", now)),
+                )
+            for item in engagement.get("answers") or []:
+                if not isinstance(item, dict) or not item.get("answer_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_answers (answer_id, engagement_id, question_id, answer_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(answer_id) DO NOTHING",
+                    (item["answer_id"], engagement_id, item.get("question_id", ""), json.dumps(item, sort_keys=True), item.get("created_at", now)),
+                )
+            for item in engagement.get("scope_revisions") or []:
+                if not isinstance(item, dict) or not item.get("revision_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_scope_revisions (revision_id, engagement_id, revision_number, scope_hash, revision_json, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(revision_id) DO NOTHING",
+                    (item["revision_id"], engagement_id, int(item.get("revision_number") or 0), item.get("scope_hash", ""), json.dumps(item, sort_keys=True), item.get("created_at", now)),
+                )
+            for item in engagement.get("approvals") or []:
+                if not isinstance(item, dict) or not item.get("approval_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_scope_approvals (approval_id, engagement_id, revision_id, scope_hash, approval_json, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(approval_id) DO NOTHING",
+                    (item["approval_id"], engagement_id, item.get("revision_id", ""), item.get("scope_hash", ""), json.dumps(item, sort_keys=True), item.get("approved_at", now)),
+                )
+            for item in engagement.get("rejections") or []:
+                if not isinstance(item, dict) or not item.get("rejection_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_scope_rejections (rejection_id, engagement_id, revision_id, rejection_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(rejection_id) DO NOTHING",
+                    (item["rejection_id"], engagement_id, item.get("revision_id", ""), json.dumps(item, sort_keys=True), item.get("created_at", now)),
+                )
+            for item in engagement.get("scope_changes") or []:
+                if not isinstance(item, dict) or not item.get("change_id"):
+                    continue
+                connection.execute(
+                    "INSERT INTO client_engagement_scope_changes (change_id, engagement_id, classification, change_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(change_id) DO NOTHING",
+                    (item["change_id"], engagement_id, item.get("classification", "clarification_only"), json.dumps(item, sort_keys=True), item.get("created_at", now)),
+                )
+            launch = engagement.get("project_launch")
+            if isinstance(launch, dict) and launch.get("launch_id"):
+                connection.execute(
+                    "INSERT INTO client_engagement_launches (launch_id, engagement_id, revision_id, scope_hash, delivery_job_id, launch_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(engagement_id, revision_id) DO NOTHING",
+                    (launch["launch_id"], engagement_id, launch.get("scope_revision_id", ""), launch.get("scope_hash", ""), launch.get("delivery_job_id", ""), json.dumps(launch, sort_keys=True), launch.get("launched_at", now)),
+                )
+
+    def get_client_engagement_idempotency(self, engagement_id: str, operation: str, idempotency_key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT response_json FROM client_engagement_idempotency WHERE engagement_id = ? AND operation = ? AND idempotency_key = ?",
+                (engagement_id, operation, idempotency_key),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["response_json"])
+        return value if isinstance(value, dict) else None
+
+    def store_client_engagement_idempotency(self, engagement_id: str, operation: str, idempotency_key: str, response: dict[str, Any], created_at: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO client_engagement_idempotency (engagement_id, operation, idempotency_key, response_json, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(engagement_id, operation, idempotency_key) DO NOTHING",
+                (engagement_id, operation, idempotency_key, json.dumps(response, sort_keys=True), created_at),
+            )
+
+    def store_client_engagement_audit_event(self, event: dict[str, Any]) -> None:
+        metadata = json.dumps(event.get("metadata") or {}, sort_keys=True)
+        if len(metadata) > 4_000:
+            metadata = json.dumps({"bounded": True, "summary": metadata[:3_800]}, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO client_engagement_audit_events (event_id, engagement_id, conversation_id, operation, status, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING",
+                (event["event_id"], event["engagement_id"], event["conversation_id"], event["operation"], event["status"], metadata, event["created_at"]),
+            )
+
+    def list_client_engagement_audit_events(self, engagement_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 200))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM client_engagement_audit_events WHERE engagement_id = ? ORDER BY created_at ASC LIMIT ?",
+                (engagement_id, safe_limit),
+            ).fetchall()
+        return [{
+            "event_id": row["event_id"], "engagement_id": row["engagement_id"],
             "conversation_id": row["conversation_id"], "operation": row["operation"],
             "status": row["status"], "metadata": json.loads(row["metadata_json"]),
             "created_at": row["created_at"],

@@ -53,6 +53,11 @@ import {
   projectDeliveryActionFromPayload,
   type ProjectDeliveryAction,
 } from "./state/projectDeliveryState";
+import {
+  clientEngagementActionFromPayload,
+  exactScopeApprovalRequest,
+  type ClientEngagementAction,
+} from "./state/clientEngagementState";
 
 interface Settings {
   apiUrl: string;
@@ -79,6 +84,7 @@ interface Message {
   folderAction?: FolderAccessAction;
   jobAction?: ProjectJobAction;
   deliveryAction?: ProjectDeliveryAction;
+  engagementAction?: ClientEngagementAction;
   info?: InfoCard;
 }
 
@@ -550,6 +556,99 @@ export default function App() {
     finally { locks.current.delete(lockId); }
   }
 
+  async function refreshClientEngagement(engagementId: string) {
+    if (!conversationId) return;
+    const engagement = await client.getClientEngagement(engagementId, conversationId);
+    const parsed = clientEngagementActionFromPayload({
+      action_type: "client_engagement", technical_details: { client_engagement: engagement },
+    });
+    if (!parsed) return;
+    setMessages((current) => current.map((item) =>
+      item.engagementAction?.engagementId === engagementId ? { ...item, engagementAction: parsed } : item,
+    ));
+  }
+
+  async function answerEngagement(action: ClientEngagementAction, answers: Record<string, string>, useAssumptions = false) {
+    if (!conversationId || action.status !== "clarification_required") return;
+    const lockId = `engagement-answer:${action.engagementId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.submitEngagementAnswers(action.engagementId, {
+        conversation_id: conversationId, expected_state_version: action.stateVersion,
+        answers, use_reasonable_assumptions: useAssumptions, answered_by: "local-user",
+        idempotency_key: newId("engagement-answer"),
+      });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); await refreshClientEngagement(action.engagementId).catch(() => undefined); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function approveEngagementScope(action: ClientEngagementAction) {
+    const request = exactScopeApprovalRequest(action);
+    if (!request) return;
+    const lockId = `engagement-approval:${action.engagementId}:${request.revision_id}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.approveEngagementScope(action.engagementId, { ...request, approving_user: "local-user", idempotency_key: newId("scope-approval") });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); await refreshClientEngagement(action.engagementId).catch(() => undefined); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function rejectEngagementScope(action: ClientEngagementAction) {
+    if (!conversationId || !action.scope || !["awaiting_scope_approval", "scope_change_review"].includes(action.status)) return;
+    const lockId = `engagement-reject:${action.engagementId}:${action.scope.revisionId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.rejectEngagementScope(action.engagementId, {
+        conversation_id: conversationId, expected_state_version: action.stateVersion,
+        revision_id: action.scope.revisionId, reason: "User requested a revised scope.", rejecting_user: "local-user",
+        idempotency_key: newId("scope-rejection"),
+      });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function launchEngagement(action: ClientEngagementAction) {
+    if (!conversationId || action.status !== "scope_approved" || action.launch) return;
+    const lockId = `engagement-launch:${action.engagementId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.launchEngagement(action.engagementId, {
+        conversation_id: conversationId, expected_state_version: action.stateVersion,
+        idempotency_key: `launch:${action.engagementId}:${action.approvedRevisionId ?? "scope"}`,
+      });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); await refreshClientEngagement(action.engagementId).catch(() => undefined); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function changeEngagementScope(action: ClientEngagementAction, requestedChange: string) {
+    if (!conversationId || !["scope_approved", "project_launched"].includes(action.status) || !requestedChange.trim()) return;
+    const lockId = `engagement-change:${action.engagementId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.requestEngagementScopeChange(action.engagementId, {
+        conversation_id: conversationId, expected_state_version: action.stateVersion,
+        requested_change: requestedChange.trim(), requested_by: "local-user", idempotency_key: newId("scope-change"),
+      });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function cancelEngagement(action: ClientEngagementAction) {
+    if (!conversationId || ["cancelled", "failed"].includes(action.status)) return;
+    const lockId = `engagement-cancel:${action.engagementId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.cancelEngagement(action.engagementId, { conversation_id: conversationId, expected_state_version: action.stateVersion, idempotency_key: newId("engagement-cancel") });
+      await refreshClientEngagement(action.engagementId);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
   async function approveWorkspaceAction(
     messageId: string,
     action: AssignmentWorkspaceAction,
@@ -900,7 +999,7 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
@@ -936,6 +1035,12 @@ function ChatMessage({
   onVerifyDelivery,
   onGenerateDeliveryHandoff,
   onCancelDelivery,
+  onAnswerEngagement,
+  onApproveEngagement,
+  onRejectEngagement,
+  onLaunchEngagement,
+  onChangeEngagement,
+  onCancelEngagement,
   onOption,
   onContinue,
 }: {
@@ -955,6 +1060,12 @@ function ChatMessage({
   onVerifyDelivery: (action: ProjectDeliveryAction) => Promise<void>;
   onGenerateDeliveryHandoff: (action: ProjectDeliveryAction) => Promise<void>;
   onCancelDelivery: (action: ProjectDeliveryAction) => Promise<void>;
+  onAnswerEngagement: (action: ClientEngagementAction, answers: Record<string, string>, useAssumptions?: boolean) => Promise<void>;
+  onApproveEngagement: (action: ClientEngagementAction) => Promise<void>;
+  onRejectEngagement: (action: ClientEngagementAction) => Promise<void>;
+  onLaunchEngagement: (action: ClientEngagementAction) => Promise<void>;
+  onChangeEngagement: (action: ClientEngagementAction, requestedChange: string) => Promise<void>;
+  onCancelEngagement: (action: ClientEngagementAction) => Promise<void>;
   onOption: (option: string) => void;
   onContinue: (conversationId: string) => Promise<void>;
 }) {
@@ -965,9 +1076,10 @@ function ChatMessage({
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
+    {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && !message.engagementAction && <RunDetails run={message.run} />}
   </div></article>;
 }
 
@@ -1009,6 +1121,59 @@ function FolderAccessCard({
     {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
     {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
     <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+  </div>;
+}
+
+function ClientEngagementCard({
+  action, onAnswer, onApprove, onReject, onLaunch, onChange, onCancel,
+}: {
+  action: ClientEngagementAction;
+  onAnswer: (answers: Record<string, string>, assumptions: boolean) => Promise<void>;
+  onApprove: () => Promise<void>;
+  onReject: () => Promise<void>;
+  onLaunch: () => Promise<void>;
+  onChange: (change: string) => Promise<void>;
+  onCancel: () => Promise<void>;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [change, setChange] = useState("");
+  const [busy, setBusy] = useState(false);
+  const synchronousLock = useRef(false);
+  const runOnce = async (operation: () => Promise<void>) => {
+    if (synchronousLock.current) return;
+    synchronousLock.current = true;
+    setBusy(true);
+    try { await operation(); } finally { synchronousLock.current = false; setBusy(false); }
+  };
+  const scope = action.scope;
+  const terminal = ["cancelled", "failed"].includes(action.status);
+  const approvalReady = Boolean(exactScopeApprovalRequest(action));
+  return <div className="action-card client-engagement-card">
+    <div className="card-heading"><div><span className="eyebrow">Client engagement</span><h2>{action.status === "project_launched" ? "Project launched" : action.status === "scope_change_review" ? "Scope change review" : "Engagement scope"}</h2></div><span className={`status status-${action.status}`}>{action.status.replace(/_/g, " ")}</span></div>
+    <section className="job-section"><h3>What Astra understood</h3><p>{action.outcome}</p></section>
+    <section className="job-section"><h3>Authorized evidence</h3>{action.evidence.length ? <div className="source-chips">{action.evidence.slice(0, 20).map((item) => <code key={item.id}>{item.label}{item.stale ? " (stale)" : ""}</code>)}</div> : <p className="muted">Only the original chat request is currently available.</p>}</section>
+    {action.questions.length > 0 && <section className="job-section engagement-questions"><h3>Clarification</h3><p>Answer any or all questions. No project work starts from these answers.</p>{action.questions.slice(0, 3).map((question, index) => <label key={question.id}><strong>{index + 1}. {question.question}</strong><small>{question.blocking ? "Blocking" : "Optional"} · {question.rationale}</small><textarea value={answers[question.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} disabled={busy} rows={2} /></label>)}<div className="button-row"><button className="primary-button" disabled={busy || !Object.values(answers).some((value) => value.trim())} onClick={() => void runOnce(() => onAnswer(answers, false))}><Send size={16} />Submit answers</button><button className="secondary-button" disabled={busy} onClick={() => void runOnce(() => onAnswer({}, true))}>Use reasonable assumptions</button></div></section>}
+    {scope && <>
+      <section className="job-section scope-preview"><h3>Objective</h3><p>{scope.objective}</p><p className="muted">{scope.problemStatement}</p></section>
+      <section className="job-section"><h3>Deliverables and acceptance</h3><div className="scope-deliverables">{scope.deliverables.map((deliverable) => <div key={deliverable.id}><strong>{deliverable.title}</strong><p>{deliverable.description}</p><ul>{deliverable.criteria.map((criterion) => <li key={criterion.id}>{criterion.statement}<small>{criterion.reviewMode.replace(/_/g, " ")}</small></li>)}</ul></div>)}</div></section>
+      <section className="job-section"><div className="job-columns"><div><strong>Functional requirements</strong><List items={scope.functionalRequirements} /></div><div><strong>Quality requirements</strong><List items={scope.nonFunctionalRequirements} /></div></div></section>
+      <section className="job-section"><h3>Milestones</h3><ol>{scope.milestones.map((milestone) => <li key={milestone.title}><strong>{milestone.title}</strong><span>{milestone.completionSignal}</span></li>)}</ol></section>
+      <section className="job-section"><div className="job-columns"><div><strong>Assumptions</strong><List items={scope.assumptions} /></div><div><strong>Explicit exclusions</strong><List items={scope.exclusions} /></div></div>{scope.assumptions.length > 0 && <div className="analysis-warning"><CircleAlert size={16} />These assumptions are part of the exact scope and may reduce estimate confidence.</div>}</section>
+      <section className="job-section"><div className="job-columns"><div><strong>Client responsibilities</strong><List items={scope.clientResponsibilities} /></div><div><strong>Astra responsibilities</strong><List items={scope.astraResponsibilities} /></div></div></section>
+      {scope.risks.length > 0 && <section className="job-section"><h3>Risks</h3><List items={scope.risks} /></section>}
+      {scope.estimate && <section className="job-section engagement-estimate"><h3>Estimate</h3><div className="delivery-progress"><span><strong>{scope.estimate.relativeSize.replace(/_/g, " ")}</strong> relative size</span><span><strong>{scope.estimate.expected}</strong> expected</span><span><strong>{scope.estimate.pessimistic}</strong> pessimistic</span><span><strong>{scope.estimate.confidence}</strong> confidence</span></div><List items={scope.estimate.uncertainties} /><p className="muted">This bounded work-unit estimate is not a guarantee or monetary price.</p></section>}
+    </>}
+    {action.scopeChanges.length > 0 && <section className="job-section scope-change-impact"><h3>Requested difference</h3>{action.scopeChanges.slice(-1).map((item) => <div key={`${item.classification}:${item.revisionId}`}><p>{item.requestedChange}</p><div className="job-columns"><div><strong>Estimate impact</strong><p>{item.estimateImpact}</p></div><div><strong>Risk impact</strong><p>{item.riskImpact}</p></div></div></div>)}</section>}
+    {action.launch && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Stage 9 project created</strong><p>The approved scope launched one project delivery in this conversation. Plan, patch, and command approvals remain separate.</p></div></div>}
+    {action.limitation && <div className="result failed"><CircleAlert size={17} />{action.limitation}</div>}
+    <div className="button-row">
+      {approvalReady && <button className="primary-button" aria-label="Approve exact displayed engagement scope" disabled={busy} onClick={() => void runOnce(onApprove)}><ShieldCheck size={16} />Approve exact scope</button>}
+      {approvalReady && <button className="secondary-button" disabled={busy} onClick={() => void runOnce(onReject)}>Request revision</button>}
+      {action.status === "scope_approved" && !action.launch && <button className="primary-button" disabled={busy} onClick={() => void runOnce(onLaunch)}><FileText size={16} />Launch project</button>}
+      {!terminal && <button className="secondary-button danger" disabled={busy} onClick={() => void runOnce(onCancel)}><X size={16} />Cancel engagement</button>}
+    </div>
+    {["scope_approved", "project_launched"].includes(action.status) && <section className="job-section scope-change-form"><label><strong>Request a scope change</strong><textarea value={change} onChange={(event) => setChange(event.target.value)} rows={2} disabled={busy} placeholder="Describe the requested addition, removal, or constraint change." /></label><button className="secondary-button" disabled={busy || !change.trim()} onClick={() => void runOnce(() => onChange(change))}>Review scope change</button></section>}
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Revision: {scope?.revisionNumber ?? "not ready"}</span><span>Hash: {scope?.scopeHash ?? "not ready"}</span><JsonBlock value={action.technical} /></div></details>
   </div>;
 }
 
@@ -1210,8 +1375,21 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
 function Status({ status }: { status: ChatActionStatus }) { return <span className={`status status-${status}`}>{status.replace(/_/g, " ")}</span>; }
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
-function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
+function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery", "client_engagement"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
 function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantId: string): Message[] | null {
+  const incomingEngagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
+  if (incomingEngagement) {
+    const existing = current.find((item) => item.id !== assistantId && item.engagementAction?.engagementId === incomingEngagement.engagementId);
+    return current.map((item) => {
+      if (existing && item.id === existing.id) return { ...item, engagementAction: incomingEngagement };
+      if (item.id !== assistantId) return item;
+      return {
+        ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run,
+        engagementAction: existing ? undefined : incomingEngagement, action: undefined,
+        workspaceAction: undefined, folderAction: undefined, jobAction: undefined, deliveryAction: undefined,
+      };
+    });
+  }
   const incomingDelivery = run.action ? projectDeliveryActionFromPayload(run.action) : null;
   if (incomingDelivery) {
     const existing = current.find((item) => item.id !== assistantId && item.deliveryAction?.deliveryJobId === incomingDelivery.deliveryJobId);
@@ -1249,14 +1427,18 @@ function restoreConversationMessages(
 ): Message[] {
   const latestJobs = new Map<string, ProjectJobAction>();
   const latestDeliveries = new Map<string, ProjectDeliveryAction>();
+  const latestEngagements = new Map<string, ClientEngagementAction>();
   for (const run of runs) {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     if (job) latestJobs.set(job.jobId, job);
     const delivery = run.action ? projectDeliveryActionFromPayload(run.action) : null;
     if (delivery) latestDeliveries.set(delivery.deliveryJobId, delivery);
+    const engagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
+    if (engagement) latestEngagements.set(engagement.engagementId, engagement);
   }
   const renderedJobs = new Set<string>();
   const renderedDeliveries = new Set<string>();
+  const renderedEngagements = new Set<string>();
   return runs.flatMap<Message>((run) => {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     const showJob = job && !renderedJobs.has(job.jobId);
@@ -1266,10 +1448,14 @@ function restoreConversationMessages(
     const showDelivery = delivery && !renderedDeliveries.has(delivery.deliveryJobId);
     if (showDelivery) renderedDeliveries.add(delivery.deliveryJobId);
     const restoredDelivery = showDelivery ? latestDeliveries.get(delivery.deliveryJobId) : undefined;
+    const engagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
+    const showEngagement = engagement && !renderedEngagements.has(engagement.engagementId);
+    if (showEngagement) renderedEngagements.add(engagement.engagementId);
+    const restoredEngagement = showEngagement ? latestEngagements.get(engagement.engagementId) : undefined;
     return [
       { ...makeMessage("user", run.user_message), createdAt: run.created_at },
       {
-        ...makeMessage("assistant", restoredJob || restoredDelivery || genericActionFromRun(run) || (run.action && !job && !delivery) ? "" : run.assistant_response),
+        ...makeMessage("assistant", restoredJob || restoredDelivery || restoredEngagement || genericActionFromRun(run) || (run.action && !job && !delivery && !engagement) ? "" : run.assistant_response),
         createdAt: run.created_at,
         run,
         action: genericActionFromRun(run) ?? undefined,
@@ -1278,6 +1464,7 @@ function restoreConversationMessages(
         folderAction: run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined,
         jobAction: restoredJob,
         deliveryAction: restoredDelivery,
+        engagementAction: restoredEngagement,
       },
     ];
   });
