@@ -191,6 +191,7 @@ from backend.app.schemas.api import (
     ToolsResponse,
 )
 from backend.app.specialists.routes import router as specialists_router
+from backend.app.project_validation.routes import router as project_validation_router
 from backend.app.slm import (
     SLMChatRequest,
     SLMIntentRequest,
@@ -799,6 +800,7 @@ def create_app(
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
     application.include_router(specialists_router)
+    application.include_router(project_validation_router)
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

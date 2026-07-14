@@ -58,6 +58,8 @@ import {
   exactScopeApprovalRequest,
   type ClientEngagementAction,
 } from "./state/clientEngagementState";
+import { exactValidationReviewRequest, projectValidationActionFromPayload, type ProjectValidationAction } from "./state/projectValidationState";
+import { ProjectValidationCard, type ValidationOperation, type ValidationReviewAction } from "./components/ProjectValidationCard";
 
 interface Settings {
   apiUrl: string;
@@ -85,6 +87,7 @@ interface Message {
   jobAction?: ProjectJobAction;
   deliveryAction?: ProjectDeliveryAction;
   engagementAction?: ClientEngagementAction;
+  validationAction?: ProjectValidationAction;
   info?: InfoCard;
 }
 
@@ -258,18 +261,21 @@ export default function App() {
           action: genericActionFromRun(actionRun) ?? undefined,
           workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
           folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
+          validationAction: actionRun.action ? projectValidationActionFromPayload(actionRun.action) ?? undefined : undefined,
         } : item));
     });
     setConversationId(run.conversation_id);
     const action = genericActionFromRun(run);
     const folderAction = run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined;
+    const validationAction = run.action ? projectValidationActionFromPayload(run.action) ?? undefined : undefined;
     setMessages((current) => mergeProjectJobRun(current, run, assistantId) ?? current.map((item) => item.id === assistantId ? {
         ...item,
-        text: action || folderAction ? "" : run.assistant_response,
+        text: action || folderAction || validationAction ? "" : run.assistant_response,
         createdAt: run.created_at,
         run,
         action: action ?? undefined,
         folderAction,
+        validationAction,
       } : item));
   }
 
@@ -649,6 +655,74 @@ export default function App() {
     finally { locks.current.delete(lockId); }
   }
 
+
+  function upsertValidationRun(run: ChatRunResponse) {
+    const parsed = run.action ? projectValidationActionFromPayload(run.action) : null;
+    if (!parsed) return;
+    setConversationId(run.conversation_id);
+    setMessages((current) => {
+      const existing = current.find((item) => item.validationAction?.campaignId === parsed.campaignId);
+      if (existing) return current.map((item) => item.id === existing.id ? { ...item, run, createdAt: run.created_at, text: "", validationAction: parsed } : item);
+      return [...current, { ...makeMessage("assistant", ""), createdAt: run.created_at, run, validationAction: parsed }];
+    });
+  }
+
+  async function startProjectValidation(action: ClientEngagementAction) {
+    if (!conversationId || action.status !== "project_launched" || !action.launch) return;
+    const lockId = `validation-create:${action.engagementId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const run = await client.createProjectValidationCampaign({
+        conversation_id: conversationId, engagement_id: action.engagementId,
+        delivery_job_id: action.launch.deliveryJobId, user_id: "local-user",
+        idempotency_key: `validation:${action.engagementId}:${action.launch.deliveryJobId}`,
+      });
+      upsertValidationRun(run);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function operateProjectValidation(action: ProjectValidationAction, operation: ValidationOperation) {
+    if (!conversationId) return;
+    const lockId = `validation:${operation}:${action.campaignId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const common = { conversation_id: conversationId, expected_state_version: action.stateVersion, actor_id: "local-user", idempotency_key: newId(`validation-${operation}`) };
+      const runRequest = action.run ? { ...common, expected_run_version: action.run.stateVersion } : common;
+      const run = operation === "prepare"
+        ? await client.prepareProjectValidation(action.campaignId, common)
+        : operation === "start"
+          ? await client.startProjectValidationRun(action.campaignId, common)
+          : operation === "recover"
+            ? await client.recoverProjectValidation(action.campaignId, common)
+            : operation === "restore"
+              ? await client.restoreProjectValidationBaseline(action.campaignId, common)
+              : operation === "cancel"
+                ? await client.cancelProjectValidation(action.campaignId, { ...runRequest, reason: "Cancelled by the user." })
+                : action.run && operation === "pause"
+                  ? await client.pauseProjectValidationRun(action.campaignId, action.run.runId, runRequest)
+                  : action.run && operation === "resume"
+                    ? await client.resumeProjectValidationRun(action.campaignId, action.run.runId, runRequest)
+                    : action.run
+                      ? await client.evaluateProjectValidationRun(action.campaignId, action.run.runId, runRequest)
+                      : null;
+      if (run) upsertValidationRun(run);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function reviewProjectValidation(action: ProjectValidationAction, reviewAction: ValidationReviewAction, notes: string) {
+    if (!conversationId || !action.run) return;
+    const request = exactValidationReviewRequest(action, reviewAction, notes);
+    const lockId = `validation-review:${action.campaignId}:${action.run.runId}`;
+    if (!request || !tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const run = await client.reviewProjectValidationRun(action.campaignId, action.run.runId, request);
+      upsertValidationRun(run);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
   async function approveWorkspaceAction(
     messageId: string,
     action: AssignmentWorkspaceAction,
@@ -999,7 +1073,7 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
@@ -1041,6 +1115,9 @@ function ChatMessage({
   onLaunchEngagement,
   onChangeEngagement,
   onCancelEngagement,
+  onStartValidation,
+  onValidationOperation,
+  onValidationReview,
   onOption,
   onContinue,
 }: {
@@ -1066,6 +1143,9 @@ function ChatMessage({
   onLaunchEngagement: (action: ClientEngagementAction) => Promise<void>;
   onChangeEngagement: (action: ClientEngagementAction, requestedChange: string) => Promise<void>;
   onCancelEngagement: (action: ClientEngagementAction) => Promise<void>;
+  onStartValidation: (action: ClientEngagementAction) => Promise<void>;
+  onValidationOperation: (action: ProjectValidationAction, operation: ValidationOperation) => Promise<void>;
+  onValidationReview: (action: ProjectValidationAction, reviewAction: ValidationReviewAction, notes: string) => Promise<void>;
   onOption: (option: string) => void;
   onContinue: (conversationId: string) => Promise<void>;
 }) {
@@ -1076,10 +1156,11 @@ function ChatMessage({
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
-    {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} />}
+    {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} onStartValidation={() => onStartValidation(message.engagementAction!)} />}
+    {message.validationAction && <ProjectValidationCard action={message.validationAction} onOperation={(operation) => onValidationOperation(message.validationAction!, operation)} onReview={(reviewAction, notes) => onValidationReview(message.validationAction!, reviewAction, notes)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && !message.engagementAction && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && !message.engagementAction && !message.validationAction && <RunDetails run={message.run} />}
   </div></article>;
 }
 
@@ -1125,7 +1206,7 @@ function FolderAccessCard({
 }
 
 function ClientEngagementCard({
-  action, onAnswer, onApprove, onReject, onLaunch, onChange, onCancel,
+  action, onAnswer, onApprove, onReject, onLaunch, onChange, onCancel, onStartValidation,
 }: {
   action: ClientEngagementAction;
   onAnswer: (answers: Record<string, string>, assumptions: boolean) => Promise<void>;
@@ -1134,6 +1215,7 @@ function ClientEngagementCard({
   onLaunch: () => Promise<void>;
   onChange: (change: string) => Promise<void>;
   onCancel: () => Promise<void>;
+  onStartValidation: () => Promise<void>;
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [change, setChange] = useState("");
@@ -1165,6 +1247,7 @@ function ClientEngagementCard({
     </>}
     {action.scopeChanges.length > 0 && <section className="job-section scope-change-impact"><h3>Requested difference</h3>{action.scopeChanges.slice(-1).map((item) => <div key={`${item.classification}:${item.revisionId}`}><p>{item.requestedChange}</p><div className="job-columns"><div><strong>Estimate impact</strong><p>{item.estimateImpact}</p></div><div><strong>Risk impact</strong><p>{item.riskImpact}</p></div></div></div>)}</section>}
     {action.launch && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Stage 9 project created</strong><p>The approved scope launched one project delivery in this conversation. Plan, patch, and command approvals remain separate.</p></div></div>}
+    {action.status === "project_launched" && action.launch && <div className="button-row"><button className="primary-button" disabled={busy} onClick={() => void runOnce(onStartValidation)}><ShieldCheck size={16} />Start delivery validation</button></div>}
     {action.limitation && <div className="result failed"><CircleAlert size={17} />{action.limitation}</div>}
     <div className="button-row">
       {approvalReady && <button className="primary-button" aria-label="Approve exact displayed engagement scope" disabled={busy} onClick={() => void runOnce(onApprove)}><ShieldCheck size={16} />Approve exact scope</button>}
@@ -1375,8 +1458,17 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
 function Status({ status }: { status: ChatActionStatus }) { return <span className={`status status-${status}`}>{status.replace(/_/g, " ")}</span>; }
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
-function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery", "client_engagement"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
+function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery", "client_engagement", "project_validation"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
 function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantId: string): Message[] | null {
+  const incomingValidation = run.action ? projectValidationActionFromPayload(run.action) : null;
+  if (incomingValidation) {
+    const existing = current.find((item) => item.id !== assistantId && item.validationAction?.campaignId === incomingValidation.campaignId);
+    return current.map((item) => {
+      if (existing && item.id === existing.id) return { ...item, validationAction: incomingValidation, run };
+      if (item.id !== assistantId) return item;
+      return { ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run, validationAction: existing ? undefined : incomingValidation, action: undefined, workspaceAction: undefined, folderAction: undefined, jobAction: undefined, deliveryAction: undefined, engagementAction: undefined };
+    });
+  }
   const incomingEngagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
   if (incomingEngagement) {
     const existing = current.find((item) => item.id !== assistantId && item.engagementAction?.engagementId === incomingEngagement.engagementId);
@@ -1428,6 +1520,7 @@ function restoreConversationMessages(
   const latestJobs = new Map<string, ProjectJobAction>();
   const latestDeliveries = new Map<string, ProjectDeliveryAction>();
   const latestEngagements = new Map<string, ClientEngagementAction>();
+  const latestValidations = new Map<string, ProjectValidationAction>();
   for (const run of runs) {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     if (job) latestJobs.set(job.jobId, job);
@@ -1435,10 +1528,13 @@ function restoreConversationMessages(
     if (delivery) latestDeliveries.set(delivery.deliveryJobId, delivery);
     const engagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
     if (engagement) latestEngagements.set(engagement.engagementId, engagement);
+    const validation = run.action ? projectValidationActionFromPayload(run.action) : null;
+    if (validation) latestValidations.set(validation.campaignId, validation);
   }
   const renderedJobs = new Set<string>();
   const renderedDeliveries = new Set<string>();
   const renderedEngagements = new Set<string>();
+  const renderedValidations = new Set<string>();
   return runs.flatMap<Message>((run) => {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     const showJob = job && !renderedJobs.has(job.jobId);
@@ -1452,10 +1548,14 @@ function restoreConversationMessages(
     const showEngagement = engagement && !renderedEngagements.has(engagement.engagementId);
     if (showEngagement) renderedEngagements.add(engagement.engagementId);
     const restoredEngagement = showEngagement ? latestEngagements.get(engagement.engagementId) : undefined;
+    const validation = run.action ? projectValidationActionFromPayload(run.action) : null;
+    const showValidation = validation && !renderedValidations.has(validation.campaignId);
+    if (showValidation) renderedValidations.add(validation.campaignId);
+    const restoredValidation = showValidation ? latestValidations.get(validation.campaignId) : undefined;
     return [
       { ...makeMessage("user", run.user_message), createdAt: run.created_at },
       {
-        ...makeMessage("assistant", restoredJob || restoredDelivery || restoredEngagement || genericActionFromRun(run) || (run.action && !job && !delivery && !engagement) ? "" : run.assistant_response),
+        ...makeMessage("assistant", restoredJob || restoredDelivery || restoredEngagement || restoredValidation || genericActionFromRun(run) || (run.action && !job && !delivery && !engagement && !validation) ? "" : run.assistant_response),
         createdAt: run.created_at,
         run,
         action: genericActionFromRun(run) ?? undefined,
@@ -1465,6 +1565,7 @@ function restoreConversationMessages(
         jobAction: restoredJob,
         deliveryAction: restoredDelivery,
         engagementAction: restoredEngagement,
+        validationAction: restoredValidation,
       },
     ];
   });

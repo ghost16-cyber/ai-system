@@ -771,6 +771,17 @@ export interface AstraClient {
   launchEngagement(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   requestEngagementScopeChange(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   cancelEngagement(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  createProjectValidationCampaign(request: Record<string, unknown>): Promise<ChatRunResponse>;
+  getProjectValidationCampaign(campaignId: string, conversationId: string): Promise<Record<string, unknown>>;
+  prepareProjectValidation(campaignId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  startProjectValidationRun(campaignId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  evaluateProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  pauseProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  resumeProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  restoreProjectValidationBaseline(campaignId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  cancelProjectValidation(campaignId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  reviewProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  recoverProjectValidation(campaignId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -1176,6 +1187,51 @@ export class HttpAstraClient implements AstraClient {
 
   async cancelEngagement(engagementId: string, request: Record<string, unknown>) {
     return this.postJson<ChatRunResponse>(`/chat/client-engagements/${encodeURIComponent(engagementId)}/cancel`, request);
+  }
+
+
+  async createProjectValidationCampaign(request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>("/project-validation/campaigns", request);
+  }
+
+  async getProjectValidationCampaign(campaignId: string, conversationId: string) {
+    return this.getJson<Record<string, unknown>>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}?conversation_id=${encodeURIComponent(conversationId)}`);
+  }
+
+  async prepareProjectValidation(campaignId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/prepare`, request);
+  }
+
+  async startProjectValidationRun(campaignId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/runs`, request);
+  }
+
+  async evaluateProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/runs/${encodeURIComponent(runId)}/evaluate`, request);
+  }
+
+  async pauseProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/runs/${encodeURIComponent(runId)}/pause`, request);
+  }
+
+  async resumeProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/runs/${encodeURIComponent(runId)}/resume`, request);
+  }
+
+  async restoreProjectValidationBaseline(campaignId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/restore-baseline`, request);
+  }
+
+  async cancelProjectValidation(campaignId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/cancel`, request);
+  }
+
+  async reviewProjectValidationRun(campaignId: string, runId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/runs/${encodeURIComponent(runId)}/review`, request);
+  }
+
+  async recoverProjectValidation(campaignId: string, request: Record<string, unknown>) {
+    return this.postJson<ChatRunResponse>(`/project-validation/campaigns/${encodeURIComponent(campaignId)}/recover`, request);
   }
 
   async generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest) {

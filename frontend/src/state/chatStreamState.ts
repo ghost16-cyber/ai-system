@@ -8,7 +8,7 @@ export function actionRunFromStreamEvent(event: ChatStreamEvent): ChatRunRespons
     "project_validation_failed", "project_diagnosis_offered", "project_diagnosis_started",
     "project_diagnosis_completed", "project_diagnosis_clarification", "project_repair_ready",
     "project_repair_blocked", "project_repair_applied", "project_repair_validated",
-    "project_delivery_updated", "client_engagement_updated",
+    "project_delivery_updated", "client_engagement_updated", "project_validation_updated",
   ].includes(event.event)) return null;
   const run = event.data.run;
   if (!run || typeof run !== "object" || Array.isArray(run)) return null;
