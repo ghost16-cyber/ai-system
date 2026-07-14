@@ -399,6 +399,18 @@ export default function App() {
     if (!conversationId || !["planned", "blocked"].includes(job.status)) return;
     const lockId = `project-job-prepare:${job.jobId}`;
     if (!tryLockCommandAction(locks.current, lockId)) return;
+    setMessages((current) => current.map((item) => item.jobAction?.jobId === job.jobId ? {
+      ...item,
+      jobAction: {
+        ...item.jobAction,
+        synthesis: {
+          ...item.jobAction.synthesis,
+          status: "preparing",
+          strategy: item.jobAction.synthesis.strategy ?? "selecting_safe_strategy",
+          summary: "Astra is checking deterministic synthesis first, then the configured controlled model only if needed.",
+        },
+      },
+    } : item));
     try {
       const patchRun = await client.prepareProjectJob(job.jobId, conversationId);
       setMessages((current) => [...current, {
@@ -410,6 +422,7 @@ export default function App() {
       await refreshProjectJob(job.jobId);
     } catch (caught) {
       setError(cleanError(caught));
+      await refreshProjectJob(job.jobId).catch(() => undefined);
     } finally {
       locks.current.delete(lockId);
     }
@@ -906,8 +919,9 @@ function ProjectJobCard({
   onCancel: () => void;
 }) {
   const terminal = ["completed", "cancelled"].includes(action.status);
-  const canPrepare = ["planned", "blocked"].includes(action.status)
-    && action.revisionCount < action.maxRevisionCycles;
+  const canPrepare = action.status === "planned"
+    && action.revisionCount < action.maxRevisionCycles
+    && !action.analysis.planOnly;
   const canValidate = action.status === "implementing" && action.validationPlan.length > 0;
   const completion = action.completionSummary;
   return <div className="action-card project-job-card">
@@ -915,13 +929,49 @@ function ProjectJobCard({
     <section className="job-section"><h3>Objective</h3><p>{action.objective}</p></section>
     {action.status === "needs_clarification" && action.clarification?.question && <div className="job-clarification"><CircleAlert size={17} /><div><strong>Clarification needed</strong><p>{action.clarification.question}</p><small>Reply naturally in this chat. Astra asks one focused question at a time.</small></div></div>}
     <section className="job-section"><h3>Requirements</h3><div className="job-columns"><div><strong>Deliverables</strong><List items={action.deliverables} /></div><div><strong>Acceptance criteria</strong><List items={action.acceptanceCriteria} /></div></div></section>
+    <section className="job-section structural-analysis"><div className="analysis-heading"><h3>Analyzed project structure</h3><span className={`confidence confidence-${action.analysis.confidence}`}>{action.analysis.confidence} confidence</span></div>
+      {action.analysis.findings.length > 0 && <div className="analysis-findings">{action.analysis.findings.slice(0, 8).map((finding) => <div key={finding.relativePath}><code>{finding.relativePath}</code><span>{finding.summary}</span><small>{finding.parseStatus}</small></div>)}</div>}
+      {action.analysis.coherentFiles.length > 0 && <div><strong>Coherent file set</strong><div className="coherent-files">{action.analysis.coherentFiles.map((item) => <span className="coherent-file" key={item.relativePath}><code>{item.relativePath}</code><small>{item.classification.replace(/_/g, " ")} · {item.reason}</small></span>)}</div></div>}
+      {action.analysis.symbols.length > 0 && <div><strong>Relevant symbols</strong><div className="symbol-list">{action.analysis.symbols.slice(0, 16).map((symbol, index) => <span key={`${symbol.relativePath}:${symbol.name}:${index}`}><code>{symbol.name}</code><small>{symbol.relativePath}{symbol.startLine ? `:${symbol.startLine}${symbol.endLine && symbol.endLine !== symbol.startLine ? `–${symbol.endLine}` : ""}` : ""} · {symbol.kind}</small></span>)}</div></div>}
+      {action.analysis.impactedTests.length > 0 && <div><strong>Impacted tests</strong><div className="source-list">{action.analysis.impactedTests.map((path) => <code key={path}>{path}</code>)}</div></div>}
+      {action.analysis.warnings.length > 0 && <div className="analysis-warning"><CircleAlert size={16} /><List items={action.analysis.warnings} /></div>}
+      {action.analysis.planOnly && <div className="result failed"><CircleAlert size={17} /><div><strong>Plan-only safety stop</strong><List items={action.analysis.planOnlyReasons} /></div></div>}
+      {action.analysis.prevalidation.status !== "not_started" && <div className={`prevalidation-status ${action.analysis.prevalidation.status}`}><strong>Pre-preview validation: {action.analysis.prevalidation.status}</strong><span>{action.analysis.prevalidation.checks.length} bounded checks completed before the immutable preview.</span>{action.analysis.prevalidation.warnings.length > 0 && <List items={action.analysis.prevalidation.warnings} />}</div>}
+    </section>
+    {action.synthesis.status !== "not_started" && <section className="job-section synthesis-status"><div className="analysis-heading"><h3>Implementation synthesis</h3><span className={`confidence confidence-${action.synthesis.confidence}`}>{action.synthesis.confidence} confidence</span></div>
+      <p>{action.synthesis.summary ?? "A bounded synthesis attempt was recorded."}</p>
+      <div className="synthesis-facts"><span><strong>Strategy</strong>{(action.synthesis.strategy ?? "unknown").replace(/_/g, " ")}</span><span><strong>Provider</strong>{action.synthesis.provider ?? "not invoked"}{action.synthesis.model ? ` / ${action.synthesis.model}` : ""}</span><span><strong>Evidence</strong>{action.synthesis.evidence.fileCount} files · {action.synthesis.evidence.excerptCount} excerpts</span></div>
+      {action.synthesis.assumptions.length > 0 && <div><strong>Assumptions to review</strong><List items={action.synthesis.assumptions} /></div>}
+      {action.synthesis.warnings.length > 0 && <div className="analysis-warning"><CircleAlert size={16} /><List items={action.synthesis.warnings} /></div>}
+      {["provider_unavailable", "timeout", "malformed_or_unsafe", "confidence_rejected", "rejected"].includes(action.synthesis.status) && <div className="result failed"><CircleAlert size={17} /><div><strong>No preview created</strong><p>Project files were not modified. Refine the request or retry after the configured local model is available.</p></div></div>}
+    </section>}
+    {action.repair.status !== "not_started" && <section className={`job-section repair-status repair-${action.repair.status}`}>
+      <div className="analysis-heading"><h3>Repair cycle {action.repair.cycleNumber || 1} of {action.repair.maxCycles}</h3><span className={`confidence confidence-${action.repair.confidence}`}>{action.repair.confidence} confidence</span></div>
+      {action.repair.status === "offered" && <div className="result failed"><CircleAlert size={17} /><div><strong>Diagnosis available</strong><p>{action.repair.failedCommandSummary ?? "The approved validation command failed and bounded failure information was captured."}</p><p>I can analyse the failure and prepare a repair proposal. No files will change unless you approve a new patch.</p><small>Ask naturally in this chat to diagnose or repair the failed validation.</small></div></div>}
+      {action.repair.status === "diagnosing" && <div className="progress-line"><Activity className="spin" size={16} />Fresh structural analysis and bounded diagnosis are in progress.</div>}
+      {action.repair.status === "diagnosis_completed" && <div className="progress-line"><Activity className="spin" size={16} />Diagnosis completed. Preparing an immutable repair preview.</div>}
+      {action.repair.redactionCount > 0 && <p className="muted">The failure output was redacted and limited before it could be sent to a coding model.</p>}
+      {action.repair.outputTruncated && <div className="analysis-warning"><CircleAlert size={16} />The failure output was truncated to its bounded diagnostic limits.</div>}
+      {action.repair.status === "needs_clarification" && action.repair.clarification?.question && <div className="job-clarification"><CircleAlert size={17} /><div><strong>Diagnosis needs clarification</strong><p>{action.repair.clarification.question}</p><small>Reply once in this conversation. No patch or command will run.</small></div></div>}
+      {["plan_only", "repair_rejected", "limit_reached", "stale"].includes(action.repair.status) && <div className="result failed"><CircleAlert size={17} /><div><strong>{action.repair.status === "stale" ? "Failure evidence is stale" : action.repair.status === "limit_reached" ? "Repair cycle limit reached" : action.repair.status === "plan_only" ? "Diagnosis is plan-only" : "No repair preview created"}</strong><p>{action.repair.status === "stale" ? "The project changed after this failure was recorded, so the old diagnosis cannot be used." : "I am not confident enough to prepare a repair patch. No files or commands changed."}</p></div></div>}
+      {action.repair.strategy && <div className="synthesis-facts"><span><strong>Diagnosis</strong>{action.repair.strategy.replace(/_/g, " ")}</span><span><strong>Provider</strong>{action.repair.provider ?? "not invoked"}{action.repair.model && action.repair.model !== "none" ? ` / ${action.repair.model}` : ""}</span><span><strong>Validation rerun</strong>{action.repair.validationRerunStatus.replace(/_/g, " ")}</span></div>}
+      {action.repair.rootCauses.length > 0 && <div><strong>Likely root cause</strong><List items={action.repair.rootCauses.map((cause) => cause.explanation || cause.reasonCode)} /></div>}
+      {action.repair.affectedFiles.length > 0 && <div><strong>Affected files</strong><div className="source-chips">{action.repair.affectedFiles.map((path) => <code key={path}>{path}</code>)}</div></div>}
+      {action.repair.assumptions.length > 0 && <div><strong>Assumptions</strong><List items={action.repair.assumptions} /></div>}
+      {action.repair.warnings.length > 0 && <div className="analysis-warning"><CircleAlert size={16} /><List items={action.repair.warnings} /></div>}
+      {action.repair.status === "preview_ready" && <p>The repair is ready for review. It has not been applied and needs its own exact approval.</p>}
+      {action.repair.status === "applied_not_validated" && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Repair applied</strong><p>The repair was applied, but the validation command has not been rerun.</p></div></div>}
+      {action.repair.status === "validation_planned" && <p>A new validation command is awaiting separate approval.</p>}
+      {action.repair.status === "validated" && <div className="result completed"><CheckCircle2 size={17} />This repair cycle passed its separately approved validation.</div>}
+      {action.repair.status === "rolled_back" && <p>The latest repair was rolled back to the immediately previous project state. No command was rerun.</p>}
+    </section>}
     <section className="job-section"><h3>Plan</h3><ol className="project-plan-steps">{action.plan.steps.map((step) => <li key={step}>{step}</li>)}</ol>{action.plan.safetyImpact && <p className="muted">{action.plan.safetyImpact}</p>}</section>
     {action.relevantPaths.length > 0 && <ProjectSources paths={action.relevantPaths} />}
     {action.patchIds.length > 0 && <section className="job-section"><h3>Proposed changes</h3><p>{action.patchIds.length} immutable patch proposal{action.patchIds.length === 1 ? "" : "s"} linked to this job. Every patch retains its own approval.</p></section>}
-    {action.status === "implementing" && <section className="job-section"><h3>Applied changes</h3><p>The approved patch was applied atomically. Tests have not run automatically, and rollback is available.</p></section>}
+    {action.status === "implementing" && <section className="job-section"><h3>Applied changes</h3><p>{action.repair.status === "applied_not_validated" ? "The repair was applied atomically. The validation command has not been rerun, and rollback is available." : "The approved patch was applied atomically. Tests have not run automatically, and rollback is available."}</p></section>}
     {action.validationResults.length > 0 && <section className="job-section"><h3>Validation</h3>{action.validationResults.map((result, index) => <div className={`validation-summary ${result.status === "passed" ? "passed" : "failed"}`} key={`${String(result.command_plan_id)}-${index}`}><strong>{String(result.status ?? "recorded")}</strong><span>{String(result.summary ?? "Bounded validation result recorded.")}</span></div>)}</section>}
-    {action.status === "blocked" && <div className="result failed"><CircleAlert size={17} /><div><strong>Controlled diagnosis</strong><p>{String(action.validationResults[action.validationResults.length - 1]?.recommended_next_step ?? "Review the bounded failure and prepare a revised patch preview.")}</p><small>Revision {action.revisionCount} of {action.maxRevisionCycles}; no edit or command will repeat automatically.</small></div></div>}
-    {completion && <section className="job-section completion-report"><h3>Completion</h3><dl><div><dt>Work completed</dt><dd>{joinSummary(completion.work_completed)}</dd></div><div><dt>Files changed</dt><dd>{joinSummary(completion.files_changed)}</dd></div><div><dt>Validation outcome</dt><dd>{String(completion.validation_outcome ?? "Not recorded")}</dd></div><div><dt>Rollback</dt><dd>{completion.rollback_available === true ? "Available" : "Not available"}</dd></div><div><dt>Items not tested</dt><dd>{joinSummary(completion.items_not_tested, "None recorded")}</dd></div><div><dt>Manual checks</dt><dd>{joinSummary(completion.suggested_manual_checks)}</dd></div></dl></section>}
+    {action.status === "blocked" && action.repair.status === "not_started" && <div className="result failed"><CircleAlert size={17} /><div><strong>Controlled diagnosis</strong><p>{String(action.validationResults[action.validationResults.length - 1]?.recommended_next_step ?? "Review the bounded failure before requesting diagnosis.")}</p><small>No edit or command will repeat automatically.</small></div></div>}
+    {completion && <section className="job-section completion-report"><h3>Completion</h3><dl><div><dt>Work completed</dt><dd>{joinSummary(completion.work_completed)}</dd></div><div><dt>Files changed</dt><dd>{joinSummary(completion.files_changed)}</dd></div><div><dt>Validation outcome</dt><dd>{String(completion.validation_outcome ?? "Not recorded")}</dd></div><div><dt>Verified tests</dt><dd>{joinSummary(completion.verified_facts, "None recorded")}</dd></div><div><dt>Assumptions</dt><dd>{joinSummary(completion.assumptions, "None recorded")}</dd></div><div><dt>Rollback</dt><dd>{completion.rollback_available === true ? "Available" : "Not available"}</dd></div><div><dt>Items not tested</dt><dd>{joinSummary(completion.items_not_tested, "None recorded")}</dd></div><div><dt>Manual checks</dt><dd>{joinSummary(completion.suggested_manual_checks)}</dd></div></dl></section>}
     <div className="button-row">
       {canPrepare && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare patch preview</button>}
       {canValidate && <button className="primary-button" onClick={onValidate}><ShieldCheck size={16} />Propose validation</button>}
@@ -965,12 +1015,14 @@ function ActionCard({ action, onApprove, onCancel, onOption }: { action: ChatAct
   const plan = action.commandPlan;
   const patch = projectPatchDetails(action);
   const rollback = projectRollbackDetails(action);
+  const repair = projectRepairDetails(action);
   const busy = ["approving", "approved", "running"].includes(action.status);
   return <div className="action-card">
     <div className="card-heading"><div><span className="eyebrow">{action.actionType.replace(/_/g, " ")}</span><h2>{action.title}</h2></div><Status status={action.status} /></div>
     <p>{action.summary}</p>
     {plan && <div className="command-preview"><span>Command</span><code>{plan.command}</code></div>}
     {plan && <p className="muted">Working directory: <span className="friendly-location">Project workspace</span></p>}
+    {repair && <div className="repair-preview-summary"><strong>Repair cycle {repair.cycleNumber}</strong><span>{repair.strategy.replace(/_/g, " ")} diagnosis · {repair.confidence} confidence</span><p>{repair.rootCauseSummary}</p>{repair.affectedFiles.length > 0 && <div className="source-chips">{repair.affectedFiles.map((path) => <code key={path}>{path}</code>)}</div>}</div>}
     {action.actionType === "project_plan" && <ol className="project-plan-steps">{action.steps.map((step) => <li key={step}>{step}</li>)}</ol>}
     {patch && <div className="patch-preview"><div className="patch-summary"><span><strong>{patch.changes.length}</strong> files</span><span><strong>+{patch.additions}</strong> additions</span><span><strong>-{patch.deletions}</strong> deletions</span></div>{patch.changes.map((change) => <details key={change.relative_path} className="patch-file"><summary><ChevronDown size={15} /><code>{change.relative_path}</code><span>{change.operation}</span></summary><p>{change.explanation}</p><pre className="patch-diff">{change.unified_diff || "No textual diff."}</pre>{change.diff_truncated && <small>Diff preview truncated.</small>}</details>)}<p className="muted">Nothing has been changed yet. Tests require separate approval.</p></div>}
     {rollback && <div className="rollback-preview"><strong>Files to restore</strong><div className="source-chips">{rollback.relative_paths.map((path) => <code key={path}>{path}</code>)}</div></div>}
@@ -1087,6 +1139,19 @@ function projectRollbackDetails(action: ChatAction) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const rollback = value as Record<string, unknown>;
   return { relative_paths: Array.isArray(rollback.relative_paths) ? rollback.relative_paths.filter((item): item is string => typeof item === "string") : [] };
+}
+
+function projectRepairDetails(action: ChatAction) {
+  const value = action.technicalDetails.project_repair;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const repair = value as Record<string, unknown>;
+  return {
+    cycleNumber: typeof repair.cycle_number === "number" ? repair.cycle_number : 0,
+    strategy: typeof repair.diagnosis_strategy === "string" ? repair.diagnosis_strategy : "bounded",
+    confidence: typeof (repair.confidence as Record<string, unknown> | undefined)?.level === "string" ? String((repair.confidence as Record<string, unknown>).level) : "unknown",
+    rootCauseSummary: typeof repair.root_cause_summary === "string" ? repair.root_cause_summary : "A bounded diagnosis supports this repair scope.",
+    affectedFiles: Array.isArray(repair.affected_files) ? repair.affected_files.filter((item): item is string => typeof item === "string" && !item.startsWith("/") && !item.includes("../")) : [],
+  };
 }
 function statusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : status === "approved" ? "Approved. Starting…" : "Running the approved action…"; }
 function workspaceStatusText(status: ChatActionStatus) { return status === "approving" ? "Recording approval…" : "Creating the approved workspace…"; }

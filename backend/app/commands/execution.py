@@ -7,8 +7,10 @@ import re
 import secrets
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,6 +120,7 @@ def plan_assignment_command(
         "approved_at": None,
         "started_at": None,
         "finished_at": None,
+        "execution_id": None,
         "exit_code": None,
         "stdout": "",
         "stderr": "",
@@ -229,6 +232,7 @@ def execute_assignment_command(
         _verify_approved_artifacts(record, workdir)
         record["status"] = "running"
         record["started_at"] = _now()
+        record["execution_id"] = uuid4().hex
         record["approval_token_hash"] = None
         _write_record(store_root, record)
 
@@ -517,19 +521,28 @@ def _run_bounded(argv: list[str], workspace: Path, timeout_seconds: int) -> dict
         for key, value in os.environ.items()
         if key in {"PATH", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "VIRTUAL_ENV"}
     }
-    environment.update({"PYTHONUNBUFFERED": "1", "ASTRA_COMMAND_EXECUTION": "1"})
-    process = subprocess.Popen(
-        runtime_argv,
-        cwd=workspace,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        shell=False,
-        start_new_session=os.name != "nt",
-    )
+    pycache_root = Path(tempfile.mkdtemp(prefix="astra-command-pycache-"))
+    environment.update({
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPYCACHEPREFIX": str(pycache_root),
+        "ASTRA_COMMAND_EXECUTION": "1",
+    })
+    try:
+        process = subprocess.Popen(
+            runtime_argv,
+            cwd=workspace,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            shell=False,
+            start_new_session=os.name != "nt",
+        )
+    except Exception:
+        shutil.rmtree(pycache_root, ignore_errors=True)
+        raise
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     counters = {"stdout": 0, "stderr": 0}
@@ -558,7 +571,7 @@ def _run_bounded(argv: list[str], workspace: Path, timeout_seconds: int) -> dict
         thread.join(timeout=2)
     stdout = "".join(stdout_parts)
     stderr = "".join(stderr_parts)
-    return {
+    result = {
         "exit_code": process.returncode,
         "stdout": _redact(stdout),
         "stderr": _redact(stderr),
@@ -566,6 +579,8 @@ def _run_bounded(argv: list[str], workspace: Path, timeout_seconds: int) -> dict
         "timed_out": timed_out,
         "error": "Command exceeded its approved timeout." if timed_out else None,
     }
+    shutil.rmtree(pycache_root, ignore_errors=True)
+    return result
 
 
 def _terminate_process(process: subprocess.Popen[str]) -> None:

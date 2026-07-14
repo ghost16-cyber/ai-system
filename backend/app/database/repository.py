@@ -24,12 +24,12 @@ from backend.app.schemas.api import (
 PROJECT_JOB_TRANSITIONS = {
     "intake": {"needs_clarification", "planned", "cancelled"},
     "needs_clarification": {"planned", "cancelled"},
-    "planned": {"patch_proposed", "cancelled"},
+    "planned": {"needs_clarification", "patch_proposed", "cancelled"},
     "patch_proposed": {"patch_approved", "planned", "cancelled"},
     "patch_approved": {"implementing", "blocked", "cancelled"},
     "implementing": {"validating", "blocked", "cancelled"},
     "validating": {"completed", "blocked", "implementing", "cancelled"},
-    "blocked": {"planned", "patch_proposed", "cancelled"},
+    "blocked": {"needs_clarification", "planned", "patch_proposed", "cancelled"},
     "completed": set(),
     "cancelled": set(),
 }
@@ -324,6 +324,137 @@ class AnalysisRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_project_jobs_folder_access
                 ON project_jobs (folder_access_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_analyses (
+                    analysis_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    root_fingerprint TEXT NOT NULL,
+                    index_version TEXT NOT NULL,
+                    index_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_analyses_job
+                ON project_analyses (job_id, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_synthesis_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL UNIQUE,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    root_fingerprint TEXT NOT NULL,
+                    analysis_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    response_hash TEXT,
+                    evidence_hash TEXT NOT NULL,
+                    patch_id TEXT,
+                    attempt_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_synthesis_attempts_job
+                ON project_synthesis_attempts (job_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_failure_evidence (
+                    evidence_id TEXT PRIMARY KEY,
+                    command_execution_id TEXT NOT NULL UNIQUE,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    parent_patch_id TEXT NOT NULL,
+                    root_fingerprint TEXT NOT NULL,
+                    project_state_hash TEXT NOT NULL,
+                    output_hash TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_failure_evidence_job
+                ON project_failure_evidence (job_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_diagnoses (
+                    diagnosis_id TEXT PRIMARY KEY,
+                    failure_evidence_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    analysis_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    strategy TEXT,
+                    status TEXT NOT NULL,
+                    request_hash TEXT,
+                    response_hash TEXT,
+                    diagnosis_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_diagnoses_failure
+                ON project_diagnoses (failure_evidence_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_repair_cycles (
+                    repair_cycle_id TEXT PRIMARY KEY,
+                    repair_chain_id TEXT NOT NULL,
+                    cycle_number INTEGER NOT NULL,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    parent_patch_id TEXT NOT NULL,
+                    repair_patch_id TEXT,
+                    command_execution_id TEXT NOT NULL UNIQUE,
+                    failure_evidence_id TEXT NOT NULL,
+                    diagnosis_id TEXT,
+                    synthesis_attempt_id TEXT,
+                    root_fingerprint TEXT NOT NULL,
+                    analysis_id TEXT,
+                    status TEXT NOT NULL,
+                    cycle_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(repair_chain_id, cycle_number)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_repair_cycles_job
+                ON project_repair_cycles (job_id, cycle_number ASC)
                 """
             )
 
@@ -974,6 +1105,279 @@ class AnalysisRepository:
             ).fetchall()
         patches = [json.loads(row["proposal_json"]) for row in rows]
         return [patch for patch in patches if isinstance(patch, dict)]
+
+    def store_project_analysis(self, index: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_analyses (
+                    analysis_id, job_id, conversation_id, folder_access_id,
+                    root_fingerprint, index_version, index_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    index["analysis_id"], index["job_id"], index["conversation_id"],
+                    index["folder_access_id"], index["root_fingerprint"], index["index_version"],
+                    json.dumps(index, sort_keys=True), index["created_at"], now,
+                ),
+            )
+
+    def get_project_analysis(self, analysis_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT index_json FROM project_analyses WHERE analysis_id = ?", (analysis_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project analysis not found.")
+        index = json.loads(row["index_json"])
+        if not isinstance(index, dict):
+            raise LookupError("Project analysis state is malformed.")
+        return index
+
+    def list_project_analyses_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT index_json FROM project_analyses WHERE job_id = ? ORDER BY created_at ASC",
+                (job_id,),
+            ).fetchall()
+        values = [json.loads(row["index_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def store_project_synthesis_attempt(self, attempt: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_synthesis_attempts (
+                    attempt_id, request_id, job_id, conversation_id, folder_access_id,
+                    root_fingerprint, analysis_id, provider, model, status,
+                    request_hash, response_hash, evidence_hash, patch_id, attempt_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(attempt_id) DO UPDATE SET
+                    provider = excluded.provider, model = excluded.model, status = excluded.status,
+                    response_hash = excluded.response_hash, patch_id = excluded.patch_id,
+                    attempt_json = excluded.attempt_json, updated_at = excluded.updated_at
+                """,
+                (
+                    attempt["attempt_id"], attempt["request_id"], attempt["job_id"],
+                    attempt["conversation_id"], attempt["folder_access_id"],
+                    attempt["root_fingerprint"], attempt["analysis_id"],
+                    str(attempt.get("provider") or "unknown"), str(attempt.get("model") or "unknown"),
+                    attempt["status"], attempt["request_hash"], attempt.get("response_hash"),
+                    attempt["evidence_hash"], attempt.get("patch_id"),
+                    json.dumps(attempt, sort_keys=True), attempt.get("started_at") or now, now,
+                ),
+            )
+
+    def get_project_synthesis_attempt(self, attempt_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT attempt_json FROM project_synthesis_attempts WHERE attempt_id = ?", (attempt_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project synthesis attempt not found.")
+        value = json.loads(row["attempt_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Project synthesis attempt state is malformed.")
+        return value
+
+    def list_project_synthesis_attempts_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT attempt_json FROM project_synthesis_attempts WHERE job_id = ? ORDER BY created_at ASC",
+                (job_id,),
+            ).fetchall()
+        values = [json.loads(row["attempt_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def store_project_failure_evidence(self, evidence: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_failure_evidence (
+                    evidence_id, command_execution_id, job_id, conversation_id,
+                    folder_access_id, parent_patch_id, root_fingerprint,
+                    project_state_hash, output_hash, status, evidence_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(command_execution_id) DO NOTHING
+                """,
+                (
+                    evidence["evidence_id"], evidence["command_execution_id"],
+                    evidence["project_job_id"], evidence["conversation_id"],
+                    evidence["folder_access_id"], evidence["parent_patch_id"],
+                    evidence["root_fingerprint_after"], evidence["project_state_hash"],
+                    evidence["output_hash"], evidence["status"],
+                    json.dumps(evidence, sort_keys=True), evidence["created_at"], now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT evidence_json FROM project_failure_evidence WHERE command_execution_id = ?",
+                (evidence["command_execution_id"],),
+            ).fetchone()
+        value = json.loads(row["evidence_json"]) if row else None
+        if not isinstance(value, dict):
+            raise LookupError("Project failure evidence could not be persisted.")
+        return value
+
+    def get_project_failure_evidence(self, evidence_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT evidence_json FROM project_failure_evidence WHERE evidence_id = ?", (evidence_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project failure evidence not found.")
+        value = json.loads(row["evidence_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Project failure evidence state is malformed.")
+        return value
+
+    def list_project_failure_evidence_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT evidence_json FROM project_failure_evidence WHERE job_id = ? ORDER BY created_at ASC",
+                (job_id,),
+            ).fetchall()
+        values = [json.loads(row["evidence_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def update_project_failure_evidence(self, evidence: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE project_failure_evidence SET status = ?, evidence_json = ?, updated_at = ?
+                WHERE evidence_id = ? AND job_id = ?
+                """,
+                (evidence["status"], json.dumps(evidence, sort_keys=True), now,
+                 evidence["evidence_id"], evidence["project_job_id"]),
+            )
+        if cursor.rowcount != 1:
+            raise LookupError("Project failure evidence update failed.")
+
+    def store_project_diagnosis(self, diagnosis: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_diagnoses (
+                    diagnosis_id, failure_evidence_id, job_id, conversation_id,
+                    analysis_id, provider, model, strategy, status, request_hash,
+                    response_hash, diagnosis_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(diagnosis_id) DO UPDATE SET
+                    provider = excluded.provider, model = excluded.model,
+                    strategy = excluded.strategy, status = excluded.status,
+                    response_hash = excluded.response_hash,
+                    diagnosis_json = excluded.diagnosis_json, updated_at = excluded.updated_at
+                """,
+                (
+                    diagnosis["diagnosis_id"], diagnosis["failure_evidence_id"],
+                    diagnosis["job_id"], diagnosis["conversation_id"],
+                    diagnosis["analysis_id"], str(diagnosis.get("provider") or "not_invoked"),
+                    str(diagnosis.get("model") or "none"), diagnosis.get("strategy"),
+                    diagnosis["status"], diagnosis.get("request_hash"),
+                    diagnosis.get("response_hash"), json.dumps(diagnosis, sort_keys=True),
+                    diagnosis.get("started_at") or now, now,
+                ),
+            )
+
+    def get_project_diagnosis(self, diagnosis_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT diagnosis_json FROM project_diagnoses WHERE diagnosis_id = ?", (diagnosis_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project diagnosis not found.")
+        value = json.loads(row["diagnosis_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Project diagnosis state is malformed.")
+        return value
+
+    def list_project_diagnoses_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT diagnosis_json FROM project_diagnoses WHERE job_id = ? ORDER BY created_at ASC",
+                (job_id,),
+            ).fetchall()
+        values = [json.loads(row["diagnosis_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def store_project_repair_cycle(self, cycle: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_repair_cycles (
+                    repair_cycle_id, repair_chain_id, cycle_number, job_id,
+                    conversation_id, parent_patch_id, repair_patch_id,
+                    command_execution_id, failure_evidence_id, diagnosis_id,
+                    synthesis_attempt_id, root_fingerprint, analysis_id, status,
+                    cycle_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(command_execution_id) DO NOTHING
+                """,
+                (
+                    cycle["repair_cycle_id"], cycle["repair_chain_id"], cycle["cycle_number"],
+                    cycle["job_id"], cycle["conversation_id"], cycle["parent_patch_id"],
+                    cycle.get("repair_patch_id"), cycle["command_execution_id"],
+                    cycle["failure_evidence_id"], cycle.get("diagnosis_id"),
+                    cycle.get("synthesis_attempt_id"), cycle["root_fingerprint"],
+                    cycle.get("analysis_id"), cycle["status"], json.dumps(cycle, sort_keys=True),
+                    cycle["created_at"], now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT cycle_json FROM project_repair_cycles WHERE command_execution_id = ?",
+                (cycle["command_execution_id"],),
+            ).fetchone()
+        value = json.loads(row["cycle_json"]) if row else None
+        if not isinstance(value, dict):
+            raise LookupError("Project repair cycle could not be persisted.")
+        return value
+
+    def update_project_repair_cycle(self, cycle: dict[str, Any]) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE project_repair_cycles SET repair_patch_id = ?, diagnosis_id = ?,
+                    synthesis_attempt_id = ?, analysis_id = ?, status = ?, cycle_json = ?, updated_at = ?
+                WHERE repair_cycle_id = ? AND repair_chain_id = ?
+                """,
+                (
+                    cycle.get("repair_patch_id"), cycle.get("diagnosis_id"),
+                    cycle.get("synthesis_attempt_id"), cycle.get("analysis_id"),
+                    cycle["status"], json.dumps(cycle, sort_keys=True), now,
+                    cycle["repair_cycle_id"], cycle["repair_chain_id"],
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise LookupError("Project repair cycle update failed.")
+
+    def get_project_repair_cycle(self, repair_cycle_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT cycle_json FROM project_repair_cycles WHERE repair_cycle_id = ?", (repair_cycle_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project repair cycle not found.")
+        value = json.loads(row["cycle_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Project repair cycle state is malformed.")
+        return value
+
+    def list_project_repair_cycles_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT cycle_json FROM project_repair_cycles WHERE job_id = ? ORDER BY cycle_number ASC",
+                (job_id,),
+            ).fetchall()
+        values = [json.loads(row["cycle_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
 
     def get_project_patch(self, patch_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         with self._connect() as connection:

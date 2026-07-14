@@ -240,7 +240,30 @@ from backend.app.folders import (
     verify_patch_approval,
 )
 from backend.app.folders.audit import audit_event
+from backend.app.project_analysis import (
+    ProjectAnalysisError,
+    analysis_audit_metadata,
+    build_analysis_plan,
+    build_project_index,
+    public_index,
+)
+from backend.app.project_analysis.model_synthesis import (
+    ModelSynthesisError,
+    SynthesisGateway,
+    build_synthesis_gateway_from_environment,
+)
+from backend.app.project_analysis.diagnosis import (
+    DiagnosisError,
+    MAX_DIAGNOSIS_MODEL_CALLS,
+    ProjectFailureEvidence,
+    build_failure_evidence,
+    deterministic_diagnosis,
+    diagnose_project_failure,
+    project_state_hash,
+)
 from backend.app.project_jobs import (
+    MAX_REPAIR_CYCLES,
+    MAX_REPAIR_FAILURES,
     ProjectJobError,
     answer_clarification,
     build_completion_summary,
@@ -249,8 +272,9 @@ from backend.app.project_jobs import (
     create_project_job,
     detect_project_job_followup,
     detect_project_task,
+    detect_repair_request,
     interpret_validation_result,
-    prepare_job_patch_changes,
+    prepare_job_patch_bundle,
     public_project_job,
 )
 from backend.app.workspace import inspect_workspace
@@ -628,6 +652,9 @@ class DebugAnalyzeErrorRequest(BaseModel):
 def create_app(
     database_path: str | Path | None = None,
     workspace_root: str | Path | None = None,
+    *,
+    project_synthesis_gateway: SynthesisGateway | None = None,
+    project_diagnosis_gateway: SynthesisGateway | None = None,
 ) -> FastAPI:
     configured_path = database_path or os.getenv(
         "AI_SYSTEM_DB_PATH", str(DEFAULT_DATABASE_PATH)
@@ -646,6 +673,10 @@ def create_app(
 
     repository = AnalysisRepository(configured_path)
     job_queue = JobQueue(configured_path)
+    synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
+    diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
+    synthesis_lock = threading.Lock()
+    repair_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1605,6 +1636,72 @@ def create_app(
             _validated_project_job(str(job["job_id"]), conversation_id=conversation_id)
         return {"items": [public_project_job(job) for job in jobs], "count": len(jobs)}
 
+    @application.get("/chat/projects/jobs/{job_id}/analysis")
+    def chat_project_job_analysis(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        index = _validated_project_analysis(job)
+        return {"index": public_index(index), "analysis": job.get("analysis") or {}}
+
+    @application.get("/chat/projects/jobs/{job_id}/synthesis-attempts")
+    def chat_project_job_synthesis_attempts(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        attempts = repository.list_project_synthesis_attempts_for_job(job_id)
+        safe = [{key: value for key, value in attempt.items() if key not in {"raw_request", "raw_response", "evidence"}} for attempt in attempts]
+        return {"job_id": job["job_id"], "items": safe, "count": len(safe)}
+
+    @application.get("/chat/projects/jobs/{job_id}/failure-evidence")
+    def chat_project_job_failure_evidence(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        values = repository.list_project_failure_evidence_for_job(job_id)
+        safe = [{key: value for key, value in item.items() if key not in {"stdout_summary", "stderr_summary"}} for item in values]
+        return {"job_id": job["job_id"], "items": safe, "count": len(safe)}
+
+    @application.get("/chat/projects/jobs/{job_id}/diagnoses")
+    def chat_project_job_diagnoses(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        values = repository.list_project_diagnoses_for_job(job_id)
+        safe = [{key: value for key, value in item.items() if key not in {"raw_request", "raw_response", "source_excerpts", "model_failure_data"}} for item in values]
+        return {"job_id": job["job_id"], "items": safe, "count": len(safe)}
+
+    @application.get("/chat/projects/jobs/{job_id}/repair-cycles")
+    def chat_project_job_repair_cycles(job_id: str) -> dict:
+        job, _access = _validated_project_job(job_id)
+        values = repository.list_project_repair_cycles_for_job(job_id)
+        return {"job_id": job["job_id"], "items": values, "count": len(values)}
+
+    @application.post("/chat/projects/jobs/{job_id}/analysis/refresh")
+    def chat_project_job_analysis_refresh(job_id: str, request: ProjectJobActionRequest) -> dict:
+        job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        previous = _validated_project_analysis(job)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, operation="structure_analysis_started", status="running",
+            metadata={"analysis_id": previous.get("analysis_id"), "index_version": previous.get("index_version")},
+        )
+        try:
+            index = build_project_index(
+                access["approved_root"], conversation_id=job["conversation_id"],
+                folder_access_id=access["action_id"], job_id=job_id, previous=previous,
+            )
+            analysis = build_analysis_plan(index, str(job.get("user_task") or ""), relevant_paths=list(job.get("relevant_paths") or []))
+        except (ProjectAnalysisError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, operation="structure_analysis_completed", status="failed",
+                metadata={"reason": _controlled_project_error(error)},
+            )
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        repository.store_project_analysis(index)
+        updated = {**job, "analysis_id": index["analysis_id"], "analysis_index": index, "analysis": analysis, "updated_at": datetime.now(timezone.utc).isoformat()}
+        repository.update_project_job(updated)
+        _sync_project_job_action(updated)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, operation="structure_analysis_completed", status="completed",
+            metadata=analysis_audit_metadata(index, include_relationships=True),
+        )
+        return {"index": public_index(index), "analysis": analysis}
+
     @application.post("/chat/projects/jobs/{job_id}/clarify", response_model=ChatRunResponse)
     def chat_project_job_clarify(job_id: str, request: ProjectJobClarificationRequest) -> ChatRunResponse:
         job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
@@ -1638,8 +1735,30 @@ def create_app(
     @application.post("/chat/projects/jobs/{job_id}/prepare", response_model=ChatRunResponse)
     def chat_project_job_prepare(job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
         job, access = _validated_project_job(job_id, conversation_id=request.conversation_id)
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, operation="synthesis_requested", status="running",
+            metadata={"analysis_id": job.get("analysis_id")},
+        )
+        def persist_started_attempt(attempt: dict) -> None:
+            repository.store_project_synthesis_attempt(attempt)
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, operation="model_generation_started", status="running",
+                metadata={"attempt_id": attempt["attempt_id"], "provider": attempt.get("provider"),
+                          "model": attempt.get("model"), "analysis_id": attempt.get("analysis_id")},
+            )
         try:
-            changes = prepare_job_patch_changes(access["approved_root"], job)
+            with synthesis_lock:
+                current = repository.get_project_job(job_id)
+                if current.get("status") not in {"planned", "blocked"}:
+                    raise ProjectJobError("Patch preparation was already started or replayed.")
+                job = current
+                bundle = prepare_job_patch_bundle(
+                    access["approved_root"], job, model_gateway=synthesis_gateway,
+                    model_attempt_sink=persist_started_attempt,
+                )
+            changes = bundle["changes"]
             proposal = create_patch_proposal(
                 root=access["approved_root"], conversation_id=job["conversation_id"],
                 folder_access_id=access["action_id"], user_request=job["user_task"],
@@ -1647,11 +1766,60 @@ def create_app(
                 files_inspected=[change["path"] for change in changes if change["operation"] != "create"],
                 validation_plan=[str(item.get("purpose") or item.get("action")) for item in job.get("validation_plan") or []],
                 job_id=job_id,
+                analysis_context=bundle.get("analysis_context"),
             )
-        except (ProjectJobError, ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+        except ModelSynthesisError as error:
+            repository.store_project_synthesis_attempt(error.attempt)
+            synthesis = _public_failed_synthesis(error)
+            attempt_count = int(job.get("synthesis_attempt_count") or 0) + 1
+            updated = {**job, "synthesis": synthesis, "synthesis_attempt_count": attempt_count,
+                       "updated_at": datetime.now(timezone.utc).isoformat()}
+            if error.code == "clarification_limit" or attempt_count >= int(job.get("max_synthesis_attempts") or 3):
+                analysis = dict(job.get("analysis") or {})
+                reasons = list(analysis.get("plan_only_reasons") or [])
+                reason = "The bounded model synthesis or clarification attempt limit was reached."
+                analysis.update({"plan_only": True, "plan_only_reasons": list(dict.fromkeys([*reasons, reason]))})
+                updated["analysis"] = analysis
+            if error.code == "needs_clarification":
+                count = int(job.get("synthesis_clarification_count") or 0) + 1
+                updated.update({
+                    "status": "needs_clarification", "synthesis_clarification_count": count,
+                    "clarification": {
+                        "question": str((error.attempt.get("clarification") or {}).get("question") or str(error)),
+                        "answer": None, "requested_at": datetime.now(timezone.utc).isoformat(), "answered_at": None,
+                        "source": "model_assisted_synthesis",
+                    },
+                })
+                repository.transition_project_job(updated, expected_statuses={str(job["status"])})
+            else:
+                repository.update_project_job(updated)
+            _sync_project_job_action(updated)
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, operation=_synthesis_audit_operation(error.code), status="blocked",
+                metadata={"attempt_id": error.attempt["attempt_id"], "provider": error.attempt.get("provider"),
+                          "model": error.attempt.get("model"), "reason": _controlled_project_error(error),
+                          "analysis_id": job.get("analysis_id")},
+            )
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        except (ProjectJobError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            operation = "project_prevalidation_failed" if "validation" in str(error).lower() or "stale" in str(error).lower() else "synthesis_rejected"
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, operation=operation, status="blocked",
+                metadata={"reason": _controlled_project_error(error), "analysis_id": job.get("analysis_id")},
+            )
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         repository.store_project_patch(proposal)
-        updated = {**job, "status": "patch_proposed", "patch_ids": [*job.get("patch_ids", []), proposal["patch_id"]], "updated_at": datetime.now(timezone.utc).isoformat()}
+        if bundle.get("synthesis_attempt"):
+            attempt = {**bundle["synthesis_attempt"], "status": "patch_proposed", "patch_id": proposal["patch_id"]}
+            repository.store_project_synthesis_attempt(attempt)
+        analysis = dict(job.get("analysis") or {})
+        analysis["prevalidation"] = bundle.get("prevalidation") or {"status": "passed", "checks": [], "warnings": []}
+        updated = {**job, "status": "patch_proposed", "analysis": analysis,
+                   "synthesis": bundle.get("synthesis") or job.get("synthesis"),
+                   "synthesis_attempt_count": int(job.get("synthesis_attempt_count") or 0) + (1 if bundle.get("synthesis_attempt") else 0),
+                   "patch_ids": [*job.get("patch_ids", []), proposal["patch_id"]], "updated_at": datetime.now(timezone.utc).isoformat()}
         if not repository.transition_project_job(updated, expected_statuses={"planned", "blocked"}):
             raise HTTPException(status_code=409, detail="Patch preparation was already started or replayed.")
         _sync_project_job_action(updated)
@@ -1662,6 +1830,30 @@ def create_app(
             job_id=job_id, patch_id=proposal["patch_id"], operation="patch_relationship",
             status="proposed", metadata={"relative_paths": proposal["file_set"]},
         )
+        audit_event(
+            repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+            job_id=job_id, patch_id=proposal["patch_id"], operation="pre_preview_validation",
+            status="passed", metadata={"relative_paths": proposal["file_set"], "checks": analysis["prevalidation"].get("checks", [])},
+        )
+        if bundle.get("synthesis_attempt"):
+            for operation, metadata in (
+                ("model_generation_completed", {"response_hash": bundle["synthesis_attempt"].get("response_hash")}),
+                ("model_response_normalized", {"relative_paths": proposal["file_set"]}),
+                ("model_synthesis_confidence_evaluated", {"confidence": (bundle.get("synthesis") or {}).get("confidence", {}).get("level")}),
+            ):
+                audit_event(
+                    repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                    job_id=job_id, patch_id=proposal["patch_id"], operation=operation,
+                    status="completed", metadata={"attempt_id": bundle["synthesis_attempt"]["attempt_id"], **metadata},
+                )
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, patch_id=proposal["patch_id"], operation="model_synthesis_succeeded",
+                status="completed", metadata={"attempt_id": bundle["synthesis_attempt"]["attempt_id"],
+                                              "provider": bundle["synthesis_attempt"].get("provider"),
+                                              "model": bundle["synthesis_attempt"].get("model"),
+                                              "confidence": (bundle.get("synthesis") or {}).get("confidence", {}).get("level")},
+            )
         return run
 
     @application.post("/chat/projects/jobs/{job_id}/validation", response_model=ChatRunResponse)
@@ -1684,8 +1876,19 @@ def create_app(
         except (CommandExecutionError, ValueError, FileNotFoundError) as error:
             raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
         plan = run.action["technical_details"]["command_plan"] if run.action else {}
+        repair = dict(job.get("repair") or {})
+        if repair.get("status") == "applied_not_validated":
+            repair = {**repair, "status": "validation_planned", "validation_rerun_status": "awaiting_approval"}
+            try:
+                cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                cycle = {**cycle, "status": "validation_planned", "validation_plan_id": plan.get("plan_id"),
+                         "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+            except LookupError:
+                pass
         updated = {
             **job, "status": "validating",
+            "repair": repair,
             "command_plan_ids": [*job.get("command_plan_ids", []), plan.get("plan_id")],
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1698,6 +1901,13 @@ def create_app(
             job_id=job_id, command_plan_id=plan.get("plan_id"), operation="validation_proposal",
             status="planned", metadata={"action": plan.get("action")},
         )
+        if repair.get("status") == "validation_planned":
+            audit_event(
+                repository, conversation_id=job["conversation_id"], folder_access_id=access["action_id"],
+                job_id=job_id, patch_id=repair.get("repair_patch_id"), command_plan_id=plan.get("plan_id"),
+                operation="validation_rerun_planned", status="planned",
+                metadata={"repair_cycle_id": repair.get("repair_cycle_id"), "cycle_number": repair.get("cycle_number")},
+            )
         return run
 
     @application.post("/chat/projects/jobs/{job_id}/cancel")
@@ -1741,11 +1951,24 @@ def create_app(
         )
         if job_relation is not None:
             job, _job_access = job_relation
-            updated_job = {**job, "status": "patch_approved", "updated_at": datetime.now(timezone.utc).isoformat()}
+            repair = dict(job.get("repair") or {})
+            if proposal.get("patch_chain_context"):
+                repair = {**repair, "status": "repair_approved"}
+                try:
+                    cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                    repository.update_project_repair_cycle({**cycle, "status": "repair_approved", "updated_at": datetime.now(timezone.utc).isoformat()})
+                except LookupError:
+                    pass
+            updated_job = {**job, "status": "patch_approved", "repair": repair, "updated_at": datetime.now(timezone.utc).isoformat()}
             if not repository.transition_project_job(updated_job, expected_statuses={"patch_proposed"}):
                 raise HTTPException(status_code=409, detail="The project job patch approval was already used or changed concurrently.")
             _sync_project_job_action(updated_job)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_approved", status="approved", metadata={"relative_paths": proposal["file_set"]})
+        if proposal.get("patch_chain_context"):
+            context = proposal["patch_chain_context"]
+            audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=proposal.get("job_id"),
+                        patch_id=patch_id, operation="repair_patch_approved", status="approved",
+                        metadata={"repair_cycle_id": context.get("repair_cycle_id"), "cycle_number": context.get("cycle_number")})
         return repository.get_chat_run(request.chat_run_id)
 
     @application.post("/chat/projects/patches/{patch_id}/apply", response_model=ChatRunResponse)
@@ -1765,6 +1988,11 @@ def create_app(
             repository.update_project_patch(failed)
             repository.update_chat_run_action_for_id(request.chat_run_id, patch_id, {"status": failed["status"], "error": _controlled_project_error(error), "technical_details": {"project_patch": public_patch_proposal(failed)}})
             audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_failed", status=failed["status"], metadata={"reason": _controlled_project_error(error)})
+            if proposal.get("patch_chain_context"):
+                context = proposal["patch_chain_context"]
+                audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=proposal.get("job_id"),
+                            patch_id=patch_id, operation="repair_proposal_became_stale" if failed["status"] == "stale" else "repair_preview_rejected",
+                            status=failed["status"], metadata={"repair_cycle_id": context.get("repair_cycle_id"), "reason": _controlled_project_error(error)})
             if job_relation is not None:
                 job, _job_access = job_relation
                 blocked = {**job, "status": "blocked", "revision_count": int(job.get("revision_count") or 0) + 1, "updated_at": datetime.now(timezone.utc).isoformat()}
@@ -1784,11 +2012,24 @@ def create_app(
         )
         if job_relation is not None:
             job, _job_access = job_relation
-            implementing = {**job, "status": "implementing", "updated_at": datetime.now(timezone.utc).isoformat()}
+            repair = dict(job.get("repair") or {})
+            if proposal.get("patch_chain_context"):
+                repair = {**repair, "status": "applied_not_validated", "validation_rerun_status": "not_planned", "rollback_available": True}
+                try:
+                    cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                    repository.update_project_repair_cycle({**cycle, "status": "repair_applied", "updated_at": datetime.now(timezone.utc).isoformat()})
+                except LookupError:
+                    pass
+            implementing = {**job, "status": "implementing", "repair": repair, "updated_at": datetime.now(timezone.utc).isoformat()}
             if not repository.transition_project_job(implementing, expected_statuses={"patch_approved"}):
                 raise HTTPException(status_code=409, detail="The project job changed before patch application completed.")
             _sync_project_job_action(implementing)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_applied", status="applied", metadata={"relative_paths": updated["file_set"], "additions": updated["additions"], "deletions": updated["deletions"]})
+        if proposal.get("patch_chain_context"):
+            context = proposal["patch_chain_context"]
+            audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=proposal.get("job_id"),
+                        patch_id=patch_id, operation="repair_patch_applied", status="applied",
+                        metadata={"repair_cycle_id": context.get("repair_cycle_id"), "cycle_number": context.get("cycle_number"), "validation_rerun": "not_started"})
         return repository.get_chat_run(request.chat_run_id)
 
     @application.post("/chat/projects/patches/{patch_id}/reject", response_model=ChatRunResponse)
@@ -1849,6 +2090,23 @@ def create_app(
         summary = f"Rolled back patch {patch_id[:8]} and restored {len(snapshot)} file(s)."
         repository.update_chat_run_action_for_id(request.chat_run_id, f"rollback:{patch_id}", {"status": "completed", "approval_required": False, "result_summary": summary, "technical_details": {"project_rollback": {"patch_id": patch_id, "relative_paths": rolled_back["file_set"], "status": "rolled_back"}}})
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="rollback_completed", status="rolled_back", metadata={"relative_paths": rolled_back["file_set"]})
+        if proposal.get("patch_chain_context") and proposal.get("job_id"):
+            try:
+                job = repository.get_project_job(str(proposal["job_id"]))
+                repair = {**dict(job.get("repair") or {}), "status": "rolled_back", "rollback_available": False,
+                          "validation_rerun_status": "invalidated_by_rollback"}
+                job = {**job, "status": "implementing", "repair": repair,
+                       "completion_summary": None, "completed_at": None,
+                       "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(job)
+                _sync_project_job_action(job)
+                cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                repository.update_project_repair_cycle({**cycle, "status": "rolled_back", "updated_at": datetime.now(timezone.utc).isoformat()})
+                audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job["job_id"],
+                            patch_id=patch_id, operation="repair_rollback_completed", status="rolled_back",
+                            metadata={"repair_cycle_id": repair.get("repair_cycle_id"), "cycle_number": repair.get("cycle_number")})
+            except LookupError:
+                pass
         return repository.get_chat_run(request.chat_run_id)
 
     @application.post("/chat/projects/rollback/{patch_id}/reject", response_model=ChatRunResponse)
@@ -1918,12 +2176,22 @@ def create_app(
             job, _job_access = _validated_project_job(job_id, conversation_id=run.conversation_id)
             if plan_id not in job.get("command_plan_ids", []):
                 raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
-            interpretation = interpret_validation_result(result)
+            interpretation = interpret_validation_result(result, job.get("analysis_index"))
             validation_results = [*job.get("validation_results", []), interpretation]
             if succeeded:
                 patches = repository.list_project_patches_for_job(job_id)
+                repair = dict(job.get("repair") or {})
+                if repair.get("repair_cycle_id") and repair.get("status") in {"validation_planned", "applied_not_validated"}:
+                    try:
+                        cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                        cycle = {**cycle, "status": "validated", "validation_plan_id": plan_id,
+                                 "validation_execution_id": result.get("execution_id"), "updated_at": datetime.now(timezone.utc).isoformat()}
+                        repository.update_project_repair_cycle(cycle)
+                        repair = {**repair, "status": "validated", "validation_rerun_status": "passed"}
+                    except LookupError:
+                        pass
                 completed_job = {
-                    **job, "status": "completed", "validation_results": validation_results,
+                    **job, "status": "completed", "validation_results": validation_results, "repair": repair,
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
@@ -1936,10 +2204,59 @@ def create_app(
                     job_id=job_id, command_plan_id=plan_id, operation="job_completed", status="completed",
                     metadata={"relative_paths": completed_job["completion_summary"]["files_changed"], "validation_status": "passed"},
                 )
+                if repair.get("status") == "validated":
+                    audit_event(
+                        repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                        job_id=job_id, command_plan_id=plan_id, patch_id=repair.get("repair_patch_id"),
+                        operation="validation_rerun_passed", status="passed",
+                        metadata={"repair_cycle_id": repair.get("repair_cycle_id"), "cycle_number": repair.get("cycle_number"),
+                                  "command_execution_id": result.get("execution_id")},
+                    )
             else:
+                prior_repair = dict(job.get("repair") or {})
+                if prior_repair.get("repair_cycle_id") and prior_repair.get("status") in {"validation_planned", "applied_not_validated"}:
+                    try:
+                        prior_cycle = repository.get_project_repair_cycle(str(prior_repair["repair_cycle_id"]))
+                        prior_cycle = {**prior_cycle, "status": "validation_failed", "validation_plan_id": plan_id,
+                                       "validation_execution_id": result.get("execution_id"), "updated_at": datetime.now(timezone.utc).isoformat()}
+                        repository.update_project_repair_cycle(prior_cycle)
+                    except LookupError:
+                        pass
+                    audit_event(
+                        repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                        job_id=job_id, command_plan_id=plan_id, patch_id=prior_repair.get("repair_patch_id"),
+                        operation="validation_rerun_failed", status="failed",
+                        metadata={"repair_cycle_id": prior_repair.get("repair_cycle_id"),
+                                  "cycle_number": prior_repair.get("cycle_number"),
+                                  "command_execution_id": result.get("execution_id")},
+                    )
+                evidence, cycle = _capture_project_failure(job, access, result)
+                limit_reached = (
+                    int(cycle.get("cycle_number") or 0) > int(job.get("max_repair_cycles") or MAX_REPAIR_CYCLES)
+                    or int(job.get("repair_failure_count") or 0) + 1 > int(job.get("max_repair_failures") or MAX_REPAIR_FAILURES)
+                )
+                repair = {
+                    "status": "limit_reached" if limit_reached else "offered",
+                    "repair_chain_id": cycle["repair_chain_id"], "repair_cycle_id": cycle["repair_cycle_id"],
+                    "cycle_number": cycle["cycle_number"], "failure_evidence_id": evidence["evidence_id"],
+                    "diagnosis_id": None, "parent_patch_id": cycle["parent_patch_id"], "repair_patch_id": None,
+                    "command_execution_id": evidence["command_execution_id"], "diagnosis_strategy": None,
+                    "provider": None, "model": None, "confidence": None, "root_causes": [],
+                    "affected_files": evidence.get("referenced_files") or interpretation["likely_affected_paths"],
+                    "affected_symbols": interpretation["likely_affected_symbols"], "assumptions": [],
+                    "warnings": evidence.get("uncertainty_codes") or [], "clarification": None,
+                    "failed_command_summary": interpretation["summary"],
+                    "failure_output_truncated": evidence.get("output_truncated", False),
+                    "failure_redaction_count": len(evidence.get("redaction_summary") or []),
+                    "validation_rerun_status": "failed" if prior_repair.get("repair_cycle_id") else "not_planned",
+                    "rollback_available": False,
+                }
                 blocked_job = {
                     **job, "status": "blocked", "validation_results": validation_results,
                     "revision_count": int(job.get("revision_count") or 0) + 1,
+                    "repair": repair,
+                    "repair_cycle_count": max(int(job.get("repair_cycle_count") or 0), int(cycle["cycle_number"])),
+                    "repair_failure_count": int(job.get("repair_failure_count") or 0) + 1,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 if not repository.transition_project_job(blocked_job, expected_statuses={"validating"}):
@@ -1950,6 +2267,16 @@ def create_app(
                     job_id=job_id, command_plan_id=plan_id, operation="job_blocked", status="blocked",
                     metadata={"validation_status": "failed", "relative_paths": interpretation["likely_affected_paths"], "revision_count": blocked_job["revision_count"]},
                 )
+                for operation, status, metadata in (
+                    ("approved_command_failed", "failed", {"command_execution_id": evidence["command_execution_id"], "exit_code": evidence.get("exit_code")}),
+                    ("failure_output_captured", "completed", {"failure_evidence_id": evidence["evidence_id"], "diagnostic_count": len(evidence.get("diagnostics") or [])}),
+                    ("failure_evidence_redacted", "completed", {"failure_evidence_id": evidence["evidence_id"], "redaction_count": len(evidence.get("redaction_summary") or [])}),
+                    ("failure_evidence_truncated", "completed" if evidence.get("output_truncated") else "not_needed", {"failure_evidence_id": evidence["evidence_id"], "truncated": bool(evidence.get("output_truncated"))}),
+                    ("diagnosis_offered", "blocked" if not limit_reached else "limit_reached", {"failure_evidence_id": evidence["evidence_id"], "repair_cycle_id": cycle["repair_cycle_id"], "cycle_number": cycle["cycle_number"]}),
+                ):
+                    audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
+                                job_id=job_id, patch_id=cycle["parent_patch_id"], command_plan_id=plan_id,
+                                operation=operation, status=status, metadata=metadata)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job_id, command_plan_id=plan_id, operation="validation_interpretation" if job_id else ("command_executed" if succeeded else "command_failed"), status="completed" if succeeded else "failed", metadata={"action": result.get("action"), "exit_code": result.get("exit_code"), "duration": result.get("duration_seconds")})
         return result
 
@@ -2983,6 +3310,20 @@ def create_app(
             raise HTTPException(status_code=409, detail="The approved project root identity has changed for this job.")
         return job, access
 
+    def _validated_project_analysis(job: dict) -> dict:
+        analysis_id = str(job.get("analysis_id") or "")
+        try:
+            index = repository.get_project_analysis(analysis_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="Project structural analysis not found.") from error
+        if index.get("job_id") != job.get("job_id") or index.get("conversation_id") != job.get("conversation_id"):
+            raise HTTPException(status_code=409, detail="Project analysis belongs to a different job or conversation.")
+        if index.get("folder_access_id") != job.get("folder_access_id"):
+            raise HTTPException(status_code=409, detail="Project analysis belongs to a different folder access.")
+        if index.get("root_fingerprint") != job.get("root_fingerprint"):
+            raise HTTPException(status_code=409, detail="Project analysis root binding is stale.")
+        return index
+
     def _sync_project_job_action(job: dict) -> None:
         action = build_job_action(job)
         updated_count = 0
@@ -3022,8 +3363,319 @@ def create_app(
             raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
         return job_id
 
-    def _project_job_intercept(message: str, conversation_id: str, access: dict) -> ChatRunResponse | None:
+    def _latest_applied_job_patch(job_id: str) -> dict:
+        patches = repository.list_project_patches_for_job(job_id)
+        applied = [patch for patch in patches if patch.get("status") == "applied"]
+        if not applied:
+            raise HTTPException(status_code=409, detail="The failed command has no applied parent patch.")
+        return applied[-1]
+
+    def _capture_project_failure(job: dict, access: dict, result: dict) -> tuple[dict, dict]:
+        parent_patch = _latest_applied_job_patch(str(job["job_id"]))
+        try:
+            evidence_model = build_failure_evidence(
+                access["approved_root"], job=job, parent_patch=parent_patch, command=result,
+            )
+        except (ValueError, ProjectAnalysisError, ProjectSafetyError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        evidence = repository.store_project_failure_evidence(evidence_model.model_dump(mode="json"))
+        existing = repository.list_project_repair_cycles_for_job(str(job["job_id"]))
+        same = next((item for item in existing if item.get("command_execution_id") == evidence["command_execution_id"]), None)
+        if same is not None:
+            return evidence, same
+        cycle_number = len(existing) + 1
+        repair = dict(job.get("repair") or {})
+        chain_id = str(repair.get("repair_chain_id") or uuid4().hex)
+        now = datetime.now(timezone.utc).isoformat()
+        cycle = {
+            "repair_cycle_id": uuid4().hex, "repair_chain_id": chain_id,
+            "cycle_number": cycle_number, "job_id": job["job_id"],
+            "conversation_id": job["conversation_id"], "parent_patch_id": parent_patch["patch_id"],
+            "repair_patch_id": None, "command_execution_id": evidence["command_execution_id"],
+            "failure_evidence_id": evidence["evidence_id"], "diagnosis_id": None,
+            "synthesis_attempt_id": None, "root_fingerprint": job["root_fingerprint"],
+            "project_state_hash": evidence["project_state_hash"], "analysis_id": None,
+            "diagnosis_model_calls": 0, "diagnosis_clarification_count": 0,
+            "validation_plan_id": None, "validation_execution_id": None,
+            "confidence": None, "status": "diagnosis_offered",
+            "created_at": now, "updated_at": now,
+        }
+        if cycle_number > int(job.get("max_repair_cycles") or MAX_REPAIR_CYCLES):
+            cycle["status"] = "repair_limit_reached"
+        cycle = repository.store_project_repair_cycle(cycle)
+        return evidence, cycle
+
+    def _run_repair_diagnosis(job: dict, access: dict, message: str, event_sink=None) -> ChatRunResponse:
+        with repair_lock:
+            current = repository.get_project_job(str(job["job_id"]))
+            repair = dict(current.get("repair") or {})
+            if repair.get("status") not in {"offered", "needs_clarification"}:
+                return build_job_chat_run(
+                    current, message=message,
+                    response="This repair request was already handled or is no longer current.",
+                    run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            try:
+                evidence = repository.get_project_failure_evidence(str(repair["failure_evidence_id"]))
+                cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                parent_patch, _snapshot = repository.get_project_patch(str(repair["parent_patch_id"]))
+            except LookupError as error:
+                raise HTTPException(status_code=409, detail="The persisted repair chain is incomplete.") from error
+            if cycle.get("status") == "repair_limit_reached" or int(cycle.get("cycle_number") or 0) > int(current.get("max_repair_cycles") or MAX_REPAIR_CYCLES):
+                updated_repair = {**repair, "status": "limit_reached", "warnings": ["The bounded repair-cycle limit was reached."]}
+                updated = {**current, "repair": updated_repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                _sync_project_job_action(updated)
+                audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                            job_id=current["job_id"], patch_id=parent_patch["patch_id"], operation="repair_cycle_limit_reached",
+                            status="blocked", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "cycle_number": cycle["cycle_number"]})
+                return build_job_chat_run(updated, message=message, response="The bounded repair-cycle limit was reached. No diagnosis, patch, or command was started.",
+                                          run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+            current_state = project_state_hash(access["approved_root"])
+            if current_state != evidence.get("project_state_hash"):
+                evidence = {**evidence, "status": "stale"}
+                repository.update_project_failure_evidence(evidence)
+                cycle = {**cycle, "status": "stale_failure", "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+                updated_repair = {**repair, "status": "stale", "warnings": ["The project changed after this failure was recorded."]}
+                updated = {**current, "repair": updated_repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                _sync_project_job_action(updated)
+                audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                            job_id=current["job_id"], patch_id=parent_patch["patch_id"], operation="repair_proposal_became_stale",
+                            status="stale", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "failure_evidence_id": evidence["evidence_id"]})
+                return build_job_chat_run(updated, message=message,
+                                          response="The project changed after this failure was recorded, so the old diagnosis cannot be used.",
+                                          run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], patch_id=parent_patch["patch_id"], operation="diagnosis_requested",
+                        status="running", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "failure_evidence_id": evidence["evidence_id"]})
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], operation="fresh_repair_analysis_started", status="running",
+                        metadata={"repair_cycle_id": cycle["repair_cycle_id"], "cycle_number": cycle["cycle_number"]})
+            if event_sink is not None:
+                progress_job = {**current, "repair": {**repair, "status": "diagnosing"}}
+                progress = build_job_chat_run(
+                    progress_job, message=message, response="Astra is running a fresh bounded structural analysis before diagnosis.",
+                    run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                event_sink({"event": "project_diagnosis_started", "data": {"run": progress.model_dump(mode="json"), "job": progress_job}})
+            try:
+                index = build_project_index(
+                    access["approved_root"], conversation_id=current["conversation_id"],
+                    folder_access_id=access["action_id"], job_id=current["job_id"], previous=None,
+                )
+                relevant = list(dict.fromkeys([*evidence.get("referenced_files", []), *parent_patch.get("file_set", [])]))
+                analysis = build_analysis_plan(index, str(current.get("user_task") or ""), relevant_paths=relevant)
+            except (ProjectAnalysisError, ProjectSafetyError, OSError) as error:
+                raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+            repository.store_project_analysis(index)
+            working = {**current, "analysis_id": index["analysis_id"], "analysis_index": index, "analysis": analysis,
+                       "updated_at": datetime.now(timezone.utc).isoformat()}
+            repository.update_project_job(working)
+            cycle = {**cycle, "analysis_id": index["analysis_id"], "status": "diagnosing", "updated_at": datetime.now(timezone.utc).isoformat()}
+            repository.update_project_repair_cycle(cycle)
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], operation="fresh_repair_analysis_completed", status="completed",
+                        metadata={"repair_cycle_id": cycle["repair_cycle_id"], "analysis_id": index["analysis_id"], "file_count": len(index.get("files") or [])})
+
+            def persist_diagnosis_started(value: dict) -> None:
+                repository.store_project_diagnosis(value)
+                audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                            job_id=current["job_id"], operation="model_diagnosis_requested", status="running",
+                            metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": value["diagnosis_id"],
+                                      "provider": value.get("provider"), "model": value.get("model")})
+            failure_model = ProjectFailureEvidence.model_validate(evidence)
+            deterministic_findings = deterministic_diagnosis(failure_model, parent_patch, index)
+            if not deterministic_findings and int(cycle.get("diagnosis_model_calls") or 0) >= MAX_DIAGNOSIS_MODEL_CALLS:
+                cycle = {**cycle, "status": "plan_only", "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+                updated_repair = {**repair, "status": "plan_only",
+                                  "warnings": ["The bounded diagnosis model-call limit was reached."]}
+                updated = {**working, "repair": updated_repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                _sync_project_job_action(updated)
+                audit_event(
+                    repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                    job_id=current["job_id"], operation="diagnosis_model_call_limit_reached", status="blocked",
+                    metadata={"repair_cycle_id": cycle["repair_cycle_id"], "model_calls": MAX_DIAGNOSIS_MODEL_CALLS},
+                )
+                return build_job_chat_run(
+                    updated, message=message,
+                    response="The bounded diagnosis model-call limit was reached. No repair preview or command was started.",
+                    run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            try:
+                diagnosis_result = diagnose_project_failure(
+                    access["approved_root"], job=working,
+                    failure=failure_model, parent_patch=parent_patch,
+                    repair_cycle_number=int(cycle["cycle_number"]), gateway=diagnosis_gateway,
+                    diagnosis_sink=persist_diagnosis_started,
+                )
+            except DiagnosisError as error:
+                repository.store_project_diagnosis(error.diagnosis)
+                cycle = {**cycle, "diagnosis_id": error.diagnosis["diagnosis_id"],
+                         "diagnosis_model_calls": int(cycle.get("diagnosis_model_calls") or 0) + (1 if error.diagnosis.get("strategy") == "model_assisted" else 0),
+                         "status": "needs_clarification" if error.code == "needs_clarification" else "plan_only",
+                         "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+                clarification = error.diagnosis.get("clarification")
+                updated_repair = {**repair, "status": cycle["status"], "diagnosis_id": error.diagnosis["diagnosis_id"],
+                                  "diagnosis_strategy": error.diagnosis.get("strategy"), "provider": error.diagnosis.get("provider"),
+                                  "model": error.diagnosis.get("model"), "confidence": error.diagnosis.get("confidence"),
+                                  "warnings": error.diagnosis.get("uncertainty_codes") or [str(error)], "clarification": clarification}
+                updated = {**working, "repair": updated_repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                _sync_project_job_action(updated)
+                failure_operation = {
+                    "needs_clarification": "diagnosis_clarification_requested",
+                    "provider_unavailable": "model_unavailable",
+                    "timeout": "model_diagnosis_timed_out",
+                    "malformed_or_unsafe": "diagnosis_response_rejected",
+                }.get(error.code, "diagnosis_plan_only")
+                audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                            job_id=current["job_id"], operation=failure_operation,
+                            status="blocked", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": error.diagnosis["diagnosis_id"], "reason_code": error.code})
+                if event_sink is not None:
+                    blocked_run = build_job_chat_run(updated, message=message, response=str(error), run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+                    event_sink({"event": "project_diagnosis_clarification" if error.code == "needs_clarification" else "project_repair_blocked",
+                                "data": {"run": blocked_run.model_dump(mode="json"), "job": updated}})
+                return build_job_chat_run(updated, message=message, response=str(error), run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+            diagnosis = diagnosis_result["diagnosis"]
+            repository.store_project_diagnosis(diagnosis)
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], operation="deterministic_diagnosis_completed" if not diagnosis_result["model_used"] else "diagnosis_contract_validated",
+                        status="completed", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": diagnosis["diagnosis_id"],
+                                                      "strategy": diagnosis["strategy"], "root_cause_count": len(diagnosis.get("root_causes") or [])})
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], operation="diagnosis_confidence_evaluated", status="completed",
+                        metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": diagnosis["diagnosis_id"],
+                                  "confidence": (diagnosis.get("confidence") or {}).get("level")})
+            if event_sink is not None:
+                diagnosed_job = {**working, "repair": {**repair, "status": "diagnosis_completed", "diagnosis_id": diagnosis["diagnosis_id"],
+                                 "diagnosis_strategy": diagnosis["strategy"], "provider": diagnosis.get("provider"),
+                                 "model": diagnosis.get("model"), "confidence": diagnosis.get("confidence")}}
+                diagnosed_run = build_job_chat_run(
+                    diagnosed_job, message=message, response="The bounded diagnosis completed; Astra is preparing a safe repair preview.",
+                    run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat(),
+                )
+                event_sink({"event": "project_diagnosis_completed", "data": {"run": diagnosed_run.model_dump(mode="json"), "job": diagnosed_job}})
+            repair_context = {
+                "diagnosis_id": diagnosis["diagnosis_id"], "failure_evidence_id": evidence["evidence_id"],
+                "command_execution_id": evidence["command_execution_id"], "parent_patch_id": parent_patch["patch_id"],
+                "repair_chain_id": cycle["repair_chain_id"], "repair_cycle_id": cycle["repair_cycle_id"],
+                "cycle_number": cycle["cycle_number"],
+            }
+            repair_job = {
+                **working, "status": "blocked", "revision_count": max(0, int(cycle["cycle_number"]) - 1),
+                "user_task": diagnosis_result["repair_requirement"], "objective": diagnosis_result["repair_requirement"],
+                "repair_context": repair_context,
+            }
+            def persist_synthesis_started(value: dict) -> None:
+                repository.store_project_synthesis_attempt(value)
+            try:
+                bundle = prepare_job_patch_bundle(
+                    access["approved_root"], repair_job, model_gateway=synthesis_gateway,
+                    model_attempt_sink=persist_synthesis_started,
+                )
+                chain_context = {
+                    **repair_context, "diagnosis_strategy": diagnosis["strategy"],
+                    "provider": diagnosis.get("provider"), "model": diagnosis.get("model"),
+                    "confidence": diagnosis.get("confidence"),
+                    "root_cause_summary": str((diagnosis.get("root_causes") or [{}])[0].get("explanation") or "Bounded failure diagnosis")[:1000],
+                    "affected_files": list((diagnosis.get("root_causes") or [{}])[0].get("affected_files") or [])[:20],
+                }
+                proposal = create_patch_proposal(
+                    root=access["approved_root"], conversation_id=current["conversation_id"],
+                    folder_access_id=access["action_id"], user_request=diagnosis_result["repair_requirement"],
+                    changes=bundle["changes"], files_inspected=[item["path"] for item in bundle["changes"] if item["operation"] != "create"],
+                    validation_plan=[str(item.get("purpose") or item.get("action")) for item in current.get("validation_plan") or []],
+                    job_id=current["job_id"], analysis_context=bundle.get("analysis_context"), patch_chain_context=chain_context,
+                )
+            except (ProjectJobError, ModelSynthesisError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, OSError) as error:
+                cycle = {**cycle, "diagnosis_id": diagnosis["diagnosis_id"], "status": "repair_rejected", "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+                updated_repair = {**repair, "status": "repair_rejected", "diagnosis_id": diagnosis["diagnosis_id"],
+                                  "diagnosis_strategy": diagnosis["strategy"], "confidence": diagnosis.get("confidence"), "warnings": [_controlled_project_error(error)]}
+                updated = {**working, "repair": updated_repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                _sync_project_job_action(updated)
+                audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                            job_id=current["job_id"], operation="repair_preview_rejected", status="blocked",
+                            metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": diagnosis["diagnosis_id"], "reason": _controlled_project_error(error)})
+                return build_job_chat_run(updated, message=message, response=_controlled_project_error(error), run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+            repository.store_project_patch(proposal)
+            synthesis_attempt = bundle.get("synthesis_attempt")
+            if synthesis_attempt:
+                synthesis_attempt = {**synthesis_attempt, "status": "patch_proposed", "patch_id": proposal["patch_id"]}
+                repository.store_project_synthesis_attempt(synthesis_attempt)
+            cycle = {**cycle, "diagnosis_id": diagnosis["diagnosis_id"], "repair_patch_id": proposal["patch_id"],
+                     "synthesis_attempt_id": synthesis_attempt.get("attempt_id") if synthesis_attempt else None,
+                     "diagnosis_model_calls": int(cycle.get("diagnosis_model_calls") or 0) + (1 if diagnosis_result["model_used"] else 0),
+                     "confidence": diagnosis.get("confidence"), "status": "preview_ready", "updated_at": datetime.now(timezone.utc).isoformat()}
+            repository.update_project_repair_cycle(cycle)
+            root_cause = (diagnosis.get("root_causes") or [{}])[0]
+            updated_repair = {
+                **repair, "status": "preview_ready", "repair_chain_id": cycle["repair_chain_id"],
+                "repair_cycle_id": cycle["repair_cycle_id"], "cycle_number": cycle["cycle_number"],
+                "failure_evidence_id": evidence["evidence_id"], "diagnosis_id": diagnosis["diagnosis_id"],
+                "parent_patch_id": parent_patch["patch_id"], "repair_patch_id": proposal["patch_id"],
+                "command_execution_id": evidence["command_execution_id"], "diagnosis_strategy": diagnosis["strategy"],
+                "provider": diagnosis.get("provider"), "model": diagnosis.get("model"), "confidence": diagnosis.get("confidence"),
+                "root_causes": diagnosis.get("root_causes") or [], "affected_files": root_cause.get("affected_files") or [],
+                "affected_symbols": root_cause.get("affected_symbols") or [], "assumptions": diagnosis.get("assumptions") or [],
+                "warnings": diagnosis.get("uncertainty_codes") or [], "clarification": None,
+                "validation_rerun_status": "not_planned", "rollback_available": False,
+            }
+            analysis["prevalidation"] = bundle.get("prevalidation") or {"status": "passed", "checks": [], "warnings": []}
+            updated = {**working, "status": "patch_proposed", "analysis": analysis, "repair": updated_repair,
+                       "patch_ids": [*working.get("patch_ids", []), proposal["patch_id"]],
+                       "updated_at": datetime.now(timezone.utc).isoformat()}
+            if not repository.transition_project_job(updated, expected_statuses={"blocked"}):
+                raise HTTPException(status_code=409, detail="The repair preview was already prepared or changed concurrently.")
+            _sync_project_job_action(updated)
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], patch_id=proposal["patch_id"], operation="deterministic_repair_selected" if not synthesis_attempt else "model_assisted_repair_selected",
+                        status="completed", metadata={"repair_cycle_id": cycle["repair_cycle_id"], "diagnosis_id": diagnosis["diagnosis_id"],
+                                                      "synthesis_attempt_id": cycle.get("synthesis_attempt_id")})
+            audit_event(repository, conversation_id=current["conversation_id"], folder_access_id=access["action_id"],
+                        job_id=current["job_id"], patch_id=proposal["patch_id"], operation="repair_preview_created", status="proposed",
+                        metadata={"repair_cycle_id": cycle["repair_cycle_id"], "cycle_number": cycle["cycle_number"], "relative_paths": proposal["file_set"]})
+            return _project_patch_run(proposal)
+
+    def _project_job_intercept(message: str, conversation_id: str, access: dict, event_sink=None) -> ChatRunResponse | None:
         active = repository.latest_active_project_job(conversation_id)
+        if active is not None and active.get("status") == "blocked":
+            repair = dict(active.get("repair") or {})
+            if repair.get("status") == "offered" and detect_repair_request(message):
+                return _run_repair_diagnosis(active, access, message, event_sink=event_sink)
+            if repair.get("status") == "needs_clarification" and not detect_project_task(message):
+                try:
+                    cycle = repository.get_project_repair_cycle(str(repair["repair_cycle_id"]))
+                    evidence = repository.get_project_failure_evidence(str(repair["failure_evidence_id"]))
+                except LookupError as error:
+                    raise HTTPException(status_code=409, detail="The repair clarification state is incomplete.") from error
+                count = int(cycle.get("diagnosis_clarification_count") or 0) + 1
+                if count > 2 or project_state_hash(access["approved_root"]) != evidence.get("project_state_hash"):
+                    repair = {**repair, "status": "stale" if count <= 2 else "limit_reached",
+                              "warnings": ["The diagnosis clarification could not continue safely."]}
+                    updated = {**active, "repair": repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                    repository.update_project_job(updated)
+                    _sync_project_job_action(updated)
+                    return build_job_chat_run(updated, message=message, response="The bounded diagnosis clarification could not continue; no patch or command was started.",
+                                              run_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+                cycle = {**cycle, "diagnosis_clarification_count": count, "status": "diagnosis_offered",
+                         "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_repair_cycle(cycle)
+                clarification = {**dict(repair.get("clarification") or {}), "answer": " ".join(message.split())[:1000],
+                                 "answered_at": datetime.now(timezone.utc).isoformat()}
+                repair = {**repair, "status": "offered", "clarification": clarification}
+                updated = {**active, "repair": repair, "updated_at": datetime.now(timezone.utc).isoformat()}
+                repository.update_project_job(updated)
+                audit_event(repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                            job_id=active["job_id"], operation="diagnosis_clarification_answered", status="completed",
+                            metadata={"repair_cycle_id": cycle["repair_cycle_id"], "clarification_count": count})
+                return _run_repair_diagnosis(updated, access, message, event_sink=event_sink)
         if active is not None and active.get("status") == "needs_clarification" and not detect_project_task(message):
             job, _validated_access = _validated_project_job(str(active["job_id"]), conversation_id=conversation_id)
             try:
@@ -3072,6 +3724,12 @@ def create_app(
             action_run_id=action_run_id,
         )
         repository.store_project_job(job)
+        repository.store_project_analysis(job["analysis_index"])
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="structure_analysis_started", status="running",
+            metadata={"analysis_id": job["analysis_id"], "bounded_reader_reused": True},
+        )
         audit_event(
             repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
             job_id=job["job_id"], operation="job_created", status=job["status"],
@@ -3081,6 +3739,37 @@ def create_app(
             repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
             job_id=job["job_id"], operation="requirement_extraction", status="completed",
             metadata={"relative_paths": job["relevant_paths"], "requirement_count": len(job["requirement_summaries"])},
+        )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="structure_analysis_completed", status="completed",
+            metadata=analysis_audit_metadata(job["analysis_index"], include_relationships=True),
+        )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="symbol_index_creation", status="completed",
+            metadata={"analysis_id": job["analysis_id"], "symbol_count": sum(len(item.get("symbols") or []) for item in job["analysis_index"]["files"])},
+        )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="dependency_graph_creation", status="completed",
+            metadata={"analysis_id": job["analysis_id"], "relationship_count": len(job["analysis_index"]["relationships"])},
+        )
+        for failed_path in job["analysis_index"].get("incremental", {}).get("parse_failures", [])[:20]:
+            audit_event(
+                repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+                job_id=job["job_id"], operation="project_parse_failure", status="partial",
+                metadata={"analysis_id": job["analysis_id"], "relative_path": failed_path},
+            )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="impact_analysis", status="completed",
+            metadata={"relative_paths": [item["relative_path"] for item in job["analysis"]["coherent_file_set"]], "confidence": job["analysis"]["confidence"]["level"], "plan_only": job["analysis"]["plan_only"]},
+        )
+        audit_event(
+            repository, conversation_id=conversation_id, folder_access_id=access["action_id"],
+            job_id=job["job_id"], operation="confidence_decision", status="plan_only" if job["analysis"]["plan_only"] else "eligible",
+            metadata={"analysis_id": job["analysis_id"], "confidence": job["analysis"]["confidence"]["level"], "warning_count": len(job["analysis"]["uncertainties"])},
         )
         if job["status"] == "needs_clarification":
             audit_event(
@@ -3105,11 +3794,13 @@ def create_app(
     def _project_patch_run(proposal: dict) -> ChatRunResponse:
         public = public_patch_proposal(proposal)
         files = ", ".join(proposal["file_set"])
+        repair_context = dict(proposal.get("patch_chain_context") or {})
+        is_repair = bool(repair_context)
         return ChatRunResponse(
             run_id=str(uuid4()), conversation_id=proposal["conversation_id"],
             user_message=proposal["user_request"],
             assistant_response=(
-                f"I prepared an immutable patch preview for {files}. Nothing has been changed yet. "
+                f"I prepared an immutable {'repair ' if is_repair else ''}patch preview for {files}. Nothing has been changed yet. "
                 f"Approve only this exact patch with APPROVE PATCH {proposal['patch_id']}."
             ),
             selected_specialist="project_workspace", intent="project_patch",
@@ -3129,12 +3820,13 @@ def create_app(
             }],
             action={
                 "action_id": proposal["patch_id"], "action_type": "project_patch",
-                "title": "Review project patch", "summary": "Review the exact bounded diff before changing files.",
+                "title": "Review repair patch" if is_repair else "Review project patch",
+                "summary": "The repair is ready for review. It has not been applied." if is_repair else "Review the exact bounded diff before changing files.",
                 "steps": ["Review each proposed file change", "Approve the immutable patch", "Apply atomically with rollback snapshot", "Approve validation separately"],
                 "safety_information": {"folder_access_is_not_patch_approval": True, "commands_will_not_run": True, "exact_confirmation": f"APPROVE PATCH {proposal['patch_id']}"},
                 "status": "awaiting_approval", "approval_required": True,
                 "result_summary": None, "error": None,
-                "technical_details": {"project_patch": public},
+                "technical_details": {"project_patch": public, **({"project_repair": repair_context} if is_repair else {})},
             },
         )
 
@@ -3176,9 +3868,34 @@ def create_app(
             "approved", "project", "folder", "patch", "rollback", "file", "path", "symlink",
             "stale", "expired", "missing", "changed", "limit", "unsafe", "excluded",
             "command", "timeout", "allowlisted", "package", "shell", "job", "revision",
-            "deterministic", "refine", "evidence",
+            "deterministic", "refine", "evidence", "model", "synthesis", "confidence",
+            "clarification", "json", "contract", "provider", "diagnosis", "repair", "failure",
         )
         return message[:500] if message and any(term in message.lower() for term in allowed) else "The secure project operation could not be completed."
+
+    def _public_failed_synthesis(error: ModelSynthesisError) -> dict:
+        attempt = error.attempt
+        confidence = attempt.get("confidence") or {"level": "low", "score": 0.0, "reasons": list(attempt.get("uncertainty_reasons") or []), "model_claim": None}
+        return {
+            "attempt_id": attempt.get("attempt_id"), "status": error.code,
+            "strategy": "model_assisted", "contract_version": attempt.get("response_contract_version"),
+            "provider": attempt.get("provider"), "model": attempt.get("model"),
+            "evidence": attempt.get("evidence_summary") or {}, "confidence": confidence,
+            "assumptions": list(attempt.get("assumptions") or []),
+            "warnings": list(attempt.get("uncertainty_reasons") or [str(error)])[:20],
+            "requires_clarification": error.code == "needs_clarification",
+            "summary": str(error)[:500],
+        }
+
+    def _synthesis_audit_operation(code: str) -> str:
+        return {
+            "provider_unavailable": "model_provider_unavailable",
+            "timeout": "model_synthesis_timeout",
+            "needs_clarification": "model_synthesis_clarification_requested",
+            "confidence_rejected": "model_synthesis_confidence_rejected",
+            "malformed_or_unsafe": "model_synthesis_rejected",
+            "clarification_limit": "model_synthesis_clarification_limit",
+        }.get(code, "model_synthesis_failed")
 
     def _is_rollback_request(message: str) -> bool:
         normalized = " ".join(message.lower().strip().split())
@@ -3660,6 +4377,7 @@ def create_app(
             and (
                 detect_project_task(request.message)
                 or detect_project_job_followup(request.message)
+                or detect_repair_request(request.message)
                 or (active_job is not None and active_job.get("status") == "needs_clarification")
             )
         )
@@ -3703,7 +4421,7 @@ def create_app(
                     run = _project_patch_run(proposal)
                 elif job_request:
                     secure_access = _completed_project_access(request.conversation_id or "")
-                    run = _project_job_intercept(request.message, request.conversation_id or "", secure_access)
+                    run = _project_job_intercept(request.message, request.conversation_id or "", secure_access, event_sink=events.put)
                     if run is None:
                         raise RuntimeError("Project job interception did not produce a run.")
                 elif project_request:
@@ -3732,7 +4450,7 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
-                if job_request and run.action is not None:
+                if job_request and run.action is not None and run.action.get("action_type") == "project_job":
                     job_payload = run.action.get("technical_details", {}).get("project_job", {})
                     job_status = job_payload.get("status") if isinstance(job_payload, dict) else None
                     event_name = "project_job_created" if run.user_message == job_payload.get("user_task") else "project_job_updated"
@@ -3742,6 +4460,23 @@ def create_app(
                         events.put({"event": "clarification_required", "data": event_data})
                     elif job_status == "planned":
                         events.put({"event": "project_plan_ready", "data": event_data})
+                    if event_name == "project_job_created" and isinstance(job_payload.get("analysis"), dict):
+                        events.put({"event": "project_analysis_completed", "data": event_data})
+                        events.put({"event": "project_impact_ready", "data": event_data})
+                    repair_status = (job_payload.get("repair") or {}).get("status") if isinstance(job_payload, dict) else None
+                    repair_event = {
+                        "offered": "project_diagnosis_offered",
+                        "needs_clarification": "project_diagnosis_clarification",
+                        "plan_only": "project_repair_blocked",
+                        "stale": "project_repair_blocked",
+                        "limit_reached": "project_repair_blocked",
+                    }.get(repair_status)
+                    if repair_event:
+                        events.put({"event": repair_event, "data": event_data})
+                if job_request and run.action is not None and run.action.get("action_type") == "project_patch":
+                    repair_payload = run.action.get("technical_details", {}).get("project_repair")
+                    if isinstance(repair_payload, dict):
+                        events.put({"event": "project_repair_ready", "data": {"run": run.model_dump(mode="json"), "repair": repair_payload}})
                 if project_request:
                     _audit_project_run(run, access)
                 if patch_request:
