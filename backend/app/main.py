@@ -277,6 +277,26 @@ from backend.app.project_jobs import (
     prepare_job_patch_bundle,
     public_project_job,
 )
+from backend.app.project_delivery import (
+    DeliveryStatus,
+    ProjectDeliveryError,
+    VerificationMode,
+    VerificationState,
+    activate_next_work_unit,
+    approve_plan as approve_delivery_plan,
+    build_delivery_action,
+    build_delivery_chat_run,
+    cancel_delivery,
+    create_delivery_job,
+    generate_handoff,
+    link_patch_preview,
+    public_delivery_job,
+    record_patch_applied as record_delivery_patch_applied,
+    record_rollback as record_delivery_rollback,
+    revise_scope as revise_delivery_scope,
+    record_verification as record_delivery_verification,
+    submit_clarification as submit_delivery_clarification,
+)
 from backend.app.workspace import inspect_workspace
 
 
@@ -469,6 +489,23 @@ class ProjectJobActionRequest(BaseModel):
 
 class ProjectJobClarificationRequest(ProjectJobActionRequest):
     answer: str = Field(..., min_length=1, max_length=2000)
+
+
+class ProjectDeliveryStartRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    user_request: str = Field(..., min_length=1, max_length=3000)
+
+
+class ProjectDeliveryHashRequest(ProjectJobActionRequest):
+    immutable_hash: str = Field(..., min_length=64, max_length=64)
+
+
+class ProjectDeliveryClarificationRequest(ProjectJobActionRequest):
+    answer: str = Field(..., min_length=1, max_length=2000)
+
+
+class ProjectDeliveryVerificationRequest(ProjectJobActionRequest):
+    criterion_id: str = Field(..., min_length=1, max_length=80)
 
 
 class DatasetProfileRequest(BaseModel):
@@ -677,6 +714,7 @@ def create_app(
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
     synthesis_lock = threading.Lock()
     repair_lock = threading.Lock()
+    delivery_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1598,6 +1636,220 @@ def create_app(
         )
         return repository.get_chat_run(request.chat_run_id)
 
+    @application.post("/chat/projects/deliveries", response_model=ChatRunResponse)
+    def chat_project_delivery_start(request: ProjectDeliveryStartRequest) -> ChatRunResponse:
+        access = _completed_project_access(request.conversation_id)
+        return _start_project_delivery(request.user_request, request.conversation_id, access, persist_run=True)
+
+    @application.get("/chat/projects/deliveries/{delivery_job_id}")
+    def chat_project_delivery_get(delivery_job_id: str) -> dict:
+        job, _access = _validated_project_delivery(delivery_job_id)
+        return public_delivery_job(job)
+
+    @application.get("/chat/conversations/{conversation_id}/project-deliveries")
+    def chat_project_deliveries_list(conversation_id: str) -> dict:
+        jobs = repository.list_project_delivery_jobs_for_conversation(conversation_id)
+        for job in jobs:
+            _validated_project_delivery(str(job["delivery_job_id"]), conversation_id=conversation_id)
+        return {"items": [public_delivery_job(job) for job in jobs], "count": len(jobs)}
+
+    @application.get("/chat/projects/deliveries/{delivery_job_id}/specification")
+    def chat_project_delivery_specification(delivery_job_id: str) -> dict:
+        job, _access = _validated_project_delivery(delivery_job_id)
+        return {"specification": job["specification"], "revisions": job.get("specification_revisions", [])}
+
+    @application.get("/chat/projects/deliveries/{delivery_job_id}/plan")
+    def chat_project_delivery_plan(delivery_job_id: str) -> dict:
+        job, _access = _validated_project_delivery(delivery_job_id)
+        return {"plan": job.get("plan"), "approval": job.get("plan_approval"), "revisions": job.get("plan_revisions", [])}
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/clarify", response_model=ChatRunResponse)
+    def chat_project_delivery_clarify(delivery_job_id: str, request: ProjectDeliveryClarificationRequest) -> ChatRunResponse:
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            updated = submit_delivery_clarification(current, answer=request.answer, root=access["approved_root"])
+        except ProjectDeliveryError as error:
+            raise _delivery_http_error(error) from error
+        stored = _save_delivery_transition(current, updated, "clarification_response", "completed")
+        run = build_delivery_chat_run(stored, message=request.answer)
+        repository.store_chat_run(run)
+        _sync_delivery_action(stored)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/plan/approve", response_model=ChatRunResponse)
+    def chat_project_delivery_plan_approve(delivery_job_id: str, request: ProjectDeliveryHashRequest) -> ChatRunResponse:
+        current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            updated = approve_delivery_plan(current, plan_hash=request.immutable_hash)
+        except ProjectDeliveryError as error:
+            raise _delivery_http_error(error) from error
+        if updated is current:
+            return build_delivery_chat_run(current, message="Approve the current delivery plan.", response="This exact plan was already approved. No patch or command was started.")
+        stored = _save_delivery_transition(current, updated, "plan_approval", "approved", {"plan_hash": request.immutable_hash})
+        run = build_delivery_chat_run(stored, message="Approve the current delivery plan.", response="Plan approved. This authorizes only work-unit preparation; no files changed and no command ran.")
+        repository.store_chat_run(run)
+        _sync_delivery_action(stored)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/prepare", response_model=ChatRunResponse)
+    def chat_project_delivery_prepare(delivery_job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            with delivery_lock:
+                current = repository.get_project_delivery_job(delivery_job_id)
+                activated = activate_next_work_unit(current, root=access["approved_root"])
+                shadow = repository.get_project_job(str(activated["project_job_id"]))
+                unit = next(item for item in activated["plan"]["work_units"] if item["work_unit_id"] == activated["active_work_unit_id"])
+                shadow_for_work = {
+                    **shadow, "status": "planned", "user_task": unit["objective"],
+                    "objective": unit["objective"], "relevant_paths": unit["expected_files"],
+                    "analysis_id": activated["analysis_id"], "analysis_index": activated["analysis_index"],
+                    "analysis": activated["analysis"],
+                }
+                bundle = prepare_job_patch_bundle(
+                    access["approved_root"], shadow_for_work, model_gateway=synthesis_gateway,
+                )
+                proposal = create_patch_proposal(
+                    root=access["approved_root"], conversation_id=current["conversation_id"],
+                    folder_access_id=access["action_id"], user_request=unit["objective"],
+                    changes=bundle["changes"], files_inspected=[
+                        change["path"] for change in bundle["changes"] if change["operation"] != "create"
+                    ], validation_plan=unit.get("expected_validation_commands") or [],
+                    job_id=shadow["job_id"], analysis_context=bundle.get("analysis_context"),
+                )
+                proposal["delivery_job_id"] = delivery_job_id
+                proposal["work_unit_id"] = unit["work_unit_id"]
+                linked = link_patch_preview(activated, patch=proposal)
+                if linked.get("status") == DeliveryStatus.REPLANNING.value:
+                    _save_delivery_transition(current, linked, "scope_change_detection", "replanning_required")
+                    raise ProjectDeliveryError("The prepared patch exceeded the approved work-unit scope; replanning is required.", code="scope_change")
+                repository.store_project_patch(proposal)
+                shadow_updated = {
+                    **shadow, "status": "patch_proposed", "analysis_id": activated["analysis_id"],
+                    "analysis_index": activated["analysis_index"], "analysis": activated["analysis"],
+                    "patch_ids": [*shadow.get("patch_ids", []), proposal["patch_id"]],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if not repository.transition_project_job(shadow_updated, expected_statuses={str(shadow["status"])}):
+                    raise ProjectDeliveryError("The execution bridge changed concurrently.", code="conflict")
+                stored = _save_delivery_transition(current, linked, "patch_preview", "awaiting_approval", {"patch_id": proposal["patch_id"], "work_unit_id": unit["work_unit_id"]})
+        except (ProjectDeliveryError, ProjectJobError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
+            if isinstance(error, ProjectDeliveryError):
+                raise _delivery_http_error(error) from error
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        _sync_delivery_action(stored)
+        run = _project_patch_run(proposal)
+        repository.store_chat_run(run)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/verification", response_model=ChatRunResponse)
+    def chat_project_delivery_verification(delivery_job_id: str, request: ProjectDeliveryVerificationRequest) -> ChatRunResponse:
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        if current.get("status") != DeliveryStatus.PATCH_APPLIED.value:
+            raise HTTPException(status_code=409, detail={"code": "patch_not_applied", "message": "Apply the approved work-unit patch before requesting verification."})
+        shadow = repository.get_project_job(str(current["project_job_id"]))
+        criteria = list((current.get("specification") or {}).get("acceptance_criteria") or [])
+        criterion = next((item for item in criteria if item.get("criterion_id") == request.criterion_id), None)
+        if criterion is None:
+            raise HTTPException(status_code=404, detail={"code": "unknown_criterion", "message": "Acceptance criterion not found."})
+        mode = VerificationMode(str(criterion["verification_mode"]))
+        if mode in {VerificationMode.STRUCTURAL, VerificationMode.FILE_PRESENCE, VerificationMode.CONFIGURATION, VerificationMode.EXACT_ASSERTION}:
+            evidence = [current.get("analysis_id")] if mode == VerificationMode.STRUCTURAL else [current.get("project_state_hash")]
+            try:
+                updated = record_delivery_verification(
+                    current, work_unit_id=str(current["active_work_unit_id"]), criterion_id=request.criterion_id,
+                    state=VerificationState.SATISFIED, method=mode,
+                    evidence_references=evidence,
+                    relevant_file_hashes={path: digest for ref in current.get("patch_references", []) if ref.get("status") == "applied" for path, digest in ref.get("after_hashes", {}).items()},
+                    structural_analysis_references=[str(current.get("analysis_id"))] if mode == VerificationMode.STRUCTURAL else [],
+                )
+            except ProjectDeliveryError as error:
+                raise _delivery_http_error(error) from error
+            stored = _save_delivery_transition(current, updated, "verification_outcome", "satisfied", {"criterion_id": request.criterion_id})
+            _sync_delivery_action(stored)
+            run = build_delivery_chat_run(stored, message="Verify the acceptance criterion.", response="The criterion was satisfied using matching independent project evidence. No command was needed.")
+            repository.store_chat_run(run)
+            return run
+        if int(current.get("budgets", {}).get("command_executions", 0)) >= int(current.get("limits", {}).get("max_command_executions", 15)):
+            limited = json.loads(json.dumps(current))
+            limited.update({
+                "status": DeliveryStatus.LIMIT_REACHED.value,
+                "last_error": {"code": "command_limit", "message": "The configured Stage 9 command-execution limit was reached."},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            stored = _save_delivery_transition(current, limited, "limit_reached", "command_limit")
+            _sync_delivery_action(stored)
+            raise HTTPException(status_code=409, detail={"code": "command_limit", "message": "The configured Stage 9 command-execution limit was reached."})
+        plans = list(shadow.get("validation_plan") or [])
+        if not plans:
+            raise HTTPException(status_code=409, detail={"code": "no_allowlisted_command", "message": "No allowlisted verification command was detected."})
+        selected = plans[0]
+        try:
+            run = _plan_project_command_run(
+                conversation_id=current["conversation_id"], access=access,
+                message=f"Verify {request.criterion_id} for the approved delivery work unit.",
+                action=str(selected.get("action") or "pytest"), target=selected.get("target"),
+                expected_result=str(selected.get("expected_result") or "The configured validation exits successfully."),
+                timeout_seconds=120, job_id=str(shadow["job_id"]),
+            )
+        except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+            raise HTTPException(status_code=400, detail=_controlled_project_error(error)) from error
+        plan = run.action["technical_details"]["command_plan"] if run.action else {}
+        if run.action:
+            project_scope = dict(run.action["technical_details"].get("project_scope") or {})
+            run.action["technical_details"]["project_scope"] = {**project_scope, "delivery_job_id": delivery_job_id}
+        plan_id = str(plan.get("plan_id") or "")
+        shadow_updated = {**shadow, "status": "validating", "command_plan_ids": [*shadow.get("command_plan_ids", []), plan_id], "updated_at": datetime.now(timezone.utc).isoformat()}
+        if not repository.transition_project_job(shadow_updated, expected_statuses={"implementing"}):
+            raise HTTPException(status_code=409, detail={"code": "conflict", "message": "Verification planning was already started."})
+        updated = json.loads(json.dumps(current))
+        updated["command_references"] = [*updated.get("command_references", []), {
+            "plan_id": plan_id, "work_unit_id": current["active_work_unit_id"], "criterion_id": request.criterion_id,
+            "method": mode.value, "action": plan.get("action"), "status": "awaiting_approval", "created_at": datetime.now(timezone.utc).isoformat(),
+        }]
+        updated["status"] = DeliveryStatus.AWAITING_COMMAND.value
+        updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+        stored = _save_delivery_transition(current, updated, "command_plan", "awaiting_approval", {"plan_id": plan_id, "criterion_id": request.criterion_id})
+        repository.store_chat_run(run)
+        _sync_delivery_action(stored)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/handoff", response_model=ChatRunResponse)
+    def chat_project_delivery_handoff(delivery_job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
+        current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        updated = generate_handoff(current)
+        stored = _save_delivery_transition(current, updated, "handoff_generation", str((updated.get("handoff") or {}).get("completion_status") or "recorded"))
+        run = build_delivery_chat_run(stored, message="Prepare the client handoff.")
+        repository.store_chat_run(run)
+        _sync_delivery_action(stored)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/scope-revision", response_model=ChatRunResponse)
+    def chat_project_delivery_scope_revision(delivery_job_id: str, request: ProjectDeliveryClarificationRequest) -> ChatRunResponse:
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            updated = revise_delivery_scope(current, root=access["approved_root"], explanation=request.answer)
+        except ProjectDeliveryError as error:
+            raise _delivery_http_error(error) from error
+        stored = _save_delivery_transition(current, updated, "scope_revision", "awaiting_plan_approval")
+        run = build_delivery_chat_run(stored, message=request.answer, response="The material scope change produced a new immutable specification and plan. Previous approvals remain invalid.")
+        repository.store_chat_run(run)
+        _sync_delivery_action(stored)
+        return run
+
+    @application.post("/chat/projects/deliveries/{delivery_job_id}/cancel")
+    def chat_project_delivery_cancel(delivery_job_id: str, request: ProjectJobActionRequest) -> dict:
+        current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            updated = cancel_delivery(current)
+        except ProjectDeliveryError as error:
+            raise _delivery_http_error(error) from error
+        if updated is current:
+            return public_delivery_job(current)
+        stored = _save_delivery_transition(current, updated, "cancellation", "cancelled")
+        _sync_delivery_action(stored)
+        return public_delivery_job(stored)
+
     @application.post("/chat/projects/patches/propose", response_model=ChatRunResponse)
     def chat_project_patch_propose(request: ProjectPatchProposalRequest) -> ChatRunResponse:
         access = _completed_project_access(request.conversation_id)
@@ -1977,6 +2229,7 @@ def create_app(
         run = repository.get_chat_run(request.chat_run_id)
         proposal, _snapshot = _get_project_patch(patch_id)
         job_relation = _job_for_patch(proposal)
+        delivery_relation = _delivery_for_patch(proposal)
         access = _completed_project_access(run.conversation_id)
         claimed = {**proposal, "status": "applying"}
         if not repository.transition_project_patch(claimed, expected_status="approved"):
@@ -2024,6 +2277,20 @@ def create_app(
             if not repository.transition_project_job(implementing, expected_statuses={"patch_approved"}):
                 raise HTTPException(status_code=409, detail="The project job changed before patch application completed.")
             _sync_project_job_action(implementing)
+        if delivery_relation is not None:
+            delivery, _delivery_access = delivery_relation
+            try:
+                delivery_updated = record_delivery_patch_applied(
+                    delivery, patch_id=patch_id,
+                    current_state_hash=project_state_hash(access["approved_root"]),
+                )
+            except ProjectDeliveryError as error:
+                raise _delivery_http_error(error) from error
+            delivery_stored = _save_delivery_transition(
+                delivery, delivery_updated, "patch_application", "applied",
+                {"patch_id": patch_id, "work_unit_id": proposal.get("work_unit_id")},
+            )
+            _sync_delivery_action(delivery_stored)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="patch_applied", status="applied", metadata={"relative_paths": updated["file_set"], "additions": updated["additions"], "deletions": updated["deletions"]})
         if proposal.get("patch_chain_context"):
             context = proposal["patch_chain_context"]
@@ -2090,6 +2357,20 @@ def create_app(
         summary = f"Rolled back patch {patch_id[:8]} and restored {len(snapshot)} file(s)."
         repository.update_chat_run_action_for_id(request.chat_run_id, f"rollback:{patch_id}", {"status": "completed", "approval_required": False, "result_summary": summary, "technical_details": {"project_rollback": {"patch_id": patch_id, "relative_paths": rolled_back["file_set"], "status": "rolled_back"}}})
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], patch_id=patch_id, operation="rollback_completed", status="rolled_back", metadata={"relative_paths": rolled_back["file_set"]})
+        delivery_relation = _delivery_for_patch(proposal)
+        if delivery_relation is not None:
+            delivery, _delivery_access = delivery_relation
+            try:
+                delivery_updated = record_delivery_rollback(
+                    delivery, patch_id=patch_id,
+                    restored_state_hash=project_state_hash(access["approved_root"]),
+                )
+            except ProjectDeliveryError as error:
+                raise _delivery_http_error(error) from error
+            delivery_stored = _save_delivery_transition(
+                delivery, delivery_updated, "rollback_execution", "rolled_back", {"patch_id": patch_id},
+            )
+            _sync_delivery_action(delivery_stored)
         if proposal.get("patch_chain_context") and proposal.get("job_id"):
             try:
                 job = repository.get_project_job(str(proposal["job_id"]))
@@ -2277,6 +2558,57 @@ def create_app(
                     audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"],
                                 job_id=job_id, patch_id=cycle["parent_patch_id"], command_plan_id=plan_id,
                                 operation=operation, status=status, metadata=metadata)
+        if job_id:
+            bridge = repository.get_project_job(job_id)
+            delivery_id = bridge.get("delivery_job_id")
+            if delivery_id:
+                delivery, _delivery_access = _validated_project_delivery(str(delivery_id), conversation_id=run.conversation_id)
+                references = [dict(item) for item in delivery.get("command_references") or []]
+                reference = next((item for item in references if item.get("plan_id") == plan_id), None)
+                if reference is None:
+                    reference = next((item for item in reversed(references) if item.get("status") == "failed"), None)
+                    if reference is not None:
+                        reference = {**reference, "plan_id": plan_id, "status": "running", "repair_rerun": True}
+                        references.append(reference)
+                if reference is not None:
+                    reference["status"] = "passed" if succeeded else "failed"
+                    reference["execution_id"] = result.get("execution_id")
+                    reference["finished_at"] = result.get("finished_at")
+                    delivery_with_command = json.loads(json.dumps(delivery))
+                    delivery_with_command["command_references"] = references
+                    if succeeded:
+                        delivery_with_command["status"] = DeliveryStatus.PATCH_APPLIED.value
+                    budgets = dict(delivery_with_command.get("budgets") or {})
+                    budgets["command_executions"] = int(budgets.get("command_executions", 0)) + 1
+                    delivery_with_command["budgets"] = budgets
+                    try:
+                        delivery_updated = record_delivery_verification(
+                            delivery_with_command,
+                            work_unit_id=str(reference["work_unit_id"]),
+                            criterion_id=str(reference["criterion_id"]),
+                            state=VerificationState.SATISFIED if succeeded else VerificationState.FAILED,
+                            method=VerificationMode(str(reference["method"])),
+                            evidence_references=[str(result.get("execution_id") or plan_id)],
+                            command_run_references=[str(result.get("execution_id") or plan_id)],
+                            failure_explanation=None if succeeded else summary,
+                        )
+                    except ProjectDeliveryError as error:
+                        raise _delivery_http_error(error) from error
+                    if not succeeded:
+                        latest_bridge = repository.get_project_job(job_id)
+                        delivery_updated["status"] = DeliveryStatus.DIAGNOSING.value
+                        delivery_updated["stage8"] = {
+                            "project_job_id": job_id,
+                            "repair": latest_bridge.get("repair"),
+                            "verification_plan_id": plan_id,
+                            "criterion_id": reference["criterion_id"],
+                        }
+                    delivery_updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    delivery_stored = _save_delivery_transition(
+                        delivery, delivery_updated, "verification_outcome", "passed" if succeeded else "stage8_diagnosis",
+                        {"plan_id": plan_id, "criterion_id": reference["criterion_id"], "exit_code": result.get("exit_code")},
+                    )
+                    _sync_delivery_action(delivery_stored)
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job_id, command_plan_id=plan_id, operation="validation_interpretation" if job_id else ("command_executed" if succeeded else "command_failed"), status="completed" if succeeded else "failed", metadata={"action": result.get("action"), "exit_code": result.get("exit_code"), "duration": result.get("duration_seconds")})
         return result
 
@@ -3292,6 +3624,139 @@ def create_app(
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         return access
 
+    def _start_project_delivery(
+        message: str,
+        conversation_id: str,
+        access: dict,
+        *,
+        persist_run: bool,
+    ) -> ChatRunResponse:
+        action_run_id = uuid4().hex
+        try:
+            delivery = create_delivery_job(
+                root=access["approved_root"], conversation_id=conversation_id,
+                folder_access_id=access["action_id"], user_request=message,
+                action_run_id=action_run_id, model_gateway=synthesis_gateway,
+            )
+            shadow = create_project_job(
+                root=access["approved_root"], conversation_id=conversation_id,
+                folder_access_id=access["action_id"], user_task=message,
+                action_run_id=f"delivery-shadow-{action_run_id}",
+            )
+        except (ProjectDeliveryError, ProjectJobError, ProjectAnalysisError, ProjectSafetyError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+        shadow.update({
+            "status": "planned", "delivery_job_id": delivery["delivery_job_id"],
+            "clarification": {"question": None, "answer": None, "requested_at": None, "answered_at": None},
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        delivery["project_job_id"] = shadow["job_id"]
+        repository.store_project_job(shadow)
+        repository.store_project_analysis(shadow["analysis_index"])
+        repository.store_project_delivery_job(delivery)
+        stored = repository.get_project_delivery_job(str(delivery["delivery_job_id"]))
+        _persist_delivery_records(stored)
+        _delivery_audit(stored, "job_creation", "created", {
+            "specification_hash": stored["specification"]["specification_hash"],
+            "plan_hash": (stored.get("plan") or {}).get("plan_hash"),
+        })
+        run = build_delivery_chat_run(stored, message=message, run_id=action_run_id)
+        if persist_run:
+            repository.store_chat_run(run)
+        return run
+
+    def _validated_project_delivery(
+        delivery_job_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> tuple[dict, dict]:
+        try:
+            job = repository.get_project_delivery_job(delivery_job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Project delivery job not found."}) from error
+        if conversation_id is not None and job.get("conversation_id") != conversation_id:
+            raise HTTPException(status_code=409, detail={"code": "ownership_mismatch", "message": "The delivery job belongs to a different conversation."})
+        access = _completed_project_access(str(job.get("conversation_id") or ""))
+        if job.get("folder_access_id") != access.get("action_id"):
+            raise HTTPException(status_code=409, detail={"code": "workspace_mismatch", "message": "The delivery job belongs to a different folder authorization."})
+        if job.get("root_fingerprint") != access.get("root_fingerprint"):
+            raise HTTPException(status_code=409, detail={"code": "stale_workspace", "message": "The authorized project identity changed."})
+        return job, access
+
+    def _save_delivery_transition(
+        current: dict,
+        updated: dict,
+        operation: str,
+        status: str,
+        metadata: dict | None = None,
+    ) -> dict:
+        expected_version = int(current.get("state_version") or 1)
+        stored = repository.transition_project_delivery_job(updated, expected_version=expected_version)
+        if stored is None:
+            raise HTTPException(status_code=409, detail={"code": "conflict", "message": "The delivery job changed concurrently; reload its current state."})
+        _persist_delivery_records(stored)
+        _delivery_audit(stored, operation, status, metadata or {})
+        return stored
+
+    def _persist_delivery_records(job: dict) -> None:
+        values: list[tuple[str, dict, str]] = []
+        specification = job.get("specification")
+        if isinstance(specification, dict) and specification.get("specification_hash"):
+            values.append(("task_specification", specification, str(specification["specification_hash"])))
+        plan = job.get("plan")
+        if isinstance(plan, dict) and plan.get("plan_hash"):
+            values.append(("execution_plan", plan, str(plan["plan_hash"])))
+        approval = job.get("plan_approval")
+        if isinstance(approval, dict) and approval.get("approval_id"):
+            values.append(("plan_approval", approval, str(approval["approval_id"]).ljust(64, "0")[:64]))
+        for record in job.get("verification_records") or []:
+            if isinstance(record, dict) and record.get("verification_hash"):
+                values.append(("verification", record, str(record["verification_hash"])))
+        handoff = job.get("handoff")
+        if isinstance(handoff, dict) and handoff.get("handoff_hash"):
+            values.append(("handoff", handoff, str(handoff["handoff_hash"])))
+        for record_type, record, digest in values:
+            repository.store_project_delivery_record(
+                delivery_job_id=str(job["delivery_job_id"]), record_type=record_type,
+                immutable_hash=digest, record=record,
+            )
+
+    def _delivery_audit(job: dict, operation: str, status: str, metadata: dict) -> None:
+        safe_metadata = json.loads(json.dumps(metadata, default=str))
+        for key, value in list(safe_metadata.items()):
+            if any(term in key.lower() for term in ("token", "password", "secret", "authorization", "cookie", "source", "output")):
+                safe_metadata[key] = "[REDACTED]"
+            elif isinstance(value, str):
+                safe_metadata[key] = value[:1000]
+        repository.store_project_delivery_audit_event({
+            "event_id": uuid4().hex, "delivery_job_id": job["delivery_job_id"],
+            "conversation_id": job["conversation_id"], "operation": operation,
+            "status": status, "metadata": safe_metadata,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def _sync_delivery_action(job: dict) -> None:
+        action = build_delivery_action(job)
+        updated = 0
+        for run in repository.list_chat_runs_for_conversation(str(job["conversation_id"])):
+            if isinstance(run.action, dict) and run.action.get("action_id") == job.get("delivery_job_id"):
+                updated += int(repository.update_chat_run_action_for_id(run.run_id, str(job["delivery_job_id"]), action))
+        if updated == 0:
+            raise HTTPException(status_code=409, detail={"code": "missing_action_card", "message": "The persisted delivery card could not be updated."})
+
+    def _delivery_http_error(error: ProjectDeliveryError) -> HTTPException:
+        status_code = 400 if error.code in {"invalid_request", "hash_mismatch"} else 409
+        return HTTPException(status_code=status_code, detail={"code": error.code, "message": str(error)})
+
+    def _delivery_for_patch(proposal: dict) -> tuple[dict, dict] | None:
+        delivery_id = proposal.get("delivery_job_id")
+        if not delivery_id:
+            return None
+        job, access = _validated_project_delivery(str(delivery_id), conversation_id=str(proposal.get("conversation_id") or ""))
+        if not any(item.get("patch_id") == proposal.get("patch_id") for item in job.get("patch_references") or []):
+            raise HTTPException(status_code=409, detail={"code": "ownership_mismatch", "message": "The patch is not associated with this delivery job."})
+        return job, access
+
     def _validated_project_job(
         job_id: str,
         *,
@@ -3331,6 +3796,8 @@ def create_app(
             if isinstance(run.action, dict) and run.action.get("action_id") == job.get("job_id"):
                 if repository.update_chat_run_action_for_id(run.run_id, str(job["job_id"]), action):
                     updated_count += 1
+        if updated_count == 0 and job.get("delivery_job_id"):
+            return
         if updated_count == 0:
             raise HTTPException(status_code=409, detail="The persisted project job card could not be updated.")
 
@@ -3592,7 +4059,20 @@ def create_app(
                     validation_plan=[str(item.get("purpose") or item.get("action")) for item in current.get("validation_plan") or []],
                     job_id=current["job_id"], analysis_context=bundle.get("analysis_context"), patch_chain_context=chain_context,
                 )
-            except (ProjectJobError, ModelSynthesisError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, OSError) as error:
+                if current.get("delivery_job_id"):
+                    delivery = repository.get_project_delivery_job(str(current["delivery_job_id"]))
+                    proposal["delivery_job_id"] = delivery["delivery_job_id"]
+                    proposal["work_unit_id"] = delivery.get("active_work_unit_id")
+                    linked_delivery = link_patch_preview(delivery, patch=proposal)
+                    if linked_delivery.get("status") == DeliveryStatus.REPLANNING.value:
+                        _save_delivery_transition(delivery, linked_delivery, "repair_scope_change", "replanning_required")
+                        raise ProjectDeliveryError("The repair preview exceeded the approved Stage 9 work-unit scope.", code="scope_change")
+                    delivery_stored = _save_delivery_transition(
+                        delivery, linked_delivery, "stage8_repair_preview", "awaiting_approval",
+                        {"patch_id": proposal["patch_id"], "repair_cycle_id": cycle["repair_cycle_id"]},
+                    )
+                    _sync_delivery_action(delivery_stored)
+            except (ProjectDeliveryError, ProjectJobError, ModelSynthesisError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, OSError) as error:
                 cycle = {**cycle, "diagnosis_id": diagnosis["diagnosis_id"], "status": "repair_rejected", "updated_at": datetime.now(timezone.utc).isoformat()}
                 repository.update_project_repair_cycle(cycle)
                 updated_repair = {**repair, "status": "repair_rejected", "diagnosis_id": diagnosis["diagnosis_id"],
@@ -3906,6 +4386,13 @@ def create_app(
                 "restore the files from before that fix", "restore the files from before that fix.",
                 "rollback the last patch", "rollback the last patch.",
             }
+        )
+
+    def _is_delivery_request(message: str) -> bool:
+        normalized = " ".join(str(message or "").lower().split())
+        return bool(
+            re.search(r"\b(?:deliver|delivery)\b", normalized)
+            and re.search(r"\b(?:project|feature|change|fix|implementation|task)\b", normalized)
         )
 
     def _audit_project_run(run: ChatRunResponse, access: dict) -> None:
@@ -4324,6 +4811,23 @@ def create_app(
             return run
         if access is not None:
             secure_access = _completed_project_access(request.conversation_id or "")
+            active_delivery = repository.latest_active_project_delivery_job(request.conversation_id or "")
+            if active_delivery is not None and active_delivery.get("status") == DeliveryStatus.CLARIFICATION.value and not _is_delivery_request(request.message):
+                try:
+                    delivery_updated = submit_delivery_clarification(active_delivery, answer=request.message, root=secure_access["approved_root"])
+                except ProjectDeliveryError as error:
+                    raise _delivery_http_error(error) from error
+                delivery_stored = _save_delivery_transition(active_delivery, delivery_updated, "clarification_response", "completed")
+                delivery_run = build_delivery_chat_run(delivery_stored, message=request.message)
+                repository.store_chat_run(delivery_run)
+                _sync_delivery_action(delivery_stored)
+                return delivery_run
+            if _is_delivery_request(request.message):
+                delivery_run = _start_project_delivery(
+                    request.message, request.conversation_id or "", secure_access, persist_run=False,
+                )
+                repository.store_chat_run(delivery_run)
+                return delivery_run
             job_run = _project_job_intercept(request.message, request.conversation_id or "", secure_access)
             if job_run is not None:
                 repository.store_chat_run(job_run)
@@ -4372,8 +4876,16 @@ def create_app(
         )
         access = completed_folder_access(conversation_turns) if folder_path is None else None
         active_job = repository.latest_active_project_job(request.conversation_id or "") if access is not None else None
+        active_delivery = repository.latest_active_project_delivery_job(request.conversation_id or "") if access is not None else None
+        delivery_clarification = bool(
+            active_delivery is not None
+            and active_delivery.get("status") == DeliveryStatus.CLARIFICATION.value
+            and not _is_delivery_request(request.message)
+        )
+        delivery_request = bool(access is not None and _is_delivery_request(request.message))
         job_request = bool(
             access is not None
+            and not delivery_request
             and (
                 detect_project_task(request.message)
                 or detect_project_job_followup(request.message)
@@ -4393,7 +4905,7 @@ def create_app(
         detected = detect_chat_action(request.message) if folder_path is None else None
         previous_turns = (
             conversation_turns
-            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request and not job_request
+            if detected is None and folder_path is None and not project_request and not patch_request and not rollback_request and not job_request and not delivery_request and not delivery_clarification
             else []
         )
         events: queue.Queue[dict | object] = queue.Queue()
@@ -4419,6 +4931,23 @@ def create_app(
                     )
                     repository.store_project_patch(proposal)
                     run = _project_patch_run(proposal)
+                elif delivery_request:
+                    secure_access = _completed_project_access(request.conversation_id or "")
+                    run = _start_project_delivery(
+                        request.message, request.conversation_id or "", secure_access, persist_run=False,
+                    )
+                elif delivery_clarification:
+                    secure_access = _completed_project_access(request.conversation_id or "")
+                    if active_delivery is None:
+                        raise RuntimeError("The pending delivery clarification disappeared.")
+                    delivery_updated = submit_delivery_clarification(
+                        active_delivery, answer=request.message, root=secure_access["approved_root"],
+                    )
+                    delivery_stored = _save_delivery_transition(
+                        active_delivery, delivery_updated, "clarification_response", "completed",
+                    )
+                    run = build_delivery_chat_run(delivery_stored, message=request.message)
+                    _sync_delivery_action(delivery_stored)
                 elif job_request:
                     secure_access = _completed_project_access(request.conversation_id or "")
                     run = _project_job_intercept(request.message, request.conversation_id or "", secure_access, event_sink=events.put)
@@ -4450,6 +4979,8 @@ def create_app(
                         event_sink=events.put,
                     )
                 repository.store_chat_run(run)
+                if (delivery_request or delivery_clarification) and run.action is not None:
+                    events.put({"event": "project_delivery_updated", "data": {"run": run.model_dump(mode="json"), "delivery": run.action.get("technical_details", {}).get("project_delivery", {})}})
                 if job_request and run.action is not None and run.action.get("action_type") == "project_job":
                     job_payload = run.action.get("technical_details", {}).get("project_job", {})
                     job_status = job_payload.get("status") if isinstance(job_payload, dict) else None

@@ -632,10 +632,30 @@ export interface ChatStreamEvent {
     | "project_job_updated"
     | "clarification_required"
     | "project_plan_ready"
+    | "project_analysis_started"
+    | "project_analysis_completed"
+    | "project_impact_ready"
+    | "project_synthesis_started"
+    | "model_generation_started"
+    | "model_generation_completed"
+    | "model_response_normalized"
+    | "model_synthesis_confidence_evaluated"
+    | "project_synthesis_blocked"
+    | "project_patch_ready"
+    | "project_prevalidation_failed"
     | "project_patch_proposed"
     | "validation_proposed"
     | "validation_completed"
     | "project_job_completed"
+    | "project_validation_failed"
+    | "project_diagnosis_offered"
+    | "project_diagnosis_started"
+    | "project_diagnosis_completed"
+    | "project_diagnosis_clarification"
+    | "project_repair_ready"
+    | "project_repair_blocked"
+    | "project_repair_applied"
+    | "project_repair_validated"
     | "run_completed"
     | "run_failed"
     | string;
@@ -732,9 +752,18 @@ export interface AstraClient {
   executeProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
   cancelProjectCommand(planId: string, request: Record<string, unknown>): Promise<AssignmentCommandRecord>;
   getProjectJob(jobId: string): Promise<Record<string, unknown>>;
+  getProjectJobAnalysis(jobId: string): Promise<Record<string, unknown>>;
+  refreshProjectJobAnalysis(jobId: string, conversationId: string): Promise<Record<string, unknown>>;
   prepareProjectJob(jobId: string, conversationId: string): Promise<ChatRunResponse>;
   proposeProjectJobValidation(jobId: string, conversationId: string): Promise<ChatRunResponse>;
   cancelProjectJob(jobId: string, conversationId: string): Promise<Record<string, unknown>>;
+  getProjectDelivery(deliveryJobId: string): Promise<Record<string, unknown>>;
+  approveProjectDeliveryPlan(deliveryJobId: string, conversationId: string, planHash: string): Promise<ChatRunResponse>;
+  clarifyProjectDelivery(deliveryJobId: string, conversationId: string, answer: string): Promise<ChatRunResponse>;
+  prepareProjectDelivery(deliveryJobId: string, conversationId: string): Promise<ChatRunResponse>;
+  verifyProjectDelivery(deliveryJobId: string, conversationId: string, criterionId: string): Promise<ChatRunResponse>;
+  generateProjectDeliveryHandoff(deliveryJobId: string, conversationId: string): Promise<ChatRunResponse>;
+  cancelProjectDelivery(deliveryJobId: string, conversationId: string): Promise<Record<string, unknown>>;
   generateAssignmentWorkspace(request: AssignmentWorkspaceGenerateRequest): Promise<AssignmentWorkspaceWriteResult>;
   exportAssignmentReport(request: AssignmentReportExportRequest): Promise<AssignmentReportExportResult>;
   writeAssignmentCode(request: Record<string, unknown>): Promise<AssignmentCodeWriteResult>;
@@ -890,7 +919,7 @@ export class HttpAstraClient implements AstraClient {
 
     while (true) {
       const { value, done } = await reader.read();
-      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      buffer += decoder.decode(value ?? new Uint8Array(0), { stream: !done });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
@@ -1030,6 +1059,19 @@ export class HttpAstraClient implements AstraClient {
     );
   }
 
+  async getProjectJobAnalysis(jobId: string) {
+    return this.getJson<Record<string, unknown>>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}/analysis`,
+    );
+  }
+
+  async refreshProjectJobAnalysis(jobId: string, conversationId: string) {
+    return this.postJson<Record<string, unknown>>(
+      `/chat/projects/jobs/${encodeURIComponent(jobId)}/analysis/refresh`,
+      { conversation_id: conversationId },
+    );
+  }
+
   async prepareProjectJob(jobId: string, conversationId: string) {
     return this.postJson<ChatRunResponse>(
       `/chat/projects/jobs/${encodeURIComponent(jobId)}/prepare`,
@@ -1047,6 +1089,54 @@ export class HttpAstraClient implements AstraClient {
   async cancelProjectJob(jobId: string, conversationId: string) {
     return this.postJson<Record<string, unknown>>(
       `/chat/projects/jobs/${encodeURIComponent(jobId)}/cancel`,
+      { conversation_id: conversationId },
+    );
+  }
+
+  async getProjectDelivery(deliveryJobId: string) {
+    return this.getJson<Record<string, unknown>>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}`,
+    );
+  }
+
+  async approveProjectDeliveryPlan(deliveryJobId: string, conversationId: string, planHash: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/plan/approve`,
+      { conversation_id: conversationId, immutable_hash: planHash },
+    );
+  }
+
+  async clarifyProjectDelivery(deliveryJobId: string, conversationId: string, answer: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/clarify`,
+      { conversation_id: conversationId, answer },
+    );
+  }
+
+  async prepareProjectDelivery(deliveryJobId: string, conversationId: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/prepare`,
+      { conversation_id: conversationId },
+    );
+  }
+
+  async verifyProjectDelivery(deliveryJobId: string, conversationId: string, criterionId: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/verification`,
+      { conversation_id: conversationId, criterion_id: criterionId },
+    );
+  }
+
+  async generateProjectDeliveryHandoff(deliveryJobId: string, conversationId: string) {
+    return this.postJson<ChatRunResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/handoff`,
+      { conversation_id: conversationId },
+    );
+  }
+
+  async cancelProjectDelivery(deliveryJobId: string, conversationId: string) {
+    return this.postJson<Record<string, unknown>>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/cancel`,
       { conversation_id: conversationId },
     );
   }

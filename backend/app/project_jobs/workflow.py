@@ -5,16 +5,29 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from backend.app.folders.context import build_project_context, detect_exact_relative_path
 from backend.app.folders.reader import ReadLimits, iter_project_files, read_project_file
 from backend.app.folders.safety import project_root_fingerprint, safe_relative_path
+from backend.app.project_analysis import (
+    ProjectAnalysisError,
+    build_analysis_plan,
+    build_project_index,
+    synthesize_project_patch,
+)
+from backend.app.project_analysis.model_synthesis import (
+    MAX_CLARIFICATION_CYCLES,
+    SynthesisGateway,
+    synthesize_model_patch,
+)
 from backend.app.schemas.api import ChatRunResponse
 
 
 MAX_REVISION_CYCLES = 3
+MAX_REPAIR_CYCLES = 3
+MAX_REPAIR_FAILURES = 4
 MAX_RELEVANT_PATHS = 16
 MAX_REQUIREMENT_ITEMS = 12
 MAX_SUMMARY_CHARS = 240
@@ -75,14 +88,31 @@ def create_project_job(
     action_run_id: str,
 ) -> dict[str, Any]:
     approved = Path(root).resolve()
+    job_id = uuid4().hex
     extracted = _extract_requirements(approved, conversation_id, folder_access_id, user_task)
     safe_task = _strip_absolute_paths(user_task.replace(str(approved), "[connected project]"))
     extracted["objective"] = _bounded(safe_task.strip().rstrip("."), 500)
     clarification_question = _clarification_question(user_task, extracted)
     status = "needs_clarification" if clarification_question else "planned"
     now = _now()
+    index = build_project_index(
+        approved, conversation_id=conversation_id, folder_access_id=folder_access_id,
+        job_id=job_id,
+    )
+    analysis_requirement = " ".join([
+        safe_task,
+        *(str(item.get("summary") or "") for item in extracted["requirement_summaries"]),
+        *extracted["acceptance_criteria"],
+    ])
+    analysis = build_analysis_plan(index, analysis_requirement, relevant_paths=extracted["relevant_paths"])
+    if analysis.get("impacted_tests") and extracted.get("validation_plan") and extracted["validation_plan"][0].get("action") == "pytest":
+        target = str(analysis["impacted_tests"][0])
+        extracted["validation_plan"][0] = {
+            **extracted["validation_plan"][0], "target": target,
+            "purpose": f"Run the impacted Python test file {target}.",
+        }
     job = {
-        "job_id": uuid4().hex,
+        "job_id": job_id,
         "action_run_id": action_run_id,
         "conversation_id": conversation_id,
         "folder_access_id": folder_access_id,
@@ -103,7 +133,19 @@ def create_project_job(
             "requested_at": now if clarification_question else None,
             "answered_at": None,
         },
-        "implementation_plan": _build_plan(extracted, safe_task),
+        "implementation_plan": _build_plan(extracted, safe_task, analysis),
+        "analysis_id": index["analysis_id"],
+        "analysis": analysis,
+        "analysis_index": index,
+        "synthesis": {
+            "status": "not_started", "strategy": None, "provider": None, "model": None,
+            "confidence": None, "warnings": [], "assumptions": [], "evidence": {},
+            "requires_clarification": False,
+        },
+        "synthesis_clarification_count": 0,
+        "max_synthesis_clarification_cycles": MAX_CLARIFICATION_CYCLES,
+        "synthesis_attempt_count": 0,
+        "max_synthesis_attempts": 3,
         "patch_ids": [],
         "command_plan_ids": [],
         "validation_plan": extracted["validation_plan"],
@@ -111,6 +153,20 @@ def create_project_job(
         "completion_summary": None,
         "revision_count": 0,
         "max_revision_cycles": MAX_REVISION_CYCLES,
+        "repair": {
+            "status": "not_started", "repair_chain_id": None, "repair_cycle_id": None,
+            "cycle_number": 0, "failure_evidence_id": None, "diagnosis_id": None,
+            "parent_patch_id": None, "repair_patch_id": None, "command_execution_id": None,
+            "diagnosis_strategy": None, "provider": None, "model": None,
+            "confidence": None, "root_causes": [], "affected_files": [],
+            "affected_symbols": [], "assumptions": [], "warnings": [],
+            "clarification": None, "validation_rerun_status": "not_planned",
+            "rollback_available": False,
+        },
+        "repair_cycle_count": 0,
+        "max_repair_cycles": MAX_REPAIR_CYCLES,
+        "repair_failure_count": 0,
+        "max_repair_failures": MAX_REPAIR_FAILURES,
         "created_at": now,
         "updated_at": now,
         "completed_at": None,
@@ -205,7 +261,11 @@ def public_project_job(job: dict[str, Any]) -> dict[str, Any]:
         "requirement_summaries", "missing_information", "risks", "clarification",
         "implementation_plan", "patch_ids", "command_plan_ids", "validation_plan",
         "validation_results", "completion_summary", "revision_count", "max_revision_cycles",
-        "created_at", "updated_at", "completed_at", "cancelled_at",
+        "created_at", "updated_at", "completed_at", "cancelled_at", "analysis_id", "analysis",
+        "synthesis", "synthesis_clarification_count", "max_synthesis_clarification_cycles",
+        "synthesis_attempt_count", "max_synthesis_attempts",
+        "repair", "repair_cycle_count", "max_repair_cycles", "repair_failure_count",
+        "max_repair_failures", "delivery_job_id",
     }
     return {key: job.get(key) for key in allowed}
 
@@ -218,7 +278,9 @@ def answer_clarification(job: dict[str, Any], answer: str) -> dict[str, Any]:
     updated = dict(job)
     clarification = dict(job.get("clarification") or {})
     clarification.update({"answer": _bounded(answer, 1000), "answered_at": _now()})
-    updated.update({"status": "planned", "clarification": clarification, "updated_at": _now()})
+    synthesis = dict(job.get("synthesis") or {})
+    synthesis.update({"status": "clarification_answered", "requires_clarification": False})
+    updated.update({"status": "planned", "clarification": clarification, "synthesis": synthesis, "updated_at": _now()})
     plan = dict(updated.get("implementation_plan") or {})
     assumptions = list(plan.get("unresolved_assumptions") or [])
     assumptions.append(f"User clarification: {_bounded(answer, MAX_SUMMARY_CHARS)}")
@@ -227,12 +289,32 @@ def answer_clarification(job: dict[str, Any], answer: str) -> dict[str, Any]:
     return updated
 
 
-def prepare_job_patch_changes(root: str | Path, job: dict[str, Any]) -> list[dict[str, Any]]:
+def prepare_job_patch_changes(root: str | Path, job: dict[str, Any], *, model_gateway: SynthesisGateway | None = None) -> list[dict[str, Any]]:
+    return prepare_job_patch_bundle(root, job, model_gateway=model_gateway)["changes"]
+
+
+def prepare_job_patch_bundle(
+    root: str | Path,
+    job: dict[str, Any],
+    *,
+    model_gateway: SynthesisGateway | None = None,
+    model_attempt_sink: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     if job.get("status") not in {"planned", "blocked"}:
         raise ProjectJobError("This project job is not ready to prepare a patch preview.")
     if int(job.get("revision_count") or 0) >= int(job.get("max_revision_cycles") or MAX_REVISION_CYCLES):
         raise ProjectJobError("The project job reached its bounded revision-cycle limit. Ask explicitly to continue before preparing another patch.")
+    if job.get("status") == "blocked" and not job.get("repair_context"):
+        raise ProjectJobError("Request diagnosis of the persisted approved-command failure before preparing a repair preview.")
     approved = Path(root).resolve()
+    if job.get("analysis_index"):
+        try:
+            bundle = synthesize_project_patch(approved, job)
+            bundle["synthesis"] = _deterministic_synthesis("stage6_structural", bundle.get("prevalidation"))
+            return bundle
+        except ProjectAnalysisError as error:
+            if not str(error).startswith("No coherent bounded multi-file synthesis pattern matched"):
+                raise ProjectJobError(str(error)) from error
     candidates = _candidate_python_paths(approved, list(job.get("relevant_paths") or []))
     for relative in candidates:
         record = read_project_file(approved, relative, limits=ReadLimits(max_files=30))
@@ -241,31 +323,57 @@ def prepare_job_patch_changes(root: str | Path, job: dict[str, Any]) -> list[dic
         before = str(record["text"])
         after = _apply_safe_astra_todo(before)
         if after != before:
-            return [{
+            changes = [{
                 "path": relative,
                 "operation": "modify",
                 "content": after,
                 "explanation": "Implement the bounded ASTRA_TODO return expression identified during approved project inspection.",
             }]
+            prevalidation = {"status": "passed", "checks": ["bounded marker expression", "Python AST return validation"], "warnings": []}
+            return {"changes": changes, "contract": None, "analysis_context": None, "prevalidation": prevalidation,
+                    "synthesis": _deterministic_synthesis("bounded_marker", prevalidation)}
     if job.get("status") == "blocked":
         inferred = _infer_failed_assertion_repair(approved, candidates)
         if inferred:
-            return [inferred]
+            prevalidation = {"status": "passed", "checks": ["bounded assertion evidence", "Python AST syntax"], "warnings": []}
+            return {"changes": [inferred], "contract": None, "analysis_context": None, "prevalidation": prevalidation,
+                    "synthesis": _deterministic_synthesis("bounded_assertion_repair", prevalidation)}
+    if model_gateway is not None:
+        if int(job.get("synthesis_attempt_count") or 0) >= int(job.get("max_synthesis_attempts") or 3):
+            raise ProjectJobError("The bounded model synthesis attempt limit was reached; refine the plan before retrying.")
+        return synthesize_model_patch(approved, job, model_gateway, attempt_sink=model_attempt_sink)
     raise ProjectJobError(
         "No bounded deterministic patch could be prepared from the inspected evidence. Refine the task or request an explicit file change; no files were modified."
     )
 
 
-def interpret_validation_result(command: dict[str, Any]) -> dict[str, Any]:
+def _deterministic_synthesis(strategy: str, prevalidation: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "status": "validated", "strategy": strategy, "provider": "not_invoked", "model": None,
+        "contract_version": None, "evidence": {},
+        "confidence": {"level": "high", "score": 1.0, "reasons": ["A bounded deterministic synthesis rule matched."], "model_claim": None},
+        "assumptions": [], "warnings": list((prevalidation or {}).get("warnings") or []),
+        "requires_clarification": False, "summary": "A deterministic bounded synthesis rule produced the patch preview.",
+    }
+
+
+def interpret_validation_result(command: dict[str, Any], analysis_index: dict[str, Any] | None = None) -> dict[str, Any]:
     stdout = str(command.get("stdout") or "")[-12_000:]
     stderr = str(command.get("stderr") or "")[-12_000:]
     combined = f"{stdout}\n{stderr}"
     succeeded = command.get("exit_code") == 0 and command.get("display_state") == "completed"
     summary = "Validation completed successfully." if succeeded else "Validation failed."
     likely_paths = _relative_error_paths(combined)
+    category = _failure_category(combined, succeeded)
+    affected_symbols = []
+    for item in (analysis_index or {}).get("files", []):
+        if item.get("relative_path") in likely_paths:
+            affected_symbols.extend({"relative_path": item["relative_path"], "name": symbol.get("name"), "kind": symbol.get("kind"), "range": symbol.get("range")} for symbol in item.get("symbols", [])[:12])
     pytest_match = re.search(r"(?m)=+\s*(.+?(?:passed|failed|error).+?)\s+in\s+([0-9.]+)s\s*=+", combined)
     if pytest_match:
         summary = f"Pytest: {_bounded(pytest_match.group(1).strip(), 180)} in {pytest_match.group(2)} seconds."
+    elif simple_pytest := re.search(r"(?m)(\d+\s+(?:passed|failed|error)(?:[^\n]*?))\s+in\s+([0-9.]+)s", combined):
+        summary = f"Pytest: {_bounded(simple_pytest.group(1).strip(), 180)} in {simple_pytest.group(2)} seconds."
     elif re.search(r"TS\d{4}:", combined):
         count = len(re.findall(r"TS\d{4}:", combined))
         summary = f"TypeScript reported {count} bounded compiler error(s)."
@@ -279,6 +387,8 @@ def interpret_validation_result(command: dict[str, Any]) -> dict[str, Any]:
         "status": "passed" if succeeded else "failed",
         "summary": summary,
         "likely_affected_paths": likely_paths,
+        "likely_affected_symbols": affected_symbols[:30],
+        "failure_category": category,
         "recommended_next_step": (
             "Review manual checks and complete the job."
             if succeeded
@@ -289,6 +399,27 @@ def interpret_validation_result(command: dict[str, Any]) -> dict[str, Any]:
         "exit_code": command.get("exit_code"),
         "finished_at": command.get("finished_at"),
     }
+
+
+def _failure_category(output: str, succeeded: bool) -> str:
+    if succeeded:
+        return "none"
+    lowered = output.lower()
+    if "syntaxerror" in lowered or "parse error" in lowered:
+        return "syntax"
+    if "modulenotfounderror" in lowered or "importerror" in lowered or "cannot find module" in lowered:
+        return "import"
+    if re.search(r"TS\d{4}:", output) or "type error" in lowered or "typeerror:" in lowered:
+        return "type"
+    if "eslint" in lowered or "flake8" in lowered or "ruff" in lowered:
+        return "lint"
+    if "assertionerror" in lowered or "assert " in lowered or "expected" in lowered and "received" in lowered:
+        return "assertion"
+    if "config" in lowered or "configuration" in lowered:
+        return "configuration"
+    if "build failed" in lowered or "failed to build" in lowered:
+        return "build"
+    return "unknown"
 
 
 def build_completion_summary(job: dict[str, Any], patches: list[dict[str, Any]]) -> dict[str, Any]:
@@ -360,6 +491,8 @@ def _extract_requirements(root: Path, conversation_id: str, folder_access_id: st
         if relative not in relevant_paths:
             relevant_paths.append(relative)
         excerpt = str(source.get("excerpt") or "")
+        suffix = Path(relative).suffix.lower()
+        acceptance_source = suffix in {".md", ".markdown"} or Path(relative).name.lower().startswith("test_") or ".test." in relative.lower() or ".spec." in relative.lower()
         lines = []
         for raw_line in excerpt.splitlines():
             clean = re.sub(r"^\s*\d+:\s*", "", raw_line).strip()
@@ -370,9 +503,8 @@ def _extract_requirements(root: Path, conversation_id: str, folder_access_id: st
                 continue
             if len(lines) < 2:
                 lines.append(_bounded(clean, MAX_SUMMARY_CHARS))
-            if re.search(r"\b(?:assert|expect|must|should|acceptance)\b", clean, re.I) and len(acceptance) < 6:
+            if acceptance_source and re.search(r"\b(?:assert|expect|must|should|acceptance)\b", clean, re.I) and len(acceptance) < 6:
                 acceptance.append(f"{_bounded(clean, 180)} ({relative})")
-        suffix = Path(relative).suffix.lower()
         if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs"}:
             if Path(relative).name.lower().startswith("test_") or ".test." in relative.lower():
                 summary = "Existing test expectations were identified as acceptance evidence."
@@ -411,7 +543,7 @@ def _extract_requirements(root: Path, conversation_id: str, folder_access_id: st
     }
 
 
-def _build_plan(extracted: dict[str, Any], message: str) -> dict[str, Any]:
+def _build_plan(extracted: dict[str, Any], message: str, analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     paths = list(extracted["relevant_paths"])
     findings = [
         {"claim": item["summary"], "relative_path": item["relative_path"]}
@@ -434,6 +566,7 @@ def _build_plan(extracted: dict[str, Any], message: str) -> dict[str, Any]:
         "expected_deliverables": extracted["deliverables"],
         "unresolved_assumptions": extracted["missing_information"],
         "broad_request": len(message.split()) < 5 or not bool(paths),
+        "stage6_analysis": analysis or {},
     }
 
 
@@ -598,9 +731,23 @@ def _job_result_summary(job: dict[str, Any]) -> str | None:
     if status == "cancelled":
         return "Project job cancelled. No pending job action will run."
     if status == "blocked":
+        repair = dict(job.get("repair") or {})
+        if repair.get("status") == "offered":
+            return "The approved validation command failed. Diagnosis is available but has not started; no files changed after the command."
+        if repair.get("status") == "plan_only":
+            return "Diagnosis stopped safely without creating a repair preview."
         results = list(job.get("validation_results") or [])
         return str(results[-1].get("summary")) if results else "The job is blocked pending a bounded revision."
     return None
+
+
+def detect_repair_request(message: str) -> bool:
+    normalized = " ".join(str(message or "").lower().split())
+    if not normalized:
+        return False
+    repair_terms = ("diagnose", "diagnosis", "analyse the failure", "analyze the failure", "repair", "fix the failed", "fix the failure")
+    failure_terms = ("failure", "failed", "test", "validation", "error", "repair", "diagnos")
+    return any(term in normalized for term in repair_terms) and any(term in normalized for term in failure_terms)
 
 
 def _bounded(value: str, limit: int) -> str:
@@ -617,8 +764,8 @@ def _now() -> str:
 
 
 __all__ = [
-    "MAX_REVISION_CYCLES", "ProjectJobError", "answer_clarification",
+    "MAX_REPAIR_CYCLES", "MAX_REPAIR_FAILURES", "MAX_REVISION_CYCLES", "ProjectJobError", "answer_clarification",
     "build_completion_summary", "build_job_action", "build_job_chat_run",
-    "create_project_job", "detect_project_job_followup", "detect_project_task",
-    "interpret_validation_result", "prepare_job_patch_changes", "public_project_job",
+    "create_project_job", "detect_project_job_followup", "detect_project_task", "detect_repair_request",
+    "interpret_validation_result", "prepare_job_patch_bundle", "prepare_job_patch_changes", "public_project_job",
 ]

@@ -48,6 +48,11 @@ import {
   projectJobActionFromPayload,
   type ProjectJobAction,
 } from "./state/projectJobState";
+import {
+  exactPlanApprovalRequest,
+  projectDeliveryActionFromPayload,
+  type ProjectDeliveryAction,
+} from "./state/projectDeliveryState";
 
 interface Settings {
   apiUrl: string;
@@ -73,6 +78,7 @@ interface Message {
   workspaceAction?: AssignmentWorkspaceAction;
   folderAction?: FolderAccessAction;
   jobAction?: ProjectJobAction;
+  deliveryAction?: ProjectDeliveryAction;
   info?: InfoCard;
 }
 
@@ -462,6 +468,88 @@ export default function App() {
     }
   }
 
+  async function refreshProjectDelivery(deliveryJobId: string) {
+    const delivery = await client.getProjectDelivery(deliveryJobId);
+    const parsed = projectDeliveryActionFromPayload({
+      action_type: "project_delivery", technical_details: { project_delivery: delivery },
+    });
+    if (!parsed) return;
+    setMessages((current) => current.map((item) =>
+      item.deliveryAction?.deliveryJobId === deliveryJobId ? { ...item, deliveryAction: parsed } : item,
+    ));
+  }
+
+  async function approveDeliveryPlan(action: ProjectDeliveryAction) {
+    if (!conversationId) return;
+    const request = exactPlanApprovalRequest(action, conversationId);
+    const lockId = `delivery-plan:${action.deliveryJobId}`;
+    if (!request || !tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.approveProjectDeliveryPlan(action.deliveryJobId, conversationId, request.immutable_hash);
+      await refreshProjectDelivery(action.deliveryJobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshProjectDelivery(action.deliveryJobId).catch(() => undefined);
+    } finally { locks.current.delete(lockId); }
+  }
+
+  async function prepareProjectDelivery(action: ProjectDeliveryAction) {
+    if (!conversationId || action.status !== "plan_approved") return;
+    const lockId = `delivery-prepare:${action.deliveryJobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const run = await client.prepareProjectDelivery(action.deliveryJobId, conversationId);
+      setMessages((current) => [...current, {
+        ...makeMessage("assistant", ""), createdAt: run.created_at, run,
+        action: genericActionFromRun(run) ?? undefined,
+      }]);
+      await refreshProjectDelivery(action.deliveryJobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshProjectDelivery(action.deliveryJobId).catch(() => undefined);
+    } finally { locks.current.delete(lockId); }
+  }
+
+  async function verifyProjectDelivery(action: ProjectDeliveryAction) {
+    if (!conversationId || action.status !== "patch_applied_not_verified") return;
+    const criterion = action.criteria.find((item) => !["satisfied", "waived-by-user"].includes(item.state));
+    if (!criterion) return;
+    const lockId = `delivery-verify:${action.deliveryJobId}:${criterion.id}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const run = await client.verifyProjectDelivery(action.deliveryJobId, conversationId, criterion.id);
+      const generic = genericActionFromRun(run);
+      if (generic) setMessages((current) => [...current, {
+        ...makeMessage("assistant", ""), createdAt: run.created_at, run, action: generic,
+      }]);
+      await refreshProjectDelivery(action.deliveryJobId);
+    } catch (caught) {
+      setError(cleanError(caught));
+    } finally { locks.current.delete(lockId); }
+  }
+
+  async function generateDeliveryHandoff(action: ProjectDeliveryAction) {
+    if (!conversationId) return;
+    const lockId = `delivery-handoff:${action.deliveryJobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.generateProjectDeliveryHandoff(action.deliveryJobId, conversationId);
+      await refreshProjectDelivery(action.deliveryJobId);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
+  async function cancelProjectDelivery(action: ProjectDeliveryAction) {
+    if (!conversationId || ["delivery_completed", "cancelled"].includes(action.status)) return;
+    const lockId = `delivery-cancel:${action.deliveryJobId}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      await client.cancelProjectDelivery(action.deliveryJobId, conversationId);
+      await refreshProjectDelivery(action.deliveryJobId);
+    } catch (caught) { setError(cleanError(caught)); }
+    finally { locks.current.delete(lockId); }
+  }
+
   async function approveWorkspaceAction(
     messageId: string,
     action: AssignmentWorkspaceAction,
@@ -638,6 +726,7 @@ export default function App() {
     if (action.actionType === "project_patch") {
       const patchId = action.actionId;
       const jobId = projectJobIdFromAction(action);
+      const deliveryId = projectDeliveryIdFromAction(action);
       if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-patch:${patchId}`)) return;
       try {
         updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
@@ -653,6 +742,7 @@ export default function App() {
         updateAction(messageId, (current) => ({ ...current, ...(appliedAction ?? {}) }));
         setMessages((current) => current.map((item) => item.id === messageId ? { ...item, run: applied } : item));
         if (jobId) await refreshProjectJob(jobId);
+        if (deliveryId) await refreshProjectDelivery(deliveryId);
       } catch (caught) {
         updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
       } finally { locks.current.delete(`project-patch:${patchId}`); }
@@ -690,6 +780,7 @@ export default function App() {
     }
     const plan = action.commandPlan;
     const jobId = projectJobIdFromAction(action);
+    const deliveryId = projectDeliveryIdFromAction(action);
     if (!plan || !tryLockCommandAction(locks.current, plan.plan_id)) return;
     try {
       updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
@@ -715,6 +806,7 @@ export default function App() {
       const presentation = commandResultPresentation(result);
       updateAction(messageId, (current) => ({ ...current, status: result.exit_code === 0 ? "completed" : "failed", commandPlan: result, resultSummary: presentation.summary, error: presentation.errorTail || undefined }));
       if (jobId) await refreshProjectJob(jobId);
+      if (deliveryId) await refreshProjectDelivery(deliveryId);
     } catch (caught) {
       updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
     } finally { locks.current.delete(plan.plan_id); }
@@ -729,6 +821,7 @@ export default function App() {
     if (action.actionType === "project_patch" || action.actionType === "project_rollback") {
       const rawId = action.actionId;
       const jobId = projectJobIdFromAction(action);
+      const deliveryId = projectDeliveryIdFromAction(action);
       const patchId = rawId?.startsWith("rollback:") ? rawId.slice(9) : rawId;
       if (!patchId || !chatRunId || !tryLockCommandAction(locks.current, `project-cancel:${rawId}`)) return;
       try {
@@ -738,6 +831,7 @@ export default function App() {
         const updatedAction = updated.action ? actionFromPayload(updated.action) : null;
         updateAction(messageId, (current) => ({ ...current, ...(updatedAction ?? {}) }));
         if (jobId) await refreshProjectJob(jobId);
+        if (deliveryId) await refreshProjectDelivery(deliveryId);
       } catch (caught) {
         updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
       } finally { locks.current.delete(`project-cancel:${rawId}`); }
@@ -806,7 +900,7 @@ export default function App() {
       <main className="chat-shell">
         <section className="conversation" aria-label="Conversation">
           {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
         </section>
         <form className="composer" onSubmit={submit}>
@@ -837,6 +931,11 @@ function ChatMessage({
   onPrepareJob,
   onValidateJob,
   onCancelJob,
+  onApproveDeliveryPlan,
+  onPrepareDelivery,
+  onVerifyDelivery,
+  onGenerateDeliveryHandoff,
+  onCancelDelivery,
   onOption,
   onContinue,
 }: {
@@ -851,6 +950,11 @@ function ChatMessage({
   onPrepareJob: (action: ProjectJobAction) => Promise<void>;
   onValidateJob: (action: ProjectJobAction) => Promise<void>;
   onCancelJob: (action: ProjectJobAction) => Promise<void>;
+  onApproveDeliveryPlan: (action: ProjectDeliveryAction) => Promise<void>;
+  onPrepareDelivery: (action: ProjectDeliveryAction) => Promise<void>;
+  onVerifyDelivery: (action: ProjectDeliveryAction) => Promise<void>;
+  onGenerateDeliveryHandoff: (action: ProjectDeliveryAction) => Promise<void>;
+  onCancelDelivery: (action: ProjectDeliveryAction) => Promise<void>;
   onOption: (option: string) => void;
   onContinue: (conversationId: string) => Promise<void>;
 }) {
@@ -860,9 +964,10 @@ function ChatMessage({
     {message.workspaceAction && <AssignmentWorkspaceCard action={message.workspaceAction} onApprove={() => void onApproveWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} onCancel={() => void onCancelWorkspace(message.id, message.workspaceAction!, message.run?.run_id)} />}
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
+    {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && !message.folderAction && !message.jobAction && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && <RunDetails run={message.run} />}
   </div></article>;
 }
 
@@ -904,6 +1009,51 @@ function FolderAccessCard({
     {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
     {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
     <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+  </div>;
+}
+
+function ProjectDeliveryCard({
+  action, onApprovePlan, onPrepare, onVerify, onHandoff, onCancel,
+}: {
+  action: ProjectDeliveryAction;
+  onApprovePlan: () => void;
+  onPrepare: () => void;
+  onVerify: () => void;
+  onHandoff: () => void;
+  onCancel: () => void;
+}) {
+  const terminal = ["delivery_completed", "cancelled"].includes(action.status);
+  const handoffReady = action.progress.totalRequiredCriteria > 0
+    && action.progress.satisfiedRequiredCriteria === action.progress.totalRequiredCriteria;
+  const currentIndex = action.plan?.workUnits.findIndex((unit) => unit.id === action.activeWorkUnitId) ?? -1;
+  return <div className="action-card project-delivery-card">
+    <div className="card-heading"><div><span className="eyebrow">Project delivery</span><h2>{action.status === "delivery_completed" ? "Client-ready handoff" : "Bounded project task"}</h2></div><span className={`status status-${action.status}`}>{action.status.replace(/_/g, " ")}</span></div>
+    <section className="job-section"><h3>Objective</h3><p>{action.objective}</p></section>
+    <div className="delivery-progress" aria-label="Project delivery progress">
+      <span><strong>{action.progress.completedWorkUnits} of {action.progress.totalWorkUnits}</strong> work units complete</span>
+      <span><strong>{action.progress.satisfiedRequiredCriteria} of {action.progress.totalRequiredCriteria}</strong> required criteria satisfied</span>
+      {currentIndex >= 0 && <span><strong>Work unit {currentIndex + 1} of {action.plan?.workUnits.length}</strong> active</span>}
+    </div>
+    {action.clarification?.question && action.status === "clarification_required" && <div className="job-clarification"><CircleAlert size={17} /><div><strong>One clarification is needed</strong><p>{action.clarification.question}</p><small>Reply in this conversation. No patch or command will run.</small></div></div>}
+    <section className="job-section"><h3>Task specification</h3><div className="job-columns"><div><strong>In scope</strong><List items={action.requirements} /></div><div><strong>Deliverables</strong><List items={action.deliverables} /></div></div>
+      <div className="criterion-list">{action.criteria.map((criterion) => <div className={`criterion criterion-${criterion.state}`} key={criterion.id}><span>{criterion.state === "satisfied" ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}</span><div><strong>{criterion.requirement}</strong><small>{criterion.required ? "Required" : "Optional"} · {criterion.verificationMode.replace(/_/g, " ")} · {criterion.state.replace(/-/g, " ")}</small>{criterion.blockedReason && <p>{criterion.blockedReason}</p>}</div></div>)}</div>
+    </section>
+    {action.plan && <section className="job-section"><div className="analysis-heading"><h3>Execution plan</h3><span className={`confidence confidence-${action.plan.confidence >= .8 ? "high" : action.plan.confidence >= .55 ? "medium" : "low"}`}>{Math.round(action.plan.confidence * 100)}% confidence</span></div>
+      <div className="work-unit-list">{action.plan.workUnits.map((unit, index) => <div className={`work-unit work-unit-${unit.status}`} key={unit.id}><span>{index + 1}</span><div><strong>{unit.title}</strong><p>{unit.objective}</p><small>{unit.status.replace(/_/g, " ")}{unit.dependencies.length ? ` · after ${unit.dependencies.join(", ")}` : ""}</small></div></div>)}</div>
+      <p className="muted">Plan approval permits preparation only. Every patch and executable command keeps its own approval.</p>
+    </section>}
+    {action.repair && <div className="result failed"><CircleAlert size={17} /><div><strong>Stage 8 diagnosis</strong><p>The failed verification is linked to a bounded diagnosis and repair cycle. Repair patch and rerun approvals remain separate.</p></div></div>}
+    {action.scopeChanges.length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Scope change detected</strong><p>{action.scopeChanges[action.scopeChanges.length - 1]?.explanation}</p><small>The previous plan approval is invalid. Review the revised scope before continuing.</small></div></div>}
+    {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Delivery paused</strong><p>{action.error}</p></div></div>}
+    {action.handoff && <section className="job-section handoff-card"><h3>Client handoff</h3><p><strong>{action.handoff.status.replace(/_/g, " ")}</strong></p><div className="job-columns"><div><strong>Changed files</strong><List items={action.handoff.changedFiles} /></div><div><strong>Verified validations</strong><List items={action.handoff.validations} /></div></div>{action.handoff.limitations.length > 0 && <div><strong>Known limitations</strong><List items={action.handoff.limitations} /></div>}{action.handoff.manualChecks.length > 0 && <div><strong>Manual checks still required</strong><List items={action.handoff.manualChecks} /></div>}<p className="muted">Rollback {action.handoff.rollbackAvailable ? "is available" : "is not available"} for applied Astra patches.</p></section>}
+    <div className="button-row">
+      {action.status === "awaiting_plan_approval" && <button className="primary-button" aria-label="Approve exact project delivery plan" onClick={onApprovePlan}><ShieldCheck size={16} />Approve plan</button>}
+      {action.status === "plan_approved" && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare next patch</button>}
+      {action.status === "patch_applied_not_verified" && <button className="primary-button" onClick={onVerify}><ShieldCheck size={16} />Verify next criterion</button>}
+      {!action.handoff && (handoffReady || ["blocked", "awaiting_manual_verification", "partially_completed"].includes(action.status)) && <button className="secondary-button" onClick={onHandoff}><FileText size={16} />Prepare handoff</button>}
+      {!terminal && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel delivery</button>}
+    </div>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Specification source: {action.specificationSource}</span><span>Plan revision: {action.plan?.revision ?? "not ready"}</span><JsonBlock value={action.technical} /></div></details>
   </div>;
 }
 
@@ -1060,8 +1210,21 @@ function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
 function Status({ status }: { status: ChatActionStatus }) { return <span className={`status status-${status}`}>{status.replace(/_/g, " ")}</span>; }
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
-function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
+function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
 function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantId: string): Message[] | null {
+  const incomingDelivery = run.action ? projectDeliveryActionFromPayload(run.action) : null;
+  if (incomingDelivery) {
+    const existing = current.find((item) => item.id !== assistantId && item.deliveryAction?.deliveryJobId === incomingDelivery.deliveryJobId);
+    return current.map((item) => {
+      if (existing && item.id === existing.id) return { ...item, deliveryAction: incomingDelivery };
+      if (item.id !== assistantId) return item;
+      return {
+        ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run,
+        deliveryAction: existing ? undefined : incomingDelivery, action: undefined,
+        workspaceAction: undefined, folderAction: undefined, jobAction: undefined,
+      };
+    });
+  }
   const incoming = run.action ? projectJobActionFromPayload(run.action) : null;
   if (!incoming) return null;
   const existing = current.find((item) => item.id !== assistantId && item.jobAction?.jobId === incoming.jobId);
@@ -1085,20 +1248,28 @@ function restoreConversationMessages(
   assignmentInfo: (run: ChatRunResponse) => InfoCard | undefined,
 ): Message[] {
   const latestJobs = new Map<string, ProjectJobAction>();
+  const latestDeliveries = new Map<string, ProjectDeliveryAction>();
   for (const run of runs) {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     if (job) latestJobs.set(job.jobId, job);
+    const delivery = run.action ? projectDeliveryActionFromPayload(run.action) : null;
+    if (delivery) latestDeliveries.set(delivery.deliveryJobId, delivery);
   }
   const renderedJobs = new Set<string>();
+  const renderedDeliveries = new Set<string>();
   return runs.flatMap<Message>((run) => {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     const showJob = job && !renderedJobs.has(job.jobId);
     if (showJob) renderedJobs.add(job.jobId);
     const restoredJob = showJob ? latestJobs.get(job.jobId) : undefined;
+    const delivery = run.action ? projectDeliveryActionFromPayload(run.action) : null;
+    const showDelivery = delivery && !renderedDeliveries.has(delivery.deliveryJobId);
+    if (showDelivery) renderedDeliveries.add(delivery.deliveryJobId);
+    const restoredDelivery = showDelivery ? latestDeliveries.get(delivery.deliveryJobId) : undefined;
     return [
       { ...makeMessage("user", run.user_message), createdAt: run.created_at },
       {
-        ...makeMessage("assistant", restoredJob || genericActionFromRun(run) || (run.action && !job) ? "" : run.assistant_response),
+        ...makeMessage("assistant", restoredJob || restoredDelivery || genericActionFromRun(run) || (run.action && !job && !delivery) ? "" : run.assistant_response),
         createdAt: run.created_at,
         run,
         action: genericActionFromRun(run) ?? undefined,
@@ -1106,6 +1277,7 @@ function restoreConversationMessages(
         workspaceAction: run.action ? assignmentWorkspaceActionFromPayload(run.action) ?? undefined : undefined,
         folderAction: run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined,
         jobAction: restoredJob,
+        deliveryAction: restoredDelivery,
       },
     ];
   });
@@ -1115,6 +1287,13 @@ function projectJobIdFromAction(action: ChatAction): string | undefined {
   if (patch && typeof patch === "object" && !Array.isArray(patch) && typeof (patch as Record<string, unknown>).job_id === "string") return (patch as Record<string, unknown>).job_id as string;
   const scope = action.technicalDetails.project_scope;
   if (scope && typeof scope === "object" && !Array.isArray(scope) && typeof (scope as Record<string, unknown>).job_id === "string") return (scope as Record<string, unknown>).job_id as string;
+  return undefined;
+}
+function projectDeliveryIdFromAction(action: ChatAction): string | undefined {
+  const patch = action.technicalDetails.project_patch;
+  if (patch && typeof patch === "object" && !Array.isArray(patch) && typeof (patch as Record<string, unknown>).delivery_job_id === "string") return (patch as Record<string, unknown>).delivery_job_id as string;
+  const scope = action.technicalDetails.project_scope;
+  if (scope && typeof scope === "object" && !Array.isArray(scope) && typeof (scope as Record<string, unknown>).delivery_job_id === "string") return (scope as Record<string, unknown>).delivery_job_id as string;
   return undefined;
 }
 function joinSummary(value: unknown, fallback = "None"): string {

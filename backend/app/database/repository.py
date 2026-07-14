@@ -457,6 +457,66 @@ class AnalysisRepository:
                 ON project_repair_cycles (job_id, cycle_number ASC)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_delivery_jobs (
+                    delivery_job_id TEXT PRIMARY KEY,
+                    action_run_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    folder_access_id TEXT NOT NULL,
+                    root_fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    state_version INTEGER NOT NULL DEFAULT 1,
+                    job_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_delivery_conversation
+                ON project_delivery_jobs (conversation_id, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_delivery_workspace
+                ON project_delivery_jobs (folder_access_id, updated_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_delivery_records (
+                    record_id TEXT PRIMARY KEY,
+                    delivery_job_id TEXT NOT NULL,
+                    record_type TEXT NOT NULL,
+                    immutable_hash TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(delivery_job_id, record_type, immutable_hash)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_project_delivery_records_job
+                ON project_delivery_records (delivery_job_id, record_type, created_at ASC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_delivery_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    delivery_job_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _add_column_if_missing(
         self, connection: sqlite3.Connection, table: str, column: str, definition: str
@@ -1005,6 +1065,167 @@ class AnalysisRepository:
                     job["created_at"], job["updated_at"],
                 ),
             )
+
+    def store_project_delivery_job(self, job: dict[str, Any]) -> None:
+        stored = dict(job)
+        stored.setdefault("state_version", 1)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_delivery_jobs (
+                    delivery_job_id, action_run_id, conversation_id, folder_access_id,
+                    root_fingerprint, status, state_version, job_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored["delivery_job_id"], stored["action_run_id"], stored["conversation_id"],
+                    stored["folder_access_id"], stored["root_fingerprint"], stored["status"],
+                    int(stored["state_version"]), json.dumps(stored, sort_keys=True),
+                    stored["created_at"], stored["updated_at"],
+                ),
+            )
+
+    def get_project_delivery_job(self, delivery_job_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT job_json FROM project_delivery_jobs WHERE delivery_job_id = ?",
+                (delivery_job_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Project delivery job not found.")
+        value = json.loads(row["job_json"])
+        if not isinstance(value, dict):
+            raise LookupError("Project delivery job state is malformed.")
+        return value
+
+    def list_project_delivery_jobs_for_conversation(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT job_json FROM project_delivery_jobs
+                WHERE conversation_id = ? ORDER BY created_at ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        values = [json.loads(row["job_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def latest_active_project_delivery_job(self, conversation_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT job_json FROM project_delivery_jobs
+                WHERE conversation_id = ? AND status NOT IN ('delivery_completed', 'cancelled')
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["job_json"])
+        return value if isinstance(value, dict) else None
+
+    def transition_project_delivery_job(
+        self,
+        job: dict[str, Any],
+        *,
+        expected_version: int,
+    ) -> dict[str, Any] | None:
+        stored = dict(job)
+        stored["state_version"] = expected_version + 1
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE project_delivery_jobs
+                SET status = ?, state_version = ?, job_json = ?, updated_at = ?
+                WHERE delivery_job_id = ? AND conversation_id = ? AND folder_access_id = ?
+                  AND state_version = ?
+                """,
+                (
+                    stored["status"], stored["state_version"], json.dumps(stored, sort_keys=True),
+                    stored["updated_at"], stored["delivery_job_id"], stored["conversation_id"],
+                    stored["folder_access_id"], expected_version,
+                ),
+            )
+        return stored if cursor.rowcount == 1 else None
+
+    def store_project_delivery_record(
+        self,
+        *,
+        delivery_job_id: str,
+        record_type: str,
+        immutable_hash: str,
+        record: dict[str, Any],
+        record_id: str | None = None,
+    ) -> dict[str, Any]:
+        created_at = str(record.get("created_at") or record.get("verified_at") or datetime.now().astimezone().isoformat())
+        identifier = record_id or str(record.get("record_id") or record.get("verification_id") or record.get("handoff_id") or immutable_hash)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_delivery_records (
+                    record_id, delivery_job_id, record_type, immutable_hash, record_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_job_id, record_type, immutable_hash) DO NOTHING
+                """,
+                (identifier, delivery_job_id, record_type, immutable_hash, json.dumps(record, sort_keys=True), created_at),
+            )
+            row = connection.execute(
+                """
+                SELECT record_json FROM project_delivery_records
+                WHERE delivery_job_id = ? AND record_type = ? AND immutable_hash = ?
+                """,
+                (delivery_job_id, record_type, immutable_hash),
+            ).fetchone()
+        value = json.loads(row["record_json"])
+        return value if isinstance(value, dict) else record
+
+    def list_project_delivery_records(self, delivery_job_id: str, record_type: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT record_json FROM project_delivery_records WHERE delivery_job_id = ?"
+        parameters: tuple[Any, ...] = (delivery_job_id,)
+        if record_type is not None:
+            sql += " AND record_type = ?"
+            parameters = (delivery_job_id, record_type)
+        sql += " ORDER BY created_at ASC"
+        with self._connect() as connection:
+            rows = connection.execute(sql, parameters).fetchall()
+        values = [json.loads(row["record_json"]) for row in rows]
+        return [value for value in values if isinstance(value, dict)]
+
+    def store_project_delivery_audit_event(self, event: dict[str, Any]) -> None:
+        metadata = json.dumps(event.get("metadata") or {}, sort_keys=True)
+        if len(metadata) > 4_000:
+            metadata = json.dumps({"bounded": True, "summary": metadata[:3_800]}, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_delivery_audit_events (
+                    event_id, delivery_job_id, conversation_id, operation,
+                    status, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
+                    event["event_id"], event["delivery_job_id"], event["conversation_id"],
+                    event["operation"], event["status"], metadata, event["created_at"],
+                ),
+            )
+
+    def list_project_delivery_audit_events(self, delivery_job_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_delivery_audit_events
+                WHERE delivery_job_id = ? ORDER BY created_at ASC
+                """,
+                (delivery_job_id,),
+            ).fetchall()
+        return [{
+            "event_id": row["event_id"], "delivery_job_id": row["delivery_job_id"],
+            "conversation_id": row["conversation_id"], "operation": row["operation"],
+            "status": row["status"], "metadata": json.loads(row["metadata_json"]),
+            "created_at": row["created_at"],
+        } for row in rows]
 
     def get_project_job(self, job_id: str) -> dict[str, Any]:
         with self._connect() as connection:
