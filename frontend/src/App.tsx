@@ -18,8 +18,10 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AstraHttpError,
   HttpAstraClient,
   type AssignmentCopilotResult,
+  type ChatConversationDetail,
   type ChatRunResponse,
   type HealthData,
 } from "./clients/astraClient";
@@ -44,6 +46,20 @@ import {
   type FolderAccessAction,
 } from "./state/folderAccessState";
 import { actionRunFromStreamEvent } from "./state/chatStreamState";
+import {
+  canonicalConversationTurns,
+  clearScrollSnapshot,
+  clearStreamRecovery,
+  isValidConversationId,
+  readScrollSnapshot,
+  readStreamRecovery,
+  resolveStreamRecovery,
+  shouldClearActiveConversation,
+  startStreamRecovery,
+  type ScrollSnapshot,
+  updateStreamRecovery,
+  writeScrollSnapshot,
+} from "./state/conversationReloadState";
 import {
   projectJobActionFromPayload,
   type ProjectJobAction,
@@ -105,12 +121,20 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [hydrationStatus, setHydrationStatus] = useState<"loading" | "ready">("loading");
+  const [scrollRestoreConversation, setScrollRestoreConversation] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [awaitingAssignment, setAwaitingAssignment] = useState(false);
   const [assignmentResult, setAssignmentResult] = useState<AssignmentCopilotResult | null>(null);
   const [selectedAssignmentFile, setSelectedAssignmentFile] = useState<File | null>(null);
   const assignmentFileInputRef = useRef<HTMLInputElement | null>(null);
+  const conversationRef = useRef<HTMLElement | null>(null);
+  const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const pendingScrollRestoreRef = useRef<ScrollSnapshot | null>(null);
   const locks = useRef(new Set<string>());
   const restoredConversation = useRef(false);
   const client = useMemo(() => new HttpAstraClient(settings.apiUrl), [settings.apiUrl]);
@@ -135,24 +159,168 @@ export default function App() {
     if (restoredConversation.current) return;
     restoredConversation.current = true;
     const savedConversationId = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
-    if (!savedConversationId) return;
-    setLoading(true);
-    void client.getChatRuns(100).then((savedRuns) => {
-      const runs = savedRuns.filter((run) => run.conversation_id === savedConversationId).reverse();
-      setConversationId(savedConversationId);
-      setMessages(restoreConversationMessages(runs, assignmentAnalysisInfoFromRun));
-      setError(null);
-    }).catch((caught) => setError(cleanError(caught))).finally(() => setLoading(false));
+    if (!savedConversationId) {
+      void initializeCleanConversation();
+      return;
+    }
+    if (!isValidConversationId(savedConversationId)) {
+      localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+      clearStreamRecovery(sessionStorage);
+      void initializeCleanConversation();
+      return;
+    }
+    void hydrateConversation(savedConversationId);
+    // This boot effect intentionally runs once for each configured API client.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const update = () => document.documentElement.style.setProperty(
+      "--composer-height",
+      `${Math.ceil(composer.getBoundingClientRect().height)}px`,
+    );
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(composer);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+      document.documentElement.style.removeProperty("--composer-height");
+    };
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const rememberPosition = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const currentTop = window.scrollY;
+        const remaining = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+        const atBottom = remaining <= 96;
+        const movedUp = currentTop < lastScrollTopRef.current - 1;
+        if (movedUp) stickToBottomRef.current = false;
+        else if (atBottom) stickToBottomRef.current = true;
+        lastScrollTopRef.current = currentTop;
+        if (hydrationStatus === "ready" && conversationId && !scrollRestoreConversation) {
+          writeScrollSnapshot(sessionStorage, conversationId, { top: currentTop, atBottom });
+        }
+      });
+    };
+    window.addEventListener("scroll", rememberPosition, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", rememberPosition);
+    };
+  }, [conversationId, hydrationStatus, scrollRestoreConversation]);
+
+  useEffect(() => {
+    if (hydrationStatus !== "ready" || !scrollRestoreConversation) return;
+    let cancelled = false;
+    void nextPaint().then(nextPaint).then(() => {
+      if (cancelled) return;
+      const saved = pendingScrollRestoreRef.current;
+      if (saved && !saved.atBottom) {
+        stickToBottomRef.current = false;
+        window.scrollTo({ top: Math.min(saved.top, document.documentElement.scrollHeight - window.innerHeight), behavior: "auto" });
+        lastScrollTopRef.current = window.scrollY;
+      } else {
+        stickToBottomRef.current = true;
+        conversationEndRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+        lastScrollTopRef.current = window.scrollY;
+      }
+      pendingScrollRestoreRef.current = null;
+      setScrollRestoreConversation(null);
+    });
+    return () => { cancelled = true; };
+  }, [hydrationStatus, scrollRestoreConversation]);
+
+  useEffect(() => {
+    if (hydrationStatus !== "ready" || scrollRestoreConversation || !stickToBottomRef.current) return;
+    let cancelled = false;
+    void nextPaint().then(() => {
+      if (!cancelled && stickToBottomRef.current) conversationEndRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+    });
+    return () => { cancelled = true; };
+  }, [messages, loading, hydrationStatus, scrollRestoreConversation]);
+
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    if (!conversation) return;
+    const observer = new ResizeObserver(() => {
+      if (hydrationStatus === "ready" && !scrollRestoreConversation && stickToBottomRef.current) {
+        conversationEndRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+      }
+    });
+    observer.observe(conversation);
+    return () => observer.disconnect();
+  }, [hydrationStatus, scrollRestoreConversation]);
+
+  async function hydrateConversation(selectedConversationId: string) {
+    setHydrationStatus("loading");
+    setConversationId(selectedConversationId);
+    setMessages([]);
+    setError(null);
+    try {
+      const detail = await client.getChatConversation(selectedConversationId);
+      if (detail.conversation_id !== selectedConversationId) throw new AstraHttpError(409, "Conversation identity mismatch.");
+      pendingScrollRestoreRef.current = readScrollSnapshot(sessionStorage, selectedConversationId);
+      const restored = restoreConversationMessages(detail, assignmentAnalysisInfoFromRun);
+      const marker = readStreamRecovery(sessionStorage);
+      const recovery = resolveStreamRecovery(marker, selectedConversationId, detail.requests);
+      const hasDurableMarker = Boolean(marker && detail.requests.some((request) => request.request_id === marker.requestId));
+      if (marker?.conversationId === selectedConversationId) {
+        if (recovery === "none") clearStreamRecovery(sessionStorage);
+      }
+      if (recovery !== "none" && !hasDurableMarker) restored.push(requestRecoveryMessage(marker?.requestId ?? "unknown", recovery));
+      setConversationId(selectedConversationId);
+      setMessages(restored);
+      setScrollRestoreConversation(selectedConversationId);
+    } catch (caught) {
+      if (caught instanceof AstraHttpError && shouldClearActiveConversation(caught.status)) {
+        const marker = readStreamRecovery(sessionStorage);
+        localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+        if (marker?.conversationId === selectedConversationId) clearStreamRecovery(sessionStorage);
+        setConversationId(null);
+        setMessages([]);
+        await initializeCleanConversation();
+      } else {
+        setError(`I could not restore this conversation: ${cleanError(caught)}`);
+      }
+    } finally {
+      setHydrationStatus("ready");
+    }
+  }
+
+  async function initializeCleanConversation() {
+    setHydrationStatus("loading");
+    setMessages([]);
+    setConversationId(null);
+    setError(null);
+    try {
+      const detail = await client.createChatConversation();
+      setConversationId(detail.conversation_id);
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, detail.conversation_id);
+      stickToBottomRef.current = true;
+      window.scrollTo({ top: 0, behavior: "auto" });
+    } catch (caught) {
+      setError(`I could not initialize a clean conversation: ${cleanError(caught)}`);
+    } finally {
+      setHydrationStatus("ready");
+    }
+  }
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const prompt = input.trim();
     const attachedFile = selectedAssignmentFile;
-    if ((!prompt && !attachedFile) || loading) return;
+    if ((!prompt && !attachedFile) || loading || hydrationStatus !== "ready") return;
     const submittedText = prompt || `Read assignment: ${attachedFile?.name ?? "attached file"}`;
     setInput("");
     setError(null);
+    stickToBottomRef.current = true;
     setMessages((current) => [...current, makeMessage("user", submittedText)]);
     setLoading(true);
     try {
@@ -237,46 +405,82 @@ export default function App() {
   async function runOrdinaryChat(prompt: string) {
     let streamed = "";
     const assistantId = newId("assistant");
-    setMessages((current) => [...current, { ...makeMessage("assistant", ""), id: assistantId }]);
-    const run = await client.streamChat({
-      message: prompt,
-      use_rag: settings.ragEnabled,
-      safety_mode: settings.safetyMode,
-      conversation_id: conversationId,
-    }, (event) => {
-      if (event.event === "response_delta") {
-        const delta = typeof event.data.delta === "string" ? event.data.delta : "";
-        streamed += delta;
-        setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: streamed } : item));
-        return;
-      }
-      const actionRun = actionRunFromStreamEvent(event);
-      if (!actionRun) return;
-      setConversationId(actionRun.conversation_id);
-      setMessages((current) => mergeProjectJobRun(current, actionRun, assistantId) ?? current.map((item) => item.id === assistantId ? {
+    let streamBegan = false;
+    let assistantAdded = false;
+    try {
+      const activeConversationId = conversationId ?? (await client.createChatConversation()).conversation_id;
+      const pendingRequest = await client.createChatRequest({
+        message: prompt,
+        use_rag: settings.ragEnabled,
+        safety_mode: settings.safetyMode,
+        conversation_id: activeConversationId,
+      });
+      setConversationId(pendingRequest.conversation_id);
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, pendingRequest.conversation_id);
+      startStreamRecovery(
+        sessionStorage,
+        pendingRequest.conversation_id,
+        pendingRequest.request_id,
+        pendingRequest.created_at,
+      );
+      assistantAdded = true;
+      setMessages((current) => [...current, { ...makeMessage("assistant", ""), id: assistantId }]);
+      const run = await client.streamChat({
+        message: prompt,
+        use_rag: settings.ragEnabled,
+        safety_mode: settings.safetyMode,
+        conversation_id: pendingRequest.conversation_id,
+        request_id: pendingRequest.request_id,
+      }, (event) => {
+        if (!streamBegan) {
+          streamBegan = true;
+          updateStreamRecovery(sessionStorage, "active");
+        }
+        if (event.event === "response_delta") {
+          const delta = typeof event.data.delta === "string" ? event.data.delta : "";
+          streamed += delta;
+          setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, text: streamed } : item));
+          return;
+        }
+        const actionRun = actionRunFromStreamEvent(event);
+        if (!actionRun) return;
+        setConversationId(actionRun.conversation_id);
+        setMessages((current) => mergeProjectJobRun(current, actionRun, assistantId) ?? current.map((item) => item.id === assistantId ? {
+            ...item,
+            text: "",
+            createdAt: actionRun.created_at,
+            run: actionRun,
+            action: genericActionFromRun(actionRun) ?? undefined,
+            workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
+            folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
+            validationAction: actionRun.action ? projectValidationActionFromPayload(actionRun.action) ?? undefined : undefined,
+          } : item));
+      });
+      clearStreamRecovery(sessionStorage);
+      setConversationId(run.conversation_id);
+      const action = genericActionFromRun(run);
+      const folderAction = run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined;
+      const validationAction = run.action ? projectValidationActionFromPayload(run.action) ?? undefined : undefined;
+      setMessages((current) => mergeProjectJobRun(current, run, assistantId) ?? current.map((item) => item.id === assistantId ? {
           ...item,
-          text: "",
-          createdAt: actionRun.created_at,
-          run: actionRun,
-          action: genericActionFromRun(actionRun) ?? undefined,
-          workspaceAction: actionRun.action ? assignmentWorkspaceActionFromPayload(actionRun.action) ?? undefined : undefined,
-          folderAction: actionRun.action ? folderAccessActionFromPayload(actionRun.action) ?? undefined : undefined,
-          validationAction: actionRun.action ? projectValidationActionFromPayload(actionRun.action) ?? undefined : undefined,
+          text: action || folderAction || validationAction ? "" : run.assistant_response,
+          createdAt: run.created_at,
+          run,
+          action: action ?? undefined,
+          folderAction,
+          validationAction,
         } : item));
-    });
-    setConversationId(run.conversation_id);
-    const action = genericActionFromRun(run);
-    const folderAction = run.action ? folderAccessActionFromPayload(run.action) ?? undefined : undefined;
-    const validationAction = run.action ? projectValidationActionFromPayload(run.action) ?? undefined : undefined;
-    setMessages((current) => mergeProjectJobRun(current, run, assistantId) ?? current.map((item) => item.id === assistantId ? {
-        ...item,
-        text: action || folderAction || validationAction ? "" : run.assistant_response,
-        createdAt: run.created_at,
-        run,
-        action: action ?? undefined,
-        folderAction,
-        validationAction,
-      } : item));
+    } catch (caught) {
+      updateStreamRecovery(sessionStorage, "failed");
+      const message = cleanError(caught);
+      setError(message);
+      setMessages((current) => assistantAdded
+        ? current.map((item) => item.id === assistantId ? {
+          ...item,
+          text: "The response stopped before completion. It was not replayed automatically; retry when you are ready.",
+        } : item)
+        : [...current, makeMessage("assistant", `The request could not be persisted safely: ${message}`)]);
+    }
   }
 
   async function handleNativeRequest(prompt: string): Promise<boolean> {
@@ -1034,31 +1238,29 @@ export default function App() {
     } finally { locks.current.delete(plan.plan_id); }
   }
 
-  function newChat() {
+  async function newChat() {
     localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+    clearStreamRecovery(sessionStorage);
+    clearScrollSnapshot(sessionStorage, conversationId);
     setConversationId(null);
     setMessages([]);
     setError(null);
+    setLoading(false);
+    setHydrationStatus("loading");
+    setScrollRestoreConversation(null);
+    stickToBottomRef.current = true;
+    lastScrollTopRef.current = 0;
+    pendingScrollRestoreRef.current = null;
     setAwaitingAssignment(false);
     setAssignmentResult(null);
     clearAssignmentFile();
+    window.scrollTo({ top: 0, behavior: "auto" });
+    await initializeCleanConversation();
   }
 
   async function continueConversation(selectedConversationId: string) {
-    setLoading(true);
-    try {
-      const runs = (await client.getChatRuns(100))
-        .filter((run) => run.conversation_id === selectedConversationId)
-        .reverse();
-      const restored = restoreConversationMessages(runs, assignmentAnalysisInfoFromRun);
-      setConversationId(selectedConversationId);
-      setMessages(restored);
-      setError(null);
-    } catch (caught) {
-      setError(cleanError(caught));
-    } finally {
-      setLoading(false);
-    }
+    if (!isValidConversationId(selectedConversationId)) return;
+    await hydrateConversation(selectedConversationId);
   }
 
   return (
@@ -1067,23 +1269,25 @@ export default function App() {
         <div className="brand"><span className="brand-mark"><Bot size={22} /></span><div><strong>Astra</strong><span>Local AI assistant</span></div></div>
         <div className="header-actions">
           <span className={`connection ${health ? "online" : "offline"}`}><span />{health ? "Backend connected" : "Backend unavailable"}</span>
-          <button className="secondary-button" onClick={newChat}><Plus size={16} />New chat</button>
+          <button className="secondary-button" onClick={() => void newChat()}><Plus size={16} />New chat</button>
         </div>
       </header>
       <main className="chat-shell">
-        <section className="conversation" aria-label="Conversation">
-          {messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
-          {loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
+        <section ref={conversationRef} className="conversation" aria-label="Conversation" aria-busy={hydrationStatus === "loading"}>
+          {hydrationStatus === "loading" && <div className="startup-loading"><Activity className="spin" size={18} /><span>Restoring conversation…</span></div>}
+          {hydrationStatus === "ready" && messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
+          {hydrationStatus === "ready" && messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {hydrationStatus === "ready" && loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
+          <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
         </section>
-        <form className="composer" onSubmit={submit}>
+        <form ref={composerRef} className="composer" onSubmit={submit} aria-busy={loading || hydrationStatus === "loading"}>
           {error && <div className="composer-error"><CircleAlert size={15} />{error}</div>}
           {selectedAssignmentFile && <div className="attachment-chip"><FileText size={16} /><span><strong>{selectedAssignmentFile.name}</strong><small>{formatFileSize(selectedAssignmentFile.size)}</small></span><button type="button" onClick={clearAssignmentFile} aria-label="Remove attached assignment"><X size={15} /></button></div>}
           <div className="composer-box">
             <input ref={assignmentFileInputRef} className="file-input" type="file" accept=".txt,.md,.docx" onChange={(event) => selectAssignmentFile(event.target.files?.[0] ?? null)} />
-            <button type="button" className="attach-button" onClick={() => assignmentFileInputRef.current?.click()} disabled={loading} aria-label="Attach assignment file"><Paperclip size={18} /></button>
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={selectedAssignmentFile ? "Add a message or send to analyse…" : "Message Astra…"} rows={1} disabled={loading} />
-            <button className="send-button" disabled={(!input.trim() && !selectedAssignmentFile) || loading} aria-label="Send"><Send size={18} /></button>
+            <button type="button" className="attach-button" onClick={() => assignmentFileInputRef.current?.click()} disabled={loading || hydrationStatus === "loading"} aria-label="Attach assignment file"><Paperclip size={18} /></button>
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder={selectedAssignmentFile ? "Add a message or send to analyse…" : "Message Astra…"} rows={1} disabled={loading || hydrationStatus === "loading"} />
+            <button className="send-button" disabled={(!input.trim() && !selectedAssignmentFile) || loading || hydrationStatus === "loading"} aria-label="Send"><Send size={18} /></button>
           </div>
           <p>Approval required for execution. Unsupported and destructive actions remain blocked.</p>
         </form>
@@ -1284,7 +1488,7 @@ function ProjectDeliveryCard({
     </div>
     {action.clarification?.question && action.status === "clarification_required" && <div className="job-clarification"><CircleAlert size={17} /><div><strong>One clarification is needed</strong><p>{action.clarification.question}</p><small>Reply in this conversation. No patch or command will run.</small></div></div>}
     <section className="job-section"><h3>Task specification</h3><div className="job-columns"><div><strong>In scope</strong><List items={action.requirements} /></div><div><strong>Deliverables</strong><List items={action.deliverables} /></div></div>
-      <div className="criterion-list">{action.criteria.map((criterion) => <div className={`criterion criterion-${criterion.state}`} key={criterion.id}><span>{criterion.state === "satisfied" ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}</span><div><strong>{criterion.requirement}</strong><small>{criterion.required ? "Required" : "Optional"} · {criterion.verificationMode.replace(/_/g, " ")} · {criterion.state.replace(/-/g, " ")}</small>{criterion.blockedReason && <p>{criterion.blockedReason}</p>}</div></div>)}</div>
+      <div className="criterion-list">{action.criteria.map((criterion) => <div className={`criterion criterion-${criterion.state}`} key={criterion.id}><span>{criterion.state === "satisfied" && criterion.verifierOutcome === "passed" ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}</span><div><strong>{criterion.requirement}</strong><small>{criterion.required ? "Required" : "Optional"} · {criterion.verificationMode.replace(/_/g, " ")} · {criterion.state.replace(/-/g, " ")}{criterion.verifierOutcome ? ` · verifier ${criterion.verifierOutcome.replace(/_/g, " ")}` : ""}</small>{criterion.blockedReason && <p>{criterion.blockedReason}</p>}</div></div>)}</div>
     </section>
     {action.plan && <section className="job-section"><div className="analysis-heading"><h3>Execution plan</h3><span className={`confidence confidence-${action.plan.confidence >= .8 ? "high" : action.plan.confidence >= .55 ? "medium" : "low"}`}>{Math.round(action.plan.confidence * 100)}% confidence</span></div>
       <div className="work-unit-list">{action.plan.workUnits.map((unit, index) => <div className={`work-unit work-unit-${unit.status}`} key={unit.id}><span>{index + 1}</span><div><strong>{unit.title}</strong><p>{unit.objective}</p><small>{unit.status.replace(/_/g, " ")}{unit.dependencies.length ? ` · after ${unit.dependencies.join(", ")}` : ""}</small></div></div>)}</div>
@@ -1292,16 +1496,17 @@ function ProjectDeliveryCard({
     </section>}
     {action.repair && <div className="result failed"><CircleAlert size={17} /><div><strong>Stage 8 diagnosis</strong><p>The failed verification is linked to a bounded diagnosis and repair cycle. Repair patch and rerun approvals remain separate.</p></div></div>}
     {action.scopeChanges.length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Scope change detected</strong><p>{action.scopeChanges[action.scopeChanges.length - 1]?.explanation}</p><small>The previous plan approval is invalid. Review the revised scope before continuing.</small></div></div>}
+    {!action.manifest.complete && <div className="result failed"><CircleAlert size={17} /><div><strong>Project evidence is incomplete</strong><p>{action.manifest.error ?? "Rescan the project before approving or verifying work."}</p></div></div>}
     {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Delivery paused</strong><p>{action.error}</p></div></div>}
     {action.handoff && <section className="job-section handoff-card"><h3>Client handoff</h3><p><strong>{action.handoff.status.replace(/_/g, " ")}</strong></p><div className="job-columns"><div><strong>Changed files</strong><List items={action.handoff.changedFiles} /></div><div><strong>Verified validations</strong><List items={action.handoff.validations} /></div></div>{action.handoff.limitations.length > 0 && <div><strong>Known limitations</strong><List items={action.handoff.limitations} /></div>}{action.handoff.manualChecks.length > 0 && <div><strong>Manual checks still required</strong><List items={action.handoff.manualChecks} /></div>}<p className="muted">Rollback {action.handoff.rollbackAvailable ? "is available" : "is not available"} for applied Astra patches.</p></section>}
     <div className="button-row">
-      {action.status === "awaiting_plan_approval" && <button className="primary-button" aria-label="Approve exact project delivery plan" onClick={onApprovePlan}><ShieldCheck size={16} />Approve plan</button>}
+      {action.status === "awaiting_plan_approval" && <button className="primary-button" disabled={!action.manifest.complete} aria-label="Approve exact project delivery plan" onClick={onApprovePlan}><ShieldCheck size={16} />Approve plan</button>}
       {action.status === "plan_approved" && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare next patch</button>}
       {action.status === "patch_applied_not_verified" && <button className="primary-button" onClick={onVerify}><ShieldCheck size={16} />Verify next criterion</button>}
       {!action.handoff && (handoffReady || ["blocked", "awaiting_manual_verification", "partially_completed"].includes(action.status)) && <button className="secondary-button" onClick={onHandoff}><FileText size={16} />Prepare handoff</button>}
       {!terminal && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel delivery</button>}
     </div>
-    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Specification source: {action.specificationSource}</span><span>Plan revision: {action.plan?.revision ?? "not ready"}</span><JsonBlock value={action.technical} /></div></details>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Specification source: {action.specificationSource}</span><span>Plan revision: {action.plan?.revisionId ?? action.plan?.revision ?? "not ready"}</span><span>Approval: {action.plan?.approvalFresh ? "fresh" : "not active"}</span><JsonBlock value={action.technical} /></div></details>
   </div>;
 }
 
@@ -1514,9 +1719,10 @@ function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantI
   });
 }
 function restoreConversationMessages(
-  runs: ChatRunResponse[],
+  detail: ChatConversationDetail,
   assignmentInfo: (run: ChatRunResponse) => InfoCard | undefined,
 ): Message[] {
+  const runs = canonicalConversationTurns(detail.turns);
   const latestJobs = new Map<string, ProjectJobAction>();
   const latestDeliveries = new Map<string, ProjectDeliveryAction>();
   const latestEngagements = new Map<string, ClientEngagementAction>();
@@ -1531,11 +1737,19 @@ function restoreConversationMessages(
     const validation = run.action ? projectValidationActionFromPayload(run.action) : null;
     if (validation) latestValidations.set(validation.campaignId, validation);
   }
+  for (const rawJob of detail.project_jobs) {
+    const job = projectJobActionFromPayload({ action_type: "project_job", technical_details: { project_job: rawJob } });
+    if (job) latestJobs.set(job.jobId, job);
+  }
+  for (const rawDelivery of detail.project_deliveries) {
+    const delivery = projectDeliveryActionFromPayload({ action_type: "project_delivery", technical_details: { project_delivery: rawDelivery } });
+    if (delivery) latestDeliveries.set(delivery.deliveryJobId, delivery);
+  }
   const renderedJobs = new Set<string>();
   const renderedDeliveries = new Set<string>();
   const renderedEngagements = new Set<string>();
   const renderedValidations = new Set<string>();
-  return runs.flatMap<Message>((run) => {
+  const restoredMessages = runs.flatMap<Message>((run) => {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     const showJob = job && !renderedJobs.has(job.jobId);
     if (showJob) renderedJobs.add(job.jobId);
@@ -1553,9 +1767,10 @@ function restoreConversationMessages(
     if (showValidation) renderedValidations.add(validation.campaignId);
     const restoredValidation = showValidation ? latestValidations.get(validation.campaignId) : undefined;
     return [
-      { ...makeMessage("user", run.user_message), createdAt: run.created_at },
+      { ...makeMessage("user", run.user_message), id: `user:${run.run_id}`, createdAt: run.created_at },
       {
         ...makeMessage("assistant", restoredJob || restoredDelivery || restoredEngagement || restoredValidation || genericActionFromRun(run) || (run.action && !job && !delivery && !engagement && !validation) ? "" : run.assistant_response),
+        id: `assistant:${run.run_id}`,
         createdAt: run.created_at,
         run,
         action: genericActionFromRun(run) ?? undefined,
@@ -1569,6 +1784,56 @@ function restoreConversationMessages(
       },
     ];
   });
+  const renderedRunIds = new Set(runs.map((run) => run.run_id));
+  for (const request of detail.requests) {
+    if (request.run_id && renderedRunIds.has(request.run_id)) continue;
+    restoredMessages.push({
+      ...makeMessage("user", request.user_message),
+      id: `request-user:${request.request_id}`,
+      createdAt: request.created_at,
+    });
+    restoredMessages.push({
+      ...requestRecoveryMessage(
+        request.request_id,
+        request.status === "completed" ? "interrupted" : request.status,
+      ),
+      createdAt: request.updated_at,
+    });
+  }
+  for (const [deliveryId, deliveryAction] of latestDeliveries) {
+    if (!renderedDeliveries.has(deliveryId)) restoredMessages.push({
+      ...makeMessage("assistant", ""),
+      id: `delivery:${deliveryId}`,
+      deliveryAction,
+    });
+  }
+  for (const [jobId, jobAction] of latestJobs) {
+    if (!renderedJobs.has(jobId)) restoredMessages.push({
+      ...makeMessage("assistant", ""),
+      id: `project-job:${jobId}`,
+      jobAction,
+    });
+  }
+  return restoredMessages;
+}
+
+function requestRecoveryMessage(
+  requestId: string,
+  status: "pending" | "active" | "interrupted" | "failed" | "cancelled",
+): Message {
+  const text = status === "pending"
+    ? "The request is durably recorded and waiting to start. Reloading will not submit it again."
+    : status === "active"
+      ? "The request is still being processed by the backend. Reloading did not start another execution attempt."
+      : status === "failed"
+    ? "The previous response failed before completion. It was not replayed automatically; retry when you are ready."
+    : status === "cancelled"
+      ? "The previous response was cancelled before completion. No request was replayed."
+      : "The previous response was interrupted by the reload before completion. It was not replayed automatically; retry when you are ready.";
+  return {
+    ...makeMessage("assistant", text),
+    id: `stream-recovery:${requestId}`,
+  };
 }
 function projectJobIdFromAction(action: ChatAction): string | undefined {
   const patch = action.technicalDetails.project_patch;

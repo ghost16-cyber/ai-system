@@ -66,3 +66,40 @@ test("a synchronous action lock rejects duplicate clicks", () => {
   assert.equal(tryLockCommandAction(locks, "safe-plan"), true);
   assert.equal(tryLockCommandAction(locks, "safe-plan"), false);
 });
+
+
+test("forwards the persistent chat run ID through approval and execution", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+
+  await approveAndExecuteCommand({
+    planId: "safe-plan",
+    association: {
+      assignment_id: "chat-action",
+      workspace_path: ".",
+      chat_run_id: "chat-run-123",
+    },
+    calls: {
+      approve: async (_planId, request) => {
+        requests.push(request);
+        return {
+          plan: {} as never,
+          approval_token: "single-use-token",
+        };
+      },
+      execute: async (_planId, request) => {
+        requests.push(request);
+        return {
+          display_state: "completed",
+          exit_code: 0,
+        } as never;
+      },
+    },
+    onApproved: () => undefined,
+    onRunning: () => undefined,
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].chat_run_id, "chat-run-123");
+  assert.equal(requests[1].chat_run_id, "chat-run-123");
+});
+

@@ -49,6 +49,6 @@ test("connected project commands retain a separate approval lifecycle", () => {
 
 test("mobile project workflow remains within the accessible composer layout", () => {
   assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*\.patch-diff/);
-  assert.match(appSource, /<form className="composer"/);
-  assert.match(appSource, /<section className="conversation" aria-label="Conversation">/);
+  assert.match(appSource, /<form[^>]*className="composer"/);
+  assert.match(appSource, /<section[^>]*className="conversation"[^>]*aria-label="Conversation"/);
 });

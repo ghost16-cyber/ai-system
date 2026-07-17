@@ -11,6 +11,8 @@ from backend.app.assignments.schemas import (
     MarkingCriterion,
     ParsedAssignmentDocument,
     ScreenshotRequirement,
+    DocumentBlock,
+    SourceSpan,
 )
 
 
@@ -44,9 +46,10 @@ def extract_assignment_brief(document: ParsedAssignmentDocument | str) -> Assign
         text = str(document)
         title = _first_nonempty_line(text) or "Assignment brief"
 
-    global_instructions = _global_instructions_from_text(text)
+    blocks = document.document_blocks if isinstance(document, ParsedAssignmentDocument) else []
+    global_instructions = _global_instructions_from_blocks(blocks) if blocks else _global_instructions_from_text(text)
     global_report_guidance = [line for line in global_instructions if _is_report_guidance(line)]
-    sections = _sections_from_text(text)
+    sections = _sections_from_blocks(blocks) if blocks else _sections_from_text(text)
     all_technologies = _unique(
         tech
         for section in sections
@@ -89,6 +92,57 @@ def _sections_from_text(text: str) -> list[AssignmentSection]:
     return sections
 
 
+def _sections_from_blocks(blocks: list[DocumentBlock]) -> list[AssignmentSection]:
+    content = [
+        block for block in blocks
+        if block.block_type in {"paragraph", "heading", "list_item", "table_row"} and block.text.strip()
+    ]
+    candidates: list[tuple[int, DocumentBlock, int, bool, str]] = []
+    for index, block in enumerate(content):
+        number = _assignment_heading_number(block.text, allow_task=block.heading_level is not None)
+        if number is None:
+            continue
+        strong = bool(
+            block.heading_level
+            or re.search(r"(?i)\b\d+(?:\.\d+)?\s*marks?\b", block.text)
+            or re.match(r"^ASSIGNMENT\s+", block.raw_text.strip())
+        )
+        kind = "task" if re.match(r"(?i)^task\s+", block.text) else "assignment"
+        candidates.append((index, block, number, strong, kind))
+    if any(kind == "assignment" for _, _, _, _, kind in candidates):
+        candidates = [item for item in candidates if item[4] == "assignment"]
+    strong_numbers = {number for _, _, number, strong, _ in candidates if strong}
+    selected = [
+        (index, block, number) for index, block, number, strong, _ in candidates
+        if strong or number not in strong_numbers
+    ]
+    # If a contents/overview lists assignments before authoritative headings, keep
+    # the last authoritative occurrence of each number and preserve source order.
+    chosen: dict[int, tuple[int, DocumentBlock, int]] = {}
+    for item in selected:
+        index, block, number = item
+        prior = chosen.get(number)
+        if prior is None or block.heading_level or re.search(r"(?i)\bmarks?\b", block.text):
+            chosen[number] = item
+    starts = sorted(chosen.values(), key=lambda item: item[0])
+    if not starts:
+        first = content[0] if content else None
+        if first is None:
+            return []
+        starts = [(0, first, 1)]
+    sections: list[AssignmentSection] = []
+    for section_index, (start, heading, _number) in enumerate(starts, start=1):
+        end = starts[section_index][0] if section_index < len(starts) else len(content)
+        section_blocks = content[start:end]
+        sections.append(
+            _section_from_lines(
+                section_index, heading.text, [block.text for block in section_blocks],
+                source_blocks=section_blocks,
+            )
+        )
+    return sections
+
+
 def _global_instructions_from_text(text: str) -> list[str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     starts = [index for index, line in enumerate(lines) if re.match(r"(?i)^assignment\s+\d+\s*[:\-]", line)]
@@ -97,7 +151,23 @@ def _global_instructions_from_text(text: str) -> list[str]:
     return _unique(line for line in lines[: starts[0]] if _is_generic_instruction(line) or _is_dataset_guidance(line))
 
 
-def _section_from_lines(index: int, heading: str, lines: list[str]) -> AssignmentSection:
+def _global_instructions_from_blocks(blocks: list[DocumentBlock]) -> list[str]:
+    visible = [block for block in blocks if block.block_type in {"paragraph", "heading", "list_item", "table_row"}]
+    boundary = next(
+        (index for index, block in enumerate(visible) if _assignment_heading_number(block.text, allow_task=False) is not None and (
+            block.heading_level or re.search(r"(?i)\b\d+(?:\.\d+)?\s*marks?\b", block.text) or re.match(r"^ASSIGNMENT\s+", block.raw_text.strip())
+        )),
+        len(visible),
+    )
+    return _unique(
+        block.text for block in visible[:boundary]
+        if _is_generic_instruction(block.text) or _is_dataset_guidance(block.text)
+    )
+
+
+def _section_from_lines(
+    index: int, heading: str, lines: list[str], *, source_blocks: list[DocumentBlock] | None = None,
+) -> AssignmentSection:
     title = heading.strip("# ")
     assignment_name = title
     technologies = _extract_technologies(" ".join(lines))
@@ -115,6 +185,8 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
     reading_analysis = False
 
     for line_index, line in enumerate(lines, start=1):
+        block = source_blocks[line_index - 1] if source_blocks and line_index <= len(source_blocks) else None
+        provenance = _provenance(block)
         if line_index == 1 and _normalize_line(line) == _normalize_line(heading):
             continue
         lowered = line.lower()
@@ -158,6 +230,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                 marks=marks,
                 required_output=_required_output(line),
                 optional=False,
+                **provenance,
             )
             tasks.append(task)
             current_task = task
@@ -170,6 +243,15 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                         description=line,
                         marks=marks,
                         assignment_name=assignment_name,
+                        **provenance,
+                    )
+                )
+            if _mentions_screenshot(line) and not _is_generic_screenshot_instruction(line):
+                screenshots.append(
+                    ScreenshotRequirement(
+                        requirement_id=f"a{index}-screenshot-{len(screenshots) + 1}",
+                        description=line, assignment_name=assignment_name,
+                        task_name=task.title, **provenance,
                     )
                 )
             continue
@@ -181,6 +263,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                     description=line,
                     marks=marks,
                     assignment_name=assignment_name,
+                    **provenance,
                 )
             )
             continue
@@ -191,6 +274,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                     question_id=f"a{index}-question-{len(questions) + 1}",
                     question=line,
                     assignment_name=assignment_name,
+                    **provenance,
                 )
             )
             continue
@@ -205,6 +289,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                     marks=marks,
                     required_output=_required_output(line),
                     optional=True,
+                    **provenance,
                 )
             )
             continue
@@ -219,6 +304,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                     description=line,
                     assignment_name=assignment_name,
                     task_name=current_task.title if current_task is not None else None,
+                    **provenance,
                 )
             )
             continue
@@ -234,6 +320,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                     description=line,
                     marks=marks,
                     assignment_name=assignment_name,
+                    **provenance,
                 )
             )
 
@@ -245,6 +332,7 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
                 description="Review assignment requirements and identify deliverables.",
                 technologies=technologies,
                 required_output="Requirement checklist",
+                **_provenance(source_blocks[0] if source_blocks else None),
             )
         )
     return AssignmentSection(
@@ -260,7 +348,40 @@ def _section_from_lines(index: int, heading: str, lines: list[str]) -> Assignmen
         report_requirements=_unique(reports),
         global_instructions=_unique(global_instructions),
         report_guidance=_unique(report_guidance),
+        source_spans=[block.source_span for block in (source_blocks or [])],
+        source_block_ids=[block.block_id for block in (source_blocks or [])],
     )
+
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+
+def _assignment_heading_number(text: str, *, allow_task: bool) -> int | None:
+    cleaned = re.sub(r"\s+", " ", text.strip())
+    label = r"assignment|task" if allow_task else r"assignment"
+    match = re.match(
+        rf"(?i)^(?:{label})\s+(\d+|{'|'.join(_NUMBER_WORDS)})\b"
+        r"(?:\s*(?::|[-\u2013\u2014])\s*.*|\s+\d+(?:\.\d+)?\s*marks?\b.*|\s*)$",
+        cleaned,
+    )
+    if not match:
+        return None
+    value = match.group(1).lower()
+    return int(value) if value.isdigit() else _NUMBER_WORDS[value]
+
+
+def _provenance(block: DocumentBlock | None) -> dict:
+    if block is None:
+        return {"source_spans": [], "source_block_ids": []}
+    spans = [block.source_span]
+    for raw in block.metadata.get("cell_source_spans", []):
+        try:
+            spans.append(SourceSpan.model_validate(raw))
+        except ValueError:
+            continue
+    block_ids = [block.block_id, *[str(item) for item in block.metadata.get("cell_block_ids", [])]]
+    return {"source_spans": spans, "source_block_ids": list(dict.fromkeys(block_ids))}
 
 
 def _extract_technologies(text: str) -> list[str]:

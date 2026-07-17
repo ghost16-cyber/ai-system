@@ -44,6 +44,16 @@ class EvidencePackage(StrictModel):
     limits: dict[str, int]
 
 
+class RepairContext(StrictModel):
+    diagnosis_id: str
+    failure_evidence_id: str
+    command_execution_id: str
+    parent_patch_id: str
+    repair_chain_id: str
+    repair_cycle_id: str
+    cycle_number: int = Field(ge=1, le=3)
+
+
 class SynthesisRequest(StrictModel):
     contract_version: Literal["astra.project-synthesis.request.v1"]
     request_id: str
@@ -55,6 +65,7 @@ class SynthesisRequest(StrictModel):
     index_version: str
     evidence: EvidencePackage
     output_contract: dict[str, Any]
+    repair_context: RepairContext | None = None
 
 
 class ExactReplacement(StrictModel):

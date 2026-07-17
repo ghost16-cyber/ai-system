@@ -34,7 +34,11 @@ export async function approveAndExecuteCommand({
 }: {
   calls: CommandLifecycleCalls;
   planId: string;
-  association: { assignment_id: string; workspace_path: string };
+  association: {
+    assignment_id: string;
+    workspace_path: string;
+    chat_run_id?: string;
+  };
   onApproved: (plan: AssignmentCommandRecord) => void;
   onRunning: () => void;
   beforeExecution?: () => Promise<void>;

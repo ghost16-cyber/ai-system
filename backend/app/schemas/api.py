@@ -84,6 +84,19 @@ class ChatRunRequest(BaseModel):
     use_corpus: bool | None = None
     safety_mode: str = "read_only"
     conversation_id: str | None = None
+    request_id: str | None = None
+
+
+class ChatRequestRecord(BaseModel):
+    request_id: str
+    conversation_id: str
+    user_message: str
+    status: Literal["pending", "active", "completed", "failed", "cancelled", "interrupted"]
+    run_id: str | None = None
+    execution_attempts: int = 0
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class RagSourceMetadata(BaseModel):
@@ -150,10 +163,14 @@ class ChatConversationsResponse(BaseModel):
 
 
 class ChatConversationDetail(BaseModel):
+    hydration_version: Literal["astra.chat-hydration.v1"] = "astra.chat-hydration.v1"
     conversation_id: str
     title: str
     memory_summary: str | None = None
     turns: list[ChatRunResponse]
+    requests: list[ChatRequestRecord] = Field(default_factory=list)
+    project_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    project_deliveries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatConversationDeleteResponse(BaseModel):

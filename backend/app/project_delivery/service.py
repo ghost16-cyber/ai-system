@@ -9,8 +9,10 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from backend.app.folders.safety import project_root_fingerprint, safe_relative_path
-from backend.app.project_analysis import build_analysis_plan, build_project_index, file_hashes
-from backend.app.project_analysis.diagnosis import project_state_hash
+from backend.app.project_analysis import (
+    IncompleteProjectManifestError, ProjectStateManifest, build_analysis_plan, build_project_index,
+    build_project_state_manifest, file_hashes,
+)
 from backend.app.project_analysis.model_synthesis import SynthesisGateway
 from backend.app.project_analysis.model_synthesis.gateway import SynthesisGatewayError
 from backend.app.project_delivery.contracts import (
@@ -19,13 +21,20 @@ from backend.app.project_delivery.contracts import (
     AcceptanceCriterion,
     DeliveryStatus,
     ExecutionPlan,
+    ExecutionPlanRevision,
     HandoffReport,
     ScopeChange,
     TaskSpecification,
     VerificationMode,
     VerificationRecord,
+    VerifierResult,
+    VerifierOutcome,
     VerificationState,
+    PlanApprovalGrant,
+    ImmutableWorkUnitDefinition,
     WorkUnit,
+    WorkUnitExecutionState,
+    WorkUnitExecutionStatus,
     WorkUnitStatus,
     parse_model_specification,
 )
@@ -39,11 +48,19 @@ class ProjectDeliveryError(ValueError):
 
 
 _CLEAR_ACTION = re.compile(
-    r"\b(add(?:ing)?|chang(?:e|ing)|fix(?:ing)?|implement(?:ing)?|updat(?:e|ing)|"
-    r"remov(?:e|ing)|renam(?:e|ing)|validat(?:e|ing)|test(?:ing)?|refactor(?:ing)?)\b",
+    r"\b(add(?:ing)?|analy[sz](?:e|ing)|build(?:ing)?|creat(?:e|ing)|chang(?:e|ing)|"
+    r"export(?:ing)?|fix(?:ing)?|generat(?:e|ing)|implement(?:ing)?|produc(?:e|ing)|"
+    r"sav(?:e|ing)|updat(?:e|ing)|writ(?:e|ing)|remov(?:e|ing)|renam(?:e|ing)|"
+    r"validat(?:e|ing)|test(?:ing)?|refactor(?:ing)?)\b",
     re.I,
 )
 _PATH_TOKEN = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+")
+_FILE_TOKEN = re.compile(
+    r"(?<![\w./-])[A-Za-z0-9_-][A-Za-z0-9_.-]*\."
+    r"(?:csv|json|parquet|tsv|xlsx?|py|md|png|jpe?g|svg|html?|pdf|ipynb)"
+    r"(?![\w.-])",
+    re.I,
+)
 _MATERIAL_TERMS = {
     "production": "Should this delivery stop at locally verified changes, or target a separately approved production process?",
     "deploy": "Which separately approved deployment environment is in scope? Deployment is excluded until clarified.",
@@ -65,6 +82,7 @@ def create_delivery_job(
 ) -> dict[str, Any]:
     approved = Path(root).resolve()
     delivery_job_id = uuid4().hex
+    manifest = build_project_state_manifest(approved, workspace_id=folder_access_id)
     index = build_project_index(
         approved,
         conversation_id=conversation_id,
@@ -113,13 +131,14 @@ def create_delivery_job(
     plan = None if clarification_questions else build_execution_plan(specification, index, analysis, limits=limits)
     status = DeliveryStatus.CLARIFICATION if clarification_questions else DeliveryStatus.AWAITING_PLAN_APPROVAL
     now = _now()
-    return {
+    job = {
         "delivery_job_id": delivery_job_id,
         "action_run_id": action_run_id,
         "conversation_id": conversation_id,
         "folder_access_id": folder_access_id,
         "root_fingerprint": project_root_fingerprint(approved),
-        "project_state_hash": project_state_hash(approved),
+        "project_state_hash": manifest.manifest_hash,
+        "project_state_manifest": manifest.model_dump(mode="json"),
         "status": status.value,
         "original_user_request": _bounded(user_request, 3000),
         "specification": specification.model_dump(mode="json"),
@@ -130,6 +149,9 @@ def create_delivery_job(
         "analysis": analysis,
         "plan": plan.model_dump(mode="json") if plan else None,
         "plan_revisions": [plan.model_dump(mode="json")] if plan else [],
+        "plan_revision": None,
+        "plan_revision_history": [],
+        "work_unit_execution_states": [],
         "plan_approval": None,
         "clarifications": ([{
             "clarification_id": _stable_id("clarification", delivery_job_id, clarification_questions[0]),
@@ -139,6 +161,7 @@ def create_delivery_job(
         "patch_references": [],
         "command_references": [],
         "verification_records": [],
+        "verifier_results": [],
         "scope_changes": [],
         "rollback_records": [],
         "handoff": None,
@@ -156,6 +179,9 @@ def create_delivery_job(
         "completed_at": None,
         "cancelled_at": None,
     }
+    if plan is not None:
+        job = _install_plan_revision(job, plan, specification)
+    return job
 
 
 def build_execution_plan(
@@ -200,7 +226,7 @@ def build_execution_plan(
             "clarification_may_be_required": False,
             "status": WorkUnitStatus.READY if not units else WorkUnitStatus.PENDING,
         }
-        data["work_unit_hash"] = immutable_hash(data)
+        data["work_unit_hash"] = immutable_hash({key: value for key, value in data.items() if key != "status"})
         units.append(WorkUnit.model_validate(data))
     mapping = {criterion: [unit.work_unit_id for unit in units if criterion in unit.criterion_references] for criterion in criteria}
     if any(not values for values in mapping.values()):
@@ -224,27 +250,78 @@ def build_execution_plan(
         "confidence_reasons": ["Stage 6 structural evidence identifies the bounded file set and verification configuration."],
         "created_at": _now(),
     }
-    data["plan_hash"] = immutable_hash(data)
+    data["plan_hash"] = immutable_hash(_immutable_plan_payload(data))
     return ExecutionPlan.model_validate(data)
 
 
-def approve_plan(job: dict[str, Any], *, plan_hash: str, actor: str = "user") -> dict[str, Any]:
-    plan = _plan(job)
-    if plan.plan_hash != plan_hash:
+def approve_plan(
+    job: dict[str, Any], *, plan_hash: str, actor: str = "user",
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    try:
+        approved_manifest = ProjectStateManifest.model_validate(job.get("project_state_manifest"))
+    except ValueError as error:
+        raise ProjectDeliveryError("A valid complete project manifest is required before approval.", code="incomplete_project_manifest") from error
+    if not approved_manifest.complete or approved_manifest.manifest_hash != job.get("project_state_hash"):
+        raise ProjectDeliveryError("An incomplete or mismatched project manifest cannot authorize approval.", code="incomplete_project_manifest")
+    if root is not None:
+        current_manifest = build_project_state_manifest(root, workspace_id=str(job.get("folder_access_id") or ""))
+        if current_manifest.manifest_hash != approved_manifest.manifest_hash:
+            raise ProjectDeliveryError("The project changed after planning; create a fresh plan before approval.", code="stale_repository")
+    if not isinstance(job.get("plan_revision"), dict):
+        if isinstance(job.get("plan_approval"), dict):
+            raise ProjectDeliveryError(
+                "The legacy approval cannot authorize an immutable Stage 0 plan; review and approve it again.",
+                code="migration_reapproval_required",
+            )
+        job = _install_plan_revision(
+            job, _plan(job), TaskSpecification.model_validate(job["specification"]),
+        )
+    revision = _plan_revision(job)
+    if revision.content_hash != plan_hash:
         raise ProjectDeliveryError("The exact current plan hash is required.", code="hash_mismatch")
     approval = job.get("plan_approval")
-    if isinstance(approval, dict) and approval.get("plan_hash") == plan_hash:
+    if isinstance(approval, dict) and approval.get("plan_revision_id") == revision.plan_revision_id and approval.get("plan_content_hash") == plan_hash:
         return job
     if job.get("status") != DeliveryStatus.AWAITING_PLAN_APPROVAL.value:
         raise ProjectDeliveryError("This delivery job is not awaiting plan approval.", code="invalid_state")
     updated = _copy(job)
-    updated["plan_approval"] = {
-        "approval_id": _stable_id("plan-approval", job["delivery_job_id"], plan_hash),
-        "plan_hash": plan_hash, "specification_hash": plan.specification_hash,
-        "approved_by": _bounded(actor, 80), "approved_at": _now(),
-        "authority": "prepare_work_units_only",
-    }
+    grant = PlanApprovalGrant(
+        approval_id=_stable_id("plan-approval", job["delivery_job_id"], revision.plan_revision_id, plan_hash),
+        project_run_id=job["delivery_job_id"], plan_revision_id=revision.plan_revision_id,
+        plan_content_hash=plan_hash, specification_hash=revision.specification_hash,
+        scope_revision=int(TaskSpecification.model_validate(job["specification"]).revision),
+        workspace_id=job["folder_access_id"], root_fingerprint=job["root_fingerprint"],
+        approved_by=_bounded(actor, 80), approved_at=datetime.now(timezone.utc),
+        expected_project_state_version=int(job.get("state_version") or 1),
+    )
+    updated["plan_approval"] = {**grant.model_dump(mode="json"), "plan_hash": plan_hash}
     updated["status"] = DeliveryStatus.PLAN_APPROVED.value
+    updated["updated_at"] = _now()
+    return updated
+
+
+def adapt_legacy_delivery_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Create a safe v2 projection without carrying a legacy approval forward."""
+    if isinstance(job.get("plan_revision"), dict) or not isinstance(job.get("plan"), dict):
+        return job
+    had_legacy_approval = isinstance(job.get("plan_approval"), dict)
+    updated = _copy(job)
+    updated["plan_approval"] = None
+    updated["status"] = DeliveryStatus.AWAITING_PLAN_APPROVAL.value
+    updated = _install_plan_revision(
+        updated, _plan(updated), TaskSpecification.model_validate(updated["specification"]),
+    )
+    updated["legacy_migration"] = {
+        "status": "reapproval_required" if had_legacy_approval else "adapted_unapproved",
+        "legacy_approval_discarded": had_legacy_approval,
+        "adapted_at": _now(),
+    }
+    if had_legacy_approval:
+        updated["last_error"] = {
+            "code": "migration_reapproval_required",
+            "message": "A legacy mutable-plan approval was discarded; approve the new immutable revision.",
+        }
     updated["updated_at"] = _now()
     return updated
 
@@ -289,6 +366,7 @@ def submit_clarification(
     clarifications = list(updated.get("clarifications") or [])
     if clarifications:
         clarifications[-1].update({"answer": _bounded(answer, 2000), "status": "answered", "answered_at": _now()})
+    manifest = build_project_state_manifest(root, workspace_id=job["folder_access_id"])
     updated.update({
         "specification": spec.model_dump(mode="json"),
         "specification_revisions": [*updated.get("specification_revisions", []), spec.model_dump(mode="json")],
@@ -297,22 +375,25 @@ def submit_clarification(
         "plan_approval": None, "clarifications": clarifications,
         "analysis_id": index["analysis_id"], "analysis_hash": stage6_analysis_hash(index),
         "analysis_index": index, "analysis": analysis,
-        "project_state_hash": project_state_hash(root),
+        "project_state_hash": manifest.manifest_hash,
+        "project_state_manifest": manifest.model_dump(mode="json"),
         "status": DeliveryStatus.AWAITING_PLAN_APPROVAL.value, "updated_at": _now(),
     })
-    return updated
+    return _install_plan_revision(updated, plan, spec)
 
 
 def activate_next_work_unit(job: dict[str, Any], *, root: str | Path) -> dict[str, Any]:
     plan = _plan(job)
+    revision = _plan_revision(job)
     approval = job.get("plan_approval") or {}
-    if approval.get("plan_hash") != plan.plan_hash:
+    if approval.get("plan_revision_id") != revision.plan_revision_id or approval.get("plan_content_hash") != revision.content_hash:
         raise ProjectDeliveryError("Approve the exact current plan before preparing work.", code="approval_required")
     if job.get("active_work_unit_id"):
         raise ProjectDeliveryError("Only one work unit may be active at a time.", code="conflict")
     if job.get("status") not in {DeliveryStatus.PLAN_APPROVED.value, DeliveryStatus.PATCH_APPLIED.value}:
         raise ProjectDeliveryError("The delivery job is not ready to activate a work unit.", code="invalid_state")
-    current_state = project_state_hash(root)
+    current_manifest = build_project_state_manifest(root, workspace_id=job["folder_access_id"])
+    current_state = current_manifest.manifest_hash
     if current_state != job.get("project_state_hash"):
         raise ProjectDeliveryError("The project changed after planning; replan from fresh analysis.", code="stale_repository")
     fresh = build_project_index(
@@ -322,22 +403,16 @@ def activate_next_work_unit(job: dict[str, Any], *, root: str | Path) -> dict[st
     if stage6_analysis_hash(fresh) != plan.stage6_analysis_hash:
         raise ProjectDeliveryError("Stage 6 structural evidence changed after plan approval.", code="stale_analysis")
     units = [unit.model_copy(deep=True) for unit in plan.work_units]
-    completed = {unit.work_unit_id for unit in units if unit.status == WorkUnitStatus.SATISFIED}
-    selected = next((unit for unit in units if unit.status in {WorkUnitStatus.READY, WorkUnitStatus.PENDING} and set(unit.dependencies) <= completed), None)
+    state_by_id = _execution_state_map(job)
+    completed = {unit.work_unit_id for unit in units if state_by_id[unit.work_unit_id].status == WorkUnitExecutionStatus.COMPLETED}
+    selected = next((unit for unit in units if state_by_id[unit.work_unit_id].status in {WorkUnitExecutionStatus.READY, WorkUnitExecutionStatus.PENDING} and set(unit.dependencies) <= completed), None)
     if selected is None:
         raise ProjectDeliveryError("No dependency-safe pending work unit is available.", code="blocked_dependency")
-    updated_units = []
-    for unit in units:
-        if unit.work_unit_id == selected.work_unit_id:
-            payload = unit.model_dump(mode="json")
-            payload["status"] = WorkUnitStatus.PREPARING.value
-            unit = WorkUnit.model_validate(payload)
-        updated_units.append(unit)
-    updated_plan = _replace_plan_units(plan, updated_units)
-    updated = _copy(job)
+    updated = _set_unit_status(job, selected.work_unit_id, WorkUnitStatus.PREPARING)
     updated.update({
-        "plan": updated_plan.model_dump(mode="json"), "active_work_unit_id": selected.work_unit_id,
+        "active_work_unit_id": selected.work_unit_id,
         "analysis_id": fresh["analysis_id"], "analysis_index": fresh,
+        "project_state_manifest": current_manifest.model_dump(mode="json"),
         "status": DeliveryStatus.PREPARING.value, "updated_at": _now(),
     })
     return updated
@@ -399,6 +474,7 @@ def record_verification(
     command_run_references: Iterable[str] = (), relevant_file_hashes: dict[str, str] | None = None,
     relevant_diff_hashes: Iterable[str] = (), structural_analysis_references: Iterable[str] = (),
     failure_explanation: str | None = None,
+    verifier_result: VerifierResult | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     specification = TaskSpecification.model_validate(job["specification"])
     criterion = next((item for item in specification.acceptance_criteria if item.criterion_id == criterion_id), None)
@@ -409,7 +485,25 @@ def record_verification(
     evidence = list(dict.fromkeys(str(item) for item in evidence_references if item))[:30]
     command_refs = list(dict.fromkeys(str(item) for item in command_run_references if item))[:15]
     structural_refs = list(dict.fromkeys(str(item) for item in structural_analysis_references if item))[:10]
+    typed_result = (
+        verifier_result if isinstance(verifier_result, VerifierResult)
+        else VerifierResult.model_validate(verifier_result) if isinstance(verifier_result, dict)
+        else None
+    )
     if state == VerificationState.SATISFIED:
+        if typed_result is None:
+            raise ProjectDeliveryError("A fresh typed verifier result is required for automatic satisfaction.", code="missing_checker")
+        revision = _plan_revision(job)
+        if (
+            typed_result.outcome != VerifierOutcome.PASSED
+            or typed_result.plan_revision_id != revision.plan_revision_id
+            or typed_result.project_run_id != job["delivery_job_id"]
+            or typed_result.work_unit_id != work_unit_id
+            or typed_result.criterion_id != criterion_id
+            or typed_result.criterion_definition_hash != immutable_hash(criterion.model_dump(mode="json"))
+            or typed_result.input_manifest_hash != job.get("project_state_hash")
+        ):
+            raise ProjectDeliveryError("The typed verifier result is stale or does not satisfy this criterion.", code="stale_verifier_result")
         if method in {VerificationMode.EXISTING_TEST, VerificationMode.NEW_TEST, VerificationMode.TYPE_CHECK, VerificationMode.LINT, VerificationMode.BUILD, VerificationMode.APPROVED_COMMAND} and not command_refs:
             raise ProjectDeliveryError("Successful approved command evidence is required for this criterion.", code="missing_evidence")
         if method == VerificationMode.STRUCTURAL and not structural_refs:
@@ -427,12 +521,21 @@ def record_verification(
         "relevant_diff_hashes": list(relevant_diff_hashes)[:15],
         "structural_analysis_references": structural_refs,
         "failure_explanation": _bounded(failure_explanation or "", 4000) or None,
+        "verifier_result_id": typed_result.verifier_result_id if typed_result else None,
+        "verifier_result_hash": typed_result.result_hash if typed_result else None,
+        "input_manifest_hash": typed_result.input_manifest_hash if typed_result else None,
+        "plan_revision_id": typed_result.plan_revision_id if typed_result else None,
         "verified_at": _now(),
     }
     data["verification_hash"] = immutable_hash(data)
     record = VerificationRecord.model_validate(data)
     updated = _copy(job)
     updated["verification_records"] = [*updated.get("verification_records", []), record.model_dump(mode="json")]
+    if typed_result is not None:
+        existing_results = list(updated.get("verifier_results") or [])
+        if not any(item.get("verifier_result_id") == typed_result.verifier_result_id for item in existing_results if isinstance(item, dict)):
+            existing_results.append(typed_result.model_dump(mode="json"))
+        updated["verifier_results"] = existing_results
     if state == VerificationState.FAILED:
         updated["status"] = DeliveryStatus.VERIFICATION_FAILED.value
     elif state == VerificationState.MANUAL:
@@ -499,6 +602,7 @@ def revise_scope(
         spec, index, analysis, limits=limits, revision=len(job.get("plan_revisions") or []) + 1,
     )
     updated = _copy(job)
+    manifest = build_project_state_manifest(root, workspace_id=job["folder_access_id"])
     updated.update({
         "specification": spec.model_dump(mode="json"),
         "specification_revisions": [*updated.get("specification_revisions", []), spec.model_dump(mode="json")],
@@ -507,10 +611,11 @@ def revise_scope(
         "plan_approval": None, "active_work_unit_id": None,
         "analysis_id": index["analysis_id"], "analysis_hash": stage6_analysis_hash(index),
         "analysis_index": index, "analysis": analysis,
-        "project_state_hash": project_state_hash(root),
+        "project_state_hash": manifest.manifest_hash,
+        "project_state_manifest": manifest.model_dump(mode="json"),
         "status": DeliveryStatus.AWAITING_PLAN_APPROVAL.value, "updated_at": _now(),
     })
-    return updated
+    return _install_plan_revision(updated, plan, spec, supersedes=_plan_revision(job).plan_revision_id)
 
 
 def record_rollback(job: dict[str, Any], *, patch_id: str, restored_state_hash: str) -> dict[str, Any]:
@@ -540,11 +645,21 @@ def record_rollback(job: dict[str, Any], *, patch_id: str, restored_state_hash: 
     return updated
 
 
-def generate_handoff(job: dict[str, Any]) -> dict[str, Any]:
+def generate_handoff(job: dict[str, Any], *, root: str | Path | None = None) -> dict[str, Any]:
+    if root is not None:
+        current_manifest = build_project_state_manifest(
+            root, workspace_id=str(job.get("folder_access_id") or "")
+        )
+        if current_manifest.manifest_hash != job.get("project_state_hash"):
+            raise ProjectDeliveryError(
+                "The project changed after verification; run the required verifiers again before handoff.",
+                code="stale_verifier_result",
+            )
     if job.get("handoff"):
         return job
     specification = TaskSpecification.model_validate(job["specification"])
-    latest = _latest_criterion_states(job)
+    fresh_records = _fresh_verification_records(job)
+    latest = _latest_criterion_states({**job, "verification_records": fresh_records})
     required = [item for item in specification.acceptance_criteria if item.required]
     manual = [item for item in required if latest.get(item.criterion_id) == VerificationState.MANUAL.value]
     failed = [item for item in required if latest.get(item.criterion_id) in {VerificationState.FAILED.value, VerificationState.BLOCKED.value}]
@@ -576,9 +691,10 @@ def generate_handoff(job: dict[str, Any]) -> dict[str, Any]:
         "manual_checks_still_required": [item.requirement for item in manual],
         "relevant_hashes": {
             "specification": specification.specification_hash,
-            "plan": _plan(job).plan_hash,
+            "plan": _plan_revision(job).content_hash,
             "project_state": str(job.get("project_state_hash") or ""),
         },
+        "verifier_result_ids": [str(item["verifier_result_id"]) for item in fresh_records if item.get("verifier_result_id")][:30],
         "completion_status": completion, "completed_at": _now(),
     }
     data["handoff_hash"] = "0" * 64
@@ -654,12 +770,13 @@ def _deterministic_specification_data(user_request: str, index: dict[str, Any], 
         verification_mode=VerificationMode.EXACT_ASSERTION, expected_evidence_type="planned-to-actual diff and file hashes",
     ).model_dump(mode="json"))
     required_methods = list(dict.fromkeys([item["verification_mode"] for item in criteria]))
+    deliverables = [f"Create or update {path}." for path in paths]
     return {
         "objective": _bounded(user_request.strip().rstrip("."), 1000),
         "requirements": [_bounded(user_request.strip(), 1000)],
         "exclusions": ["Deployment, credentials, network access, Git writes, and unplanned dependency changes."],
         "assumptions": [],
-        "deliverables": ["Approved project changes and evidence-backed acceptance verification."],
+        "deliverables": deliverables,
         "criteria": criteria, "required_methods": required_methods,
         "optional_methods": [VerificationMode.MANUAL.value],
         "evidence": paths[:20], "clarifications": [],
@@ -744,10 +861,50 @@ def _request_paths(value: str) -> list[str]:
 
 def _planned_paths_from_request(user_request: str, index: dict[str, Any], analysis: dict[str, Any]) -> list[str]:
     known = {str(item.get("relative_path")) for item in index.get("files", [])}
-    explicit = [path for path in _request_paths(user_request) if path in known]
+    inferred_outputs = _artifact_output_paths(user_request)
+    if inferred_outputs:
+        return inferred_outputs[:30]
+    explicit = _request_paths(user_request)
     if explicit:
         return explicit
     return [str(item.get("relative_path")) for item in analysis.get("coherent_file_set", []) if item.get("relative_path") in known][:30]
+
+
+def _artifact_output_paths(user_request: str) -> list[str]:
+    lowered = user_request.lower()
+    explicit = [*_request_paths(user_request), *_bare_file_paths(user_request)]
+    data_suffixes = {".csv", ".json", ".parquet", ".tsv", ".xls", ".xlsx"}
+    artifact_suffixes = {".py", ".md", ".png", ".jpg", ".jpeg", ".svg", ".html", ".htm", ".pdf", ".ipynb"}
+    explicit_outputs = [path for path in explicit if Path(path).suffix.lower() in artifact_suffixes]
+    asks_for_artifacts = bool(re.search(r"\b(?:script|charts?|plots?|reports?|notebooks?|png|markdown)\b", lowered))
+    if not asks_for_artifacts:
+        return []
+
+    data_paths = [path for path in explicit if Path(path).suffix.lower() in data_suffixes]
+    base = Path(data_paths[0]).stem if data_paths else "project"
+    base = re.sub(r"[^a-z0-9_-]+", "_", base.lower()).strip("_") or "project"
+    outputs = list(explicit_outputs)
+    if re.search(r"\b(?:python\s+)?script\b", lowered) and not any(Path(path).suffix.lower() == ".py" for path in outputs):
+        outputs.append(f"{base}_analysis.py")
+    if re.search(r"\b(?:png\s+)?(?:charts?|plots?)\b|\bpng\b", lowered) and not any(Path(path).suffix.lower() == ".png" for path in outputs):
+        count_match = re.search(r"\b(\d+|one|two|three|four|five|six|seven|eight)\s+(?:png\s+)?(?:charts?|plots?)\b", lowered)
+        counts = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8}
+        raw_count = count_match.group(1) if count_match else "1"
+        chart_count = max(1, min(12, int(raw_count) if raw_count.isdigit() else counts[raw_count]))
+        outputs.extend(f"{base}_chart_{index}.png" for index in range(1, chart_count + 1))
+    if re.search(r"\b(?:markdown\s+)?report\b", lowered) and not any(Path(path).suffix.lower() == ".md" for path in outputs):
+        outputs.append(f"{base}_report.md")
+    return list(dict.fromkeys(outputs))
+
+
+def _bare_file_paths(value: str) -> list[str]:
+    paths = []
+    for token in _FILE_TOKEN.findall(value or ""):
+        try:
+            paths.append(safe_relative_path(token.rstrip(".,;:!?")))
+        except Exception:
+            continue
+    return list(dict.fromkeys(paths))[:20]
 
 
 def _planned_paths(specification: TaskSpecification, index: dict[str, Any], analysis: dict[str, Any]) -> list[str]:
@@ -763,7 +920,11 @@ def _planned_paths(specification: TaskSpecification, index: dict[str, Any], anal
 def _clarification_question(user_request: str, analysis: dict[str, Any]) -> str:
     lowered = user_request.lower()
     for term, question in _MATERIAL_TERMS.items():
-        if term in lowered:
+        excluded = re.search(
+            rf"\b(?:do\s+not|don't|must\s+not|without|no)\b[^.!?]{{0,120}}\b{re.escape(term)}(?:ment|ion|ions|ed|ing)?\b",
+            lowered,
+        )
+        if term in lowered and excluded is None:
             return question
     if not analysis.get("coherent_file_set"):
         return "Which project-relative component or file should this delivery target?"
@@ -820,6 +981,26 @@ def _set_unit_status(job: dict[str, Any], unit_id: str, status: WorkUnitStatus) 
         raise ProjectDeliveryError("Unknown work unit.", code="unknown_work_unit")
     updated = _copy(job)
     updated["plan"] = _replace_plan_units(plan, units).model_dump(mode="json")
+    states = _execution_state_map(updated)
+    current = states[unit_id]
+    target = _runtime_status(status)
+    state_update: dict[str, Any] = {
+        "status": target,
+        "state_version": current.state_version + 1,
+    }
+    if target == WorkUnitExecutionStatus.ACTIVE and current.status != WorkUnitExecutionStatus.ACTIVE:
+        state_update.update({
+            "attempt_count": current.attempt_count + 1,
+            "active_attempt_id": uuid4().hex,
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": None,
+        })
+    if target in {WorkUnitExecutionStatus.COMPLETED, WorkUnitExecutionStatus.FAILED, WorkUnitExecutionStatus.CANCELLED, WorkUnitExecutionStatus.ROLLED_BACK}:
+        state_update.update({"completed_at": datetime.now(timezone.utc), "active_attempt_id": None})
+    states[unit_id] = current.model_copy(update=state_update)
+    updated["work_unit_execution_states"] = [
+        states[item].model_dump(mode="json") for item in _plan_revision(updated).ordered_work_unit_ids
+    ]
     return updated
 
 
@@ -844,6 +1025,9 @@ def _recalculate_progress(job: dict[str, Any]) -> dict[str, Any]:
             unit = WorkUnit.model_validate(value)
         units.append(unit)
     updated["plan"] = _replace_plan_units(plan, units).model_dump(mode="json")
+    for unit in units:
+        if unit.status == WorkUnitStatus.SATISFIED:
+            updated = _set_unit_status(updated, unit.work_unit_id, WorkUnitStatus.SATISFIED)
     active = updated.get("active_work_unit_id")
     if any(unit.work_unit_id == active and unit.status == WorkUnitStatus.SATISFIED for unit in units):
         updated["active_work_unit_id"] = None
@@ -859,10 +1043,186 @@ def _latest_criterion_states(job: dict[str, Any]) -> dict[str, str]:
     return latest
 
 
+def _fresh_verification_records(job: dict[str, Any]) -> list[dict[str, Any]]:
+    revision = _plan_revision(job)
+    current_manifest = str(job.get("project_state_hash") or "")
+    results = {
+        str(item.get("verifier_result_id")): item
+        for item in job.get("verifier_results") or [] if isinstance(item, dict)
+    }
+    specification = TaskSpecification.model_validate(job["specification"])
+    criteria = {item.criterion_id: item for item in specification.acceptance_criteria}
+    fresh: list[dict[str, Any]] = []
+    for record in job.get("verification_records") or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("state") in {VerificationState.FAILED.value, VerificationState.BLOCKED.value, VerificationState.MANUAL.value} and not record.get("verifier_result_id"):
+            fresh.append(record)
+            continue
+        result = results.get(str(record.get("verifier_result_id") or ""))
+        if not result:
+            continue
+        try:
+            typed_result = VerifierResult.model_validate(result)
+        except ValueError:
+            continue
+        result_payload = typed_result.model_dump(mode="json")
+        claimed_result_hash = result_payload.pop("result_hash", None)
+        criterion = criteria.get(str(record.get("criterion_id") or ""))
+        if (
+            record.get("plan_revision_id") == revision.plan_revision_id
+            and record.get("input_manifest_hash") == current_manifest
+            and typed_result.plan_revision_id == revision.plan_revision_id
+            and typed_result.input_manifest_hash == current_manifest
+            and typed_result.outcome == VerifierOutcome.PASSED
+            and criterion is not None
+            and typed_result.criterion_definition_hash == immutable_hash(criterion.model_dump(mode="json"))
+            and all(item.outcome == "passed" for item in typed_result.performed_checks)
+            and record.get("verifier_result_hash") == typed_result.result_hash
+            and claimed_result_hash == immutable_hash(result_payload)
+        ):
+            fresh.append(record)
+    return fresh
+
+
 def _plan(job: dict[str, Any]) -> ExecutionPlan:
     if not isinstance(job.get("plan"), dict):
         raise ProjectDeliveryError("This delivery job does not have an execution plan.", code="missing_plan")
     return ExecutionPlan.model_validate(job["plan"])
+
+
+def _plan_revision(job: dict[str, Any]) -> ExecutionPlanRevision:
+    value = job.get("plan_revision")
+    if not isinstance(value, dict):
+        if isinstance(job.get("plan_approval"), dict):
+            raise ProjectDeliveryError(
+                "This legacy plan approval predates immutable plan revisions and must be approved again.",
+                code="migration_reapproval_required",
+            )
+        raise ProjectDeliveryError("This delivery job has no immutable plan revision.", code="missing_plan_revision")
+    revision = ExecutionPlanRevision.model_validate(value)
+    if revision.content_hash != immutable_hash(_immutable_plan_payload(_plan(job).model_dump(mode="json"))):
+        raise ProjectDeliveryError("The immutable plan revision content hash is invalid.", code="stale_plan_approval")
+    return revision
+
+
+def _install_plan_revision(
+    job: dict[str, Any], plan: ExecutionPlan, specification: TaskSpecification,
+    *, supersedes: str | None = None,
+) -> dict[str, Any]:
+    updated = _copy(job)
+    payload = _immutable_plan_payload(plan.model_dump(mode="json"))
+    digest = immutable_hash(payload)
+    if plan.plan_hash != digest:
+        plan_value = plan.model_dump(mode="json")
+        plan_value["plan_hash"] = digest
+        plan = ExecutionPlan.model_validate(plan_value)
+        updated["plan"] = plan.model_dump(mode="json")
+    revision_id = _stable_id("plan-revision", job["delivery_job_id"], str(plan.plan_revision), digest)
+    definitions = tuple(
+        ImmutableWorkUnitDefinition(
+            work_unit_id=unit.work_unit_id, title=unit.title, objective=unit.objective,
+            requirement_references=tuple(unit.requirement_references),
+            acceptance_criteria_ids=tuple(unit.criterion_references),
+            dependencies=tuple(unit.dependencies), expected_files=tuple(unit.expected_files),
+            expected_symbols=tuple(unit.expected_symbols), bounded_inputs=tuple(unit.expected_files),
+            bounded_outputs=tuple(unit.expected_files), expected_patch_scope=unit.expected_patch_scope,
+            expected_validation_commands=tuple(unit.expected_validation_commands),
+            completion_conditions=tuple(unit.completion_conditions), risk_level=unit.risk_level,
+            clarification_may_be_required=unit.clarification_may_be_required,
+        ) for unit in plan.work_units
+    )
+    revision = ExecutionPlanRevision(
+        plan_revision_id=revision_id, project_run_id=job["delivery_job_id"],
+        revision_number=plan.plan_revision,
+        task_specification_revision_id=f"{specification.task_id}:r{specification.revision}",
+        specification_hash=plan.specification_hash, stage6_analysis_hash=plan.stage6_analysis_hash,
+        work_units=definitions, ordered_work_unit_ids=tuple(plan.ordered_work_unit_ids),
+        dependencies=tuple((key, tuple(plan.dependency_graph[key])) for key in sorted(plan.dependency_graph)),
+        acceptance_criteria=tuple((key, tuple(plan.acceptance_criterion_mapping[key])) for key in sorted(plan.acceptance_criterion_mapping)),
+        estimated_patch_count=plan.estimated_patch_count,
+        estimated_command_count=plan.estimated_command_count,
+        explicit_exclusions=tuple(plan.explicit_exclusions), plan_source=plan.plan_source,
+        confidence=plan.confidence, confidence_reasons=tuple(plan.confidence_reasons),
+        created_at=datetime.now(timezone.utc), content_hash=digest,
+        supersedes_revision_id=supersedes,
+    )
+    states = [
+        WorkUnitExecutionState(
+            project_run_id=job["delivery_job_id"], plan_revision_id=revision_id,
+            work_unit_id=unit.work_unit_id,
+            status=WorkUnitExecutionStatus.READY if index == 0 else WorkUnitExecutionStatus.PENDING,
+            attempt_count=0, state_version=1,
+        ).model_dump(mode="json")
+        for index, unit in enumerate(definitions)
+    ]
+    history = list(updated.get("plan_revision_history") or [])
+    if not any(item.get("plan_revision_id") == revision_id for item in history if isinstance(item, dict)):
+        history.append(revision.model_dump(mode="json"))
+    updated.update({
+        "plan_revision": revision.model_dump(mode="json"),
+        "plan_revision_history": history,
+        "work_unit_execution_states": states,
+        "plan_approval": None,
+    })
+    return updated
+
+
+def _immutable_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    units = []
+    for raw in plan.get("work_units") or []:
+        unit = dict(raw)
+        unit.pop("status", None)
+        unit.pop("work_unit_hash", None)
+        for key in ("requirement_references", "criterion_references", "dependencies", "expected_files", "expected_symbols", "expected_validation_commands", "completion_conditions"):
+            if key in unit:
+                unit[key] = list(unit[key])
+        units.append(unit)
+    return {
+        "schema_version": "astra.project-delivery.plan-content.v2",
+        "project_run_id": plan.get("delivery_job_id"),
+        "revision_number": plan.get("plan_revision"),
+        "specification_hash": plan.get("specification_hash"),
+        "stage6_analysis_hash": plan.get("stage6_analysis_hash"),
+        "work_units": units,
+        "ordered_work_unit_ids": list(plan.get("ordered_work_unit_ids") or []),
+        "dependency_graph": {key: list(value) for key, value in sorted((plan.get("dependency_graph") or {}).items())},
+        "acceptance_criterion_mapping": {key: list(value) for key, value in sorted((plan.get("acceptance_criterion_mapping") or {}).items())},
+        "estimated_patch_count": plan.get("estimated_patch_count"),
+        "estimated_command_count": plan.get("estimated_command_count"),
+        "explicit_exclusions": list(plan.get("explicit_exclusions") or []),
+        "plan_source": plan.get("plan_source"),
+        "confidence": plan.get("confidence"),
+        "confidence_reasons": list(plan.get("confidence_reasons") or []),
+    }
+
+
+def _execution_state_map(job: dict[str, Any]) -> dict[str, WorkUnitExecutionState]:
+    revision = _plan_revision(job)
+    values = {
+        str(item.get("work_unit_id")): WorkUnitExecutionState.model_validate(item)
+        for item in job.get("work_unit_execution_states") or [] if isinstance(item, dict)
+    }
+    missing = set(revision.ordered_work_unit_ids) - set(values)
+    if missing:
+        raise ProjectDeliveryError(f"Work-unit execution state is missing for {sorted(missing)}.", code="invalid_runtime_state")
+    if any(item.plan_revision_id != revision.plan_revision_id for item in values.values()):
+        raise ProjectDeliveryError("Work-unit execution state belongs to a different plan revision.", code="stale_runtime_state")
+    return values
+
+
+def _runtime_status(status: WorkUnitStatus) -> WorkUnitExecutionStatus:
+    return {
+        WorkUnitStatus.PENDING: WorkUnitExecutionStatus.PENDING,
+        WorkUnitStatus.READY: WorkUnitExecutionStatus.READY,
+        WorkUnitStatus.PREPARING: WorkUnitExecutionStatus.ACTIVE,
+        WorkUnitStatus.AWAITING_PATCH: WorkUnitExecutionStatus.ACTIVE,
+        WorkUnitStatus.APPLIED: WorkUnitExecutionStatus.ACTIVE,
+        WorkUnitStatus.VERIFYING: WorkUnitExecutionStatus.ACTIVE,
+        WorkUnitStatus.SATISFIED: WorkUnitExecutionStatus.COMPLETED,
+        WorkUnitStatus.BLOCKED: WorkUnitExecutionStatus.BLOCKED,
+        WorkUnitStatus.ROLLED_BACK: WorkUnitExecutionStatus.ROLLED_BACK,
+    }[status]
 
 
 def _limit_reached(job: dict[str, Any], code: str) -> dict[str, Any]:
@@ -904,7 +1264,7 @@ def _now() -> str:
 
 
 __all__ = [
-    "ProjectDeliveryError", "activate_next_work_unit", "approve_plan", "build_execution_plan",
+    "ProjectDeliveryError", "adapt_legacy_delivery_job", "activate_next_work_unit", "approve_plan", "build_execution_plan",
     "cancel_delivery", "create_delivery_job", "generate_handoff", "immutable_hash",
     "link_patch_preview", "public_delivery_job", "record_patch_applied", "record_rollback",
     "record_scope_change", "record_verification", "stage6_analysis_hash", "submit_clarification",

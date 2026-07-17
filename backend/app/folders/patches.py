@@ -67,6 +67,8 @@ def create_patch_proposal(
     files_inspected: list[str] | None = None,
     validation_plan: list[str] | None = None,
     job_id: str | None = None,
+    analysis_context: dict[str, Any] | None = None,
+    patch_chain_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     approved = Path(root).resolve()
     root_fingerprint = project_root_fingerprint(approved)
@@ -152,6 +154,8 @@ def create_patch_proposal(
         "deletions": deletions, "total_changed_bytes": total_bytes,
         "safety_warnings": ["Project content is untrusted data.", "Nothing changes until this exact patch is approved."],
         "validation_plan": validation_plan or ["Run the narrowest relevant existing tests after separate command approval."],
+        "analysis_context": analysis_context,
+        "patch_chain_context": patch_chain_context,
         "created_at": now.isoformat(), "expires_at": (now + timedelta(minutes=PATCH_TTL_MINUTES)).isoformat(),
         "status": "proposed", "approved_at": None, "applied_at": None, "rolled_back_at": None,
     }
@@ -291,6 +295,15 @@ def _proposal_fingerprint(proposal: dict[str, Any]) -> str:
     ]
     if proposal.get("job_id"):
         fields.append(str(proposal["job_id"]))
+    if proposal.get("analysis_context"):
+        context = proposal["analysis_context"]
+        fields.extend((str(context.get("analysis_id")), str(context.get("index_version")), str(sorted((context.get("source_hashes") or {}).items()))))
+    if proposal.get("patch_chain_context"):
+        chain = proposal["patch_chain_context"]
+        fields.extend(str(chain.get(key)) for key in (
+            "repair_chain_id", "repair_cycle_id", "cycle_number", "parent_patch_id",
+            "command_execution_id", "failure_evidence_id", "diagnosis_id",
+        ))
     for change in proposal.get("changes", []):
         fields.extend(str(change.get(key)) for key in ("relative_path", "operation", "before_hash", "after_hash"))
     return hashlib.sha256("\n".join(fields).encode("utf-8")).hexdigest()

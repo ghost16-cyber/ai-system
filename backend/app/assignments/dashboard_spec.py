@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.app.assignments.schemas import DashboardChartSpec, DashboardSpec
 from backend.app.datasets.schemas import DatasetProfile
+from backend.app.assignments.dataset_mapper import map_dataset_columns, require_resolved_semantic_mapping
 
 
 def generate_dashboard_spec(
@@ -73,9 +74,10 @@ def _chart(chart_id: str, title: str, chart_type: str, fields: list[str], purpos
 
 
 def _columns(profile: DatasetProfile | None) -> dict[str, str]:
-    date = profile.detected_date_columns[0] if profile and profile.detected_date_columns else "TIMESTAMP_COLUMN"
-    numeric = profile.detected_numeric_columns[0] if profile and profile.detected_numeric_columns else "NUMERIC_COLUMN"
+    mapping = require_resolved_semantic_mapping(profile) if profile is not None else map_dataset_columns(None)
+    date = mapping.timestamp_column.column if profile else "TIMESTAMP_COLUMN"
+    numeric = mapping.primary_numeric_indicator.column if profile else "NUMERIC_COLUMN"
     numeric_two = profile.detected_numeric_columns[1] if profile and len(profile.detected_numeric_columns) > 1 else numeric
-    category = profile.detected_categorical_columns[0] if profile and profile.detected_categorical_columns else "CATEGORY_COLUMN"
+    category = mapping.category_grouping_column.column if profile else "CATEGORY_COLUMN"
     classification = next((col for col in (profile.detected_numeric_columns if profile else []) if col.lower() in {"label", "target", "severity", "indicator"}), "CLASSIFICATION_COLUMN")
     return {"date": date, "numeric": numeric, "numeric_two": numeric_two, "category": category, "classification": classification}

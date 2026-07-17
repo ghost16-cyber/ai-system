@@ -103,6 +103,9 @@ export function projectJobActionFromPayload(payload: unknown): ProjectJobAction 
   if (action.action_type !== "project_job") return null;
   const details = asObject(action.technical_details);
   const job = asObject(details.project_job);
+  // Stage 9 creates a hidden legacy job as an execution bridge. Its lifecycle is
+  // represented by the delivery card, so exposing both cards would duplicate it.
+  if (readString(job.delivery_job_id)) return null;
   const jobId = readString(job.job_id);
   const rawStatus = readString(job.status) as ProjectJobStatus;
   if (!jobId || !statuses.has(rawStatus)) return null;

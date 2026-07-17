@@ -68,3 +68,31 @@ test("an action-only stream event produces the pending folder card state", () =>
 test("response deltas are not misclassified as action events", () => {
   assert.equal(actionRunFromStreamEvent({ event: "response_delta", data: { delta: "hello" } }), null);
 });
+
+test("Stage 6 structural events update the same project job action", () => {
+  const run = {
+    run_id: "run-6",
+    conversation_id: "conversation-6",
+    action: { action_type: "project_job", action_id: "job-6" },
+  };
+  const result = actionRunFromStreamEvent({
+    event: "project_analysis_completed",
+    data: { run, job: { job_id: "job-6" } },
+  } as never);
+  assert.equal(result?.run_id, "run-6");
+  assert.equal(result?.action?.action_id, "job-6");
+});
+
+test("Stage 8 repair events update the existing chat action without creating a dashboard", () => {
+  const run = {
+    run_id: "run-8",
+    conversation_id: "conversation-8",
+    action: { action_type: "project_patch", action_id: "repair-patch-8" },
+  };
+  const result = actionRunFromStreamEvent({
+    event: "project_repair_ready",
+    data: { run, repair: { repair_cycle_id: "cycle-8", cycle_number: 1 } },
+  } as never);
+  assert.equal(result?.run_id, "run-8");
+  assert.equal(result?.action?.action_id, "repair-patch-8");
+});

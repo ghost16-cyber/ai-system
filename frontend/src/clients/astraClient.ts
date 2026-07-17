@@ -163,6 +163,19 @@ export interface ChatRunRequest {
   use_rag: boolean;
   safety_mode?: string;
   conversation_id?: string | null;
+  request_id?: string | null;
+}
+
+export interface ChatRequestRecord {
+  request_id: string;
+  conversation_id: string;
+  user_message: string;
+  status: "pending" | "active" | "completed" | "failed" | "cancelled" | "interrupted";
+  run_id: string | null;
+  execution_attempts: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ChatTraceEntry {
@@ -205,6 +218,24 @@ export interface ChatRunResponse {
   created_at: string;
   trace_summary: ChatTraceEntry[];
   action?: Record<string, unknown> | null;
+}
+
+export interface ChatConversationDetail {
+  hydration_version: "astra.chat-hydration.v1";
+  conversation_id: string;
+  title: string;
+  memory_summary: string | null;
+  turns: ChatRunResponse[];
+  requests: ChatRequestRecord[];
+  project_jobs: Array<Record<string, unknown>>;
+  project_deliveries: Array<Record<string, unknown>>;
+}
+
+export class AstraHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "AstraHttpError";
+  }
 }
 
 export type TrainingLabel =
@@ -725,11 +756,14 @@ export interface AstraClient {
   ): Promise<SlmChatResponse>;
   chatWithContext(message: string, limit?: number): Promise<SlmChatResponse>;
   runChat(request: ChatRunRequest): Promise<ChatRunResponse>;
+  createChatRequest(request: ChatRunRequest): Promise<ChatRequestRecord>;
   streamChat(
     request: ChatRunRequest,
     onEvent: (event: ChatStreamEvent) => void,
   ): Promise<ChatRunResponse>;
   getChatRuns(limit?: number): Promise<ChatRunResponse[]>;
+  createChatConversation(): Promise<ChatConversationDetail>;
+  getChatConversation(conversationId: string): Promise<ChatConversationDetail>;
   getTrainingDatasetStatus(): Promise<TrainingDatasetStatus>;
   getTrainingExamples(limit?: number): Promise<TrainingExamplesResponse>;
   labelTrainingExample(exampleId: string, request: TrainingLabelRequest): Promise<{ updated: boolean; example: TrainingExample }>;
@@ -918,6 +952,13 @@ export class HttpAstraClient implements AstraClient {
     return this.postJson<ChatRunResponse>("/chat/run", request);
   }
 
+  async createChatRequest(request: ChatRunRequest) {
+    return this.postJson<ChatRequestRecord>("/chat/requests", {
+      ...request,
+      request_id: null,
+    });
+  }
+
   async streamChat(
     request: ChatRunRequest,
     onEvent: (event: ChatStreamEvent) => void,
@@ -965,6 +1006,16 @@ export class HttpAstraClient implements AstraClient {
       `/chat/runs?limit=${encodeURIComponent(String(limit))}`,
     );
     return Array.isArray(response.items) ? response.items : [];
+  }
+
+  async getChatConversation(conversationId: string) {
+    return this.getJson<ChatConversationDetail>(
+      `/chat/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  }
+
+  async createChatConversation() {
+    return this.postJson<ChatConversationDetail>("/chat/conversations", {});
   }
 
   async getTrainingDatasetStatus() {
@@ -1390,7 +1441,7 @@ export class HttpAstraClient implements AstraClient {
 
   private async getJson<T>(path: string): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`);
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new AstraHttpError(response.status, await response.text());
     return response.json() as Promise<T>;
   }
 
@@ -1400,7 +1451,7 @@ export class HttpAstraClient implements AstraClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new AstraHttpError(response.status, await response.text());
     return response.json() as Promise<T>;
   }
 
@@ -1410,7 +1461,7 @@ export class HttpAstraClient implements AstraClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(await response.text());
+    if (!response.ok) throw new AstraHttpError(response.status, await response.text());
     return response.json() as Promise<T>;
   }
 }

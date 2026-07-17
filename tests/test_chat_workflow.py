@@ -367,13 +367,16 @@ def test_exact_folder_prompt_intercepts_sync_and_stream_before_other_workflows(
 
     prompt = "Connect the project folder /home/palla/projects/test-folder"
     with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
+        stream_conversation = client.post("/chat/conversations")
+        assert stream_conversation.status_code == 200, stream_conversation.text
+        stream_conversation_id = stream_conversation.json()["conversation_id"]
         sync = client.post(
             "/chat/run",
             json={"message": prompt, "conversation_id": "sync-conversation", "use_rag": True},
         )
         streamed = client.post(
             "/chat/stream",
-            json={"message": prompt, "conversation_id": "stream-conversation", "use_rag": True},
+            json={"message": prompt, "conversation_id": stream_conversation_id, "use_rag": True},
         )
         events = _ndjson_events(streamed)
         runs = _chat_runs(client)
@@ -382,10 +385,14 @@ def test_exact_folder_prompt_intercepts_sync_and_stream_before_other_workflows(
     assert streamed.status_code == 200, streamed.text
     sync_run = sync.json()
     stream_run = events[-1]["data"]["run"]
-    assert [event["event"] for event in events] == ["action_required", "run_completed"]
+    assert [event["event"] for event in events] == [
+        "request_accepted",
+        "action_required",
+        "run_completed",
+    ]
     for run, conversation_id in (
         (sync_run, "sync-conversation"),
-        (stream_run, "stream-conversation"),
+        (stream_run, stream_conversation_id),
     ):
         assert run["conversation_id"] == conversation_id
         assert run["selected_specialist"] == "folder_access"
@@ -396,7 +403,7 @@ def test_exact_folder_prompt_intercepts_sync_and_stream_before_other_workflows(
         assert run["action"]["action_type"] == "folder_access"
         assert run["action"]["status"] == "awaiting_approval"
         assert _folder_details(run)["inventory"] == []
-    assert events[0]["data"]["action"] == stream_run["action"]
+    assert events[1]["data"]["action"] == stream_run["action"]
     assert len(runs) == 2
     assert calls == []
 
@@ -575,8 +582,8 @@ def test_streamed_connected_folder_content_request_bypasses_specialist(
         runs = _chat_runs(client)
 
     assert response.status_code == 200, response.text
-    assert [event["event"] for event in events] == ["run_completed"]
-    run = events[0]["data"]["run"]
+    assert [event["event"] for event in events] == ["request_accepted", "run_completed"]
+    run = events[1]["data"]["run"]
     assert run["intent"] == "project_question"
     assert run["used_real_slm"] is False
     assert run["action"] is None
@@ -784,8 +791,12 @@ def test_direct_action_stream_has_one_response_and_no_generated_answer(tmp_path:
         response = client.post("/chat/stream", json={"message": "pytest", "use_rag": True})
 
     events = _ndjson_events(response)
-    assert [event["event"] for event in events] == ["action_required", "run_completed"]
-    assert events[0]["data"]["action"]["action_type"] == "command"
+    assert [event["event"] for event in events] == [
+        "request_accepted",
+        "action_required",
+        "run_completed",
+    ]
+    assert events[1]["data"]["action"]["action_type"] == "command"
     assert events[-1]["data"]["run"]["action"]["status"] == "awaiting_approval"
 
 
@@ -1015,7 +1026,8 @@ def test_chat_stream_emits_ordered_workflow_events_and_final_summary(tmp_path: P
     assert response.status_code == 200
     events = _ndjson_events(response)
     event_names = [event["event"] for event in events]
-    assert event_names[:4] == [
+    assert event_names[:5] == [
+        "request_accepted",
         "run_started",
         "specialist_selected",
         "rag_completed",

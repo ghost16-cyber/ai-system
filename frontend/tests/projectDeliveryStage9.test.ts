@@ -49,14 +49,36 @@ test("Stage 9 task specification, plan, progress, and safe paths normalize", () 
   assert.ok(action);
   assert.equal(action.deliveryJobId, "delivery-1");
   assert.equal(action.specificationSource, "deterministic");
-  assert.equal(action.criteria[0].state, "satisfied");
+  assert.equal(action.criteria[0].state, "stale");
+  assert.equal(action.criteria[0].verifierOutcome, "stale");
   assert.deepEqual(action.plan?.workUnits[0].files, ["app.py"]);
   assert.deepEqual(action.progress, {
     completedWorkUnits: 0, totalWorkUnits: 2,
-    satisfiedRequiredCriteria: 1, totalRequiredCriteria: 2,
+    satisfiedRequiredCriteria: 0, totalRequiredCriteria: 2,
   });
   assert.deepEqual(action.patchIds, ["patch-1"]);
   assert.deepEqual(action.commandPlanIds, ["command-1"]);
+});
+
+test("fresh typed verifier evidence and v2 approval are shown as trusted", () => {
+  const value = payload("plan_approved");
+  const delivery = value.technical_details.project_delivery as Record<string, unknown>;
+  delivery.project_state_hash = "c".repeat(64);
+  delivery.project_state_manifest = { complete: true, manifest_hash: "c".repeat(64), incomplete_reasons: [] };
+  delivery.plan_revision = { plan_revision_id: "revision-1", content_hash: "b".repeat(64) };
+  delivery.plan_approval = {
+    plan_revision_id: "revision-1", plan_content_hash: "b".repeat(64),
+  };
+  delivery.verifier_results = [{
+    criterion_id: "criterion-01", outcome: "passed",
+    input_manifest_hash: "c".repeat(64), plan_revision_id: "revision-1",
+  }];
+  const action = projectDeliveryActionFromPayload(value);
+  assert.ok(action);
+  assert.equal(action.criteria[0].state, "satisfied");
+  assert.equal(action.criteria[0].verifierOutcome, "passed");
+  assert.equal(action.plan?.approvalFresh, true);
+  assert.equal(action.manifest.complete, true);
 });
 
 test("exact plan approval uses the displayed immutable hash", () => {

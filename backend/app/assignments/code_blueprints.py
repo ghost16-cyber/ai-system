@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
+from backend.app.assignments.dataset_mapper import map_dataset_columns, require_resolved_semantic_mapping
 from backend.app.assignments.schemas import (
     AssignmentCodeBlueprint,
     AssignmentCodeBlueprintSet,
@@ -34,6 +38,18 @@ def generate_code_blueprints(
         ]
     else:
         raise ValueError("Assignment number must be 1, 2, or 3.")
+    if dataset_profile is not None:
+        blueprints = [
+            item.model_copy(update={
+                "placeholders": [],
+                "safety_notes": [
+                    "Review before running; Astra does not execute generated code.",
+                    "No real credentials are embedded.",
+                    "Dataset fields are bound to the validated semantic mapping.",
+                ],
+            })
+            for item in blueprints
+        ]
     return AssignmentCodeBlueprintSet(
         assignment_number=assignment_number,
         blueprints=blueprints,
@@ -59,11 +75,12 @@ def _blueprint(assignment: int, path: str, purpose: str, tech: str, content: str
     )
 
 
-def _column_context(profile: DatasetProfile | None) -> dict[str, str]:
-    date = profile.detected_date_columns[0] if profile and profile.detected_date_columns else "TIMESTAMP_COLUMN"
-    numeric = profile.detected_numeric_columns[0] if profile and profile.detected_numeric_columns else "NUMERIC_COLUMN"
+def _column_context(profile: DatasetProfile | None) -> dict[str, Any]:
+    mapping = require_resolved_semantic_mapping(profile) if profile is not None else map_dataset_columns(None)
+    date = mapping.timestamp_column.column if profile else "TIMESTAMP_COLUMN"
+    numeric = mapping.primary_numeric_indicator.column if profile else "NUMERIC_COLUMN"
     numeric_two = profile.detected_numeric_columns[1] if profile and len(profile.detected_numeric_columns) > 1 else numeric
-    category = profile.detected_categorical_columns[0] if profile and profile.detected_categorical_columns else "CATEGORY_COLUMN"
+    category = mapping.category_grouping_column.column if profile else "CATEGORY_COLUMN"
     classification = _classification_column(profile) if profile else "CLASSIFICATION_COLUMN"
     return {
         "date": date,
@@ -72,6 +89,7 @@ def _column_context(profile: DatasetProfile | None) -> dict[str, str]:
         "category": category,
         "classification": classification,
         "dataset": profile.dataset_path if profile else "DATASET_PATH",
+        "semantic_mapping": mapping.semantic_mapping,
     }
 
 
@@ -121,21 +139,25 @@ services:
 """
 
 
-def _producer(ctx: dict[str, str]) -> str:
+def _producer(ctx: dict[str, Any]) -> str:
+    timestamp_expression, category_expression, helpers = _python_derivers(ctx)
     return f'''
 import csv
 import json
 import os
 import time
+from datetime import datetime
 from kafka import KafkaProducer
 
 TOPIC = os.getenv("KAFKA_TOPIC", "assignment-events")
 DATASET_PATH = os.getenv("DATASET_PATH", "{ctx["dataset"]}")
 
+{helpers}
+
 def build_event(row):
     return {{
-        "timestamp": row.get("{ctx["date"]}"),
-        "category": row.get("{ctx["category"]}"),
+        "timestamp": {timestamp_expression},
+        "category": {category_expression},
         "value": float(row.get("{ctx["numeric"]}", 0) or 0),
         "raw": row,
     }}
@@ -156,7 +178,7 @@ if __name__ == "__main__":
 '''
 
 
-def _consumer_influx(ctx: dict[str, str]) -> str:
+def _consumer_influx(ctx: dict[str, Any]) -> str:
     return f'''
 import json
 import os
@@ -190,10 +212,11 @@ if __name__ == "__main__":
 '''
 
 
-def _spark_processing(ctx: dict[str, str]) -> str:
+def _spark_processing(ctx: dict[str, Any]) -> str:
+    derivations = _spark_derivations(ctx)
     return f'''
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import avg, col, count, to_timestamp
+from pyspark.sql.functions import avg, col, concat_ws, count, date_format, hour, to_timestamp, when
 
 DATASET_PATH = "{ctx["dataset"]}"
 TIMESTAMP_COLUMN = "{ctx["date"]}"
@@ -203,7 +226,8 @@ NUMERIC_COLUMN = "{ctx["numeric"]}"
 def main():
     spark = SparkSession.builder.appName("assignment-2-processing").getOrCreate()
     df = spark.read.option("header", True).option("inferSchema", True).csv(DATASET_PATH)
-    cleaned = df.withColumn("event_time", to_timestamp(col(TIMESTAMP_COLUMN))).dropna(subset=[NUMERIC_COLUMN])
+{derivations}
+    cleaned = df.dropna(subset=[NUMERIC_COLUMN])
     by_category = cleaned.groupBy(CATEGORY_COLUMN).agg(count("*").alias("row_count"), avg(NUMERIC_COLUMN).alias("avg_value"))
     by_category.show(20, truncate=False)
     by_category.write.mode("overwrite").parquet("outputs/category_summary")
@@ -240,7 +264,7 @@ if __name__ == "__main__":
 '''
 
 
-def _streamlit_dashboard(ctx: dict[str, str]) -> str:
+def _streamlit_dashboard(ctx: dict[str, Any]) -> str:
     return f'''
 import pandas as pd
 import streamlit as st
@@ -265,11 +289,11 @@ if __name__ == "__main__":
 '''
 
 
-def _replay_producer(ctx: dict[str, str]) -> str:
+def _replay_producer(ctx: dict[str, Any]) -> str:
     return _producer(ctx).replace("assignment-events", "streaming-events")
 
 
-def _structured_streaming(ctx: dict[str, str]) -> str:
+def _structured_streaming(ctx: dict[str, Any]) -> str:
     return f'''
 import json
 import os
@@ -345,3 +369,62 @@ def main():
 if __name__ == "__main__":
     main()
 '''
+
+
+def _python_derivers(ctx: dict[str, Any]) -> tuple[str, str, str]:
+    mapping = ctx.get("semantic_mapping")
+    if mapping is None:
+        return f'row.get({_py(ctx["date"])})', f'row.get({_py(ctx["category"])})', ""
+    plans = {item.name: item for item in mapping.derived_columns}
+    timestamp = plans.get(ctx["date"])
+    timestamp_expression = f'row.get({_py(ctx["date"])})'
+    helper_lines: list[str] = []
+    if timestamp and timestamp.expression_type == "combine_datetime":
+        columns = list(timestamp.source_columns)
+        timestamp_expression = "derive_event_timestamp(row)"
+        helper_lines.extend([
+            "def derive_event_timestamp(row):",
+            "    return \" \".join(str(row.get(column, \"\")).strip() for column in " + repr(columns) + ").strip()",
+        ])
+    category = plans.get(ctx["category"])
+    category_expression = f'row.get({_py(ctx["category"])})'
+    if category and category.expression_type == "date_part":
+        category_expression = "derive_event_category(row)"
+        helper_lines.extend([
+            "",
+            "def derive_event_category(row):",
+            f"    raw = {timestamp_expression}",
+            "    for pattern in (\"%d/%m/%Y %H:%M:%S\", \"%Y-%m-%d %H:%M:%S\", \"%Y-%m-%dT%H:%M:%S\"):",
+            "        try:",
+            "            parsed = datetime.strptime(raw, pattern)",
+            f"            return parsed.hour if {_py(ctx['category'])} == \"event_hour\" else parsed.strftime(\"%A\")",
+            "        except ValueError:",
+            "            continue",
+            "    return \"unresolved-time\"",
+        ])
+    elif category and category.expression_type == "numeric_bin":
+        source = category.source_columns[0]
+        category_expression = f'("high" if float(row.get({_py(source)}, 0) or 0) > 0 else "low")'
+    return timestamp_expression, category_expression, "\n".join(helper_lines)
+
+
+def _spark_derivations(ctx: dict[str, Any]) -> str:
+    mapping = ctx.get("semantic_mapping")
+    lines: list[str] = []
+    if mapping is not None:
+        for plan in mapping.derived_columns:
+            if plan.expression_type == "combine_datetime":
+                args = ", ".join(f"col({_py(column)})" for column in plan.source_columns)
+                lines.append(f"    df = df.withColumn({_py(plan.name)}, to_timestamp(concat_ws(\" \", {args})))")
+            elif plan.expression_type == "date_part":
+                timestamp = ctx["date"]
+                expression = f"hour(col({_py(timestamp)}))" if plan.name.endswith("hour") else f"date_format(col({_py(timestamp)}), \"EEEE\")"
+                lines.append(f"    df = df.withColumn({_py(plan.name)}, {expression})")
+            elif plan.expression_type == "numeric_bin":
+                source = plan.source_columns[0]
+                lines.append(f"    df = df.withColumn({_py(plan.name)}, when(col({_py(source)}) > 0, \"high\").otherwise(\"low\"))")
+    return "\n".join(lines) or "    df = df"
+
+
+def _py(value: str) -> str:
+    return json.dumps(str(value), ensure_ascii=False)

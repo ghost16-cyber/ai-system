@@ -15,6 +15,7 @@ export interface DeliveryCriterion {
   verificationMode: string;
   state: string;
   blockedReason?: string;
+  verifierOutcome?: "passed" | "failed" | "inconclusive" | "manual_required" | "stale";
 }
 
 export interface DeliveryWorkUnit {
@@ -46,7 +47,10 @@ export interface ProjectDeliveryAction {
     source: string;
     confidence: number;
     workUnits: DeliveryWorkUnit[];
+    revisionId?: string;
+    approvalFresh: boolean;
   };
+  manifest: { complete: boolean; hash?: string; error?: string };
   activeWorkUnitId?: string;
   progress: {
     completedWorkUnits: number;
@@ -93,19 +97,40 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
   const specification = object(delivery.specification);
   const plan = object(delivery.plan);
   const approval = object(delivery.plan_approval);
+  const planRevision = object(delivery.plan_revision);
+  const manifest = object(delivery.project_state_manifest);
   const progress = object(details.progress);
-  const criteria = objects(specification.acceptance_criteria).map((item) => ({
+  const criteria: DeliveryCriterion[] = objects(specification.acceptance_criteria).map((item) => ({
     id: string(item.criterion_id), requirement: string(item.requirement),
     required: item.required !== false, verificationMode: string(item.verification_mode),
     state: string(item.verification_state, "pending"),
     blockedReason: string(item.blocked_reason) || undefined,
   })).filter((item) => item.id && item.requirement);
   const latest = new Map<string, string>();
+  const verifierOutcomes = new Map<string, DeliveryCriterion["verifierOutcome"]>();
+  const currentManifestHash = string(delivery.project_state_hash);
+  const currentRevisionId = string(planRevision.plan_revision_id);
+  for (const result of objects(delivery.verifier_results)) {
+    const id = string(result.criterion_id);
+    if (!id) continue;
+    const fresh = string(result.input_manifest_hash) === currentManifestHash && string(result.plan_revision_id) === currentRevisionId;
+    const outcome = fresh ? string(result.outcome) : "stale";
+    if (["passed", "failed", "inconclusive", "manual_required", "stale"].includes(outcome)) {
+      verifierOutcomes.set(id, outcome as DeliveryCriterion["verifierOutcome"]);
+    }
+  }
   for (const record of objects(delivery.verification_records)) {
     const id = string(record.criterion_id);
     if (id) latest.set(id, string(record.state, "pending"));
   }
-  for (const criterion of criteria) criterion.state = latest.get(criterion.id) ?? criterion.state;
+  for (const criterion of criteria) {
+    criterion.state = latest.get(criterion.id) ?? criterion.state;
+    criterion.verifierOutcome = verifierOutcomes.get(criterion.id);
+    if (criterion.state === "satisfied" && criterion.verifierOutcome !== "passed") {
+      criterion.state = "stale";
+      criterion.verifierOutcome = "stale";
+    }
+  }
   const clarifications = objects(delivery.clarifications);
   const pending = clarifications.find((item) => item.status === "pending") ?? clarifications[clarifications.length - 1];
   const handoff = object(delivery.handoff);
@@ -115,6 +140,11 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     dependencies: strings(item.dependencies), files: safePaths(item.expected_files),
     criterionIds: strings(item.criterion_references),
   })).filter((item) => item.id);
+  const runtimeStates = new Map(objects(delivery.work_unit_execution_states).map((item) => [string(item.work_unit_id), string(item.status)]));
+  for (const unit of workUnits) {
+    const status = runtimeStates.get(unit.id);
+    if (status) unit.status = status;
+  }
   return {
     deliveryJobId, status,
     objective: string(specification.normalized_objective, string(delivery.original_user_request, "Project delivery")),
@@ -127,14 +157,25 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     clarification: pending && string(pending.question) ? { question: string(pending.question), answer: string(pending.answer) || undefined } : undefined,
     plan: Object.keys(plan).length ? {
       hash: string(plan.plan_hash), revision: number(plan.plan_revision, 1),
-      approved: string(approval.plan_hash) === string(plan.plan_hash), source: string(plan.plan_source),
+      approved: string(approval.plan_revision_id) === currentRevisionId
+        && string(approval.plan_content_hash) === string(planRevision.content_hash), source: string(plan.plan_source),
       confidence: number(plan.confidence), workUnits,
+      revisionId: currentRevisionId || undefined,
+      approvalFresh: string(approval.plan_revision_id) === currentRevisionId
+        && string(approval.plan_content_hash) === string(planRevision.content_hash),
     } : undefined,
+    manifest: {
+      complete: manifest.complete === true,
+      hash: string(manifest.manifest_hash) || undefined,
+      error: manifest.complete === false ? strings(manifest.incomplete_reasons).join("; ") || "Project manifest is incomplete." : undefined,
+    },
     activeWorkUnitId: string(delivery.active_work_unit_id) || undefined,
     progress: {
       completedWorkUnits: number(progress.completed_work_units, workUnits.filter((item) => item.status === "satisfied").length),
       totalWorkUnits: number(progress.total_work_units, workUnits.length),
-      satisfiedRequiredCriteria: number(progress.satisfied_required_criteria, criteria.filter((item) => item.required && ["satisfied", "waived-by-user"].includes(item.state)).length),
+      satisfiedRequiredCriteria: criteria.filter((item) => item.required && (
+        item.state === "waived-by-user" || (item.state === "satisfied" && item.verifierOutcome === "passed")
+      )).length,
       totalRequiredCriteria: number(progress.total_required_criteria, criteria.filter((item) => item.required).length),
     },
     patchIds: objects(delivery.patch_references).map((item) => string(item.patch_id)).filter(Boolean),

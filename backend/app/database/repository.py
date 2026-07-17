@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import sqlite3
 import json
 from datetime import datetime
@@ -9,6 +10,7 @@ from typing import Any
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
     ChatConversationDetail,
+    ChatRequestRecord,
     ChatConversationSummary,
     ChatRunResponse,
     FeedbackResponse,
@@ -44,6 +46,7 @@ class AnalysisRepository:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialize(self) -> None:
@@ -241,6 +244,58 @@ class AnalysisRepository:
             self._add_column_if_missing(connection, "chat_runs", "slm_model", "TEXT")
             self._add_column_if_missing(connection, "chat_runs", "slm_fallback_reason", "TEXT")
             self._add_column_if_missing(connection, "chat_runs", "slm_latency_ms", "INTEGER")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO chat_conversations (conversation_id, created_at, updated_at)
+                SELECT conversation_id, MIN(created_at), MAX(created_at)
+                FROM chat_runs
+                GROUP BY conversation_id
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_requests (
+                    request_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    user_message TEXT NOT NULL,
+                    request_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    run_id TEXT UNIQUE,
+                    execution_attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES chat_conversations (conversation_id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES chat_runs (run_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_requests_conversation
+                ON chat_requests (conversation_id, created_at ASC, request_id ASC)
+                """
+            )
+            restart_timestamp = datetime.now().astimezone().isoformat()
+            connection.execute(
+                """
+                UPDATE chat_requests
+                SET status = 'interrupted',
+                    error = 'Backend restarted before this active request completed.',
+                    updated_at = ?
+                WHERE status = 'active'
+                """,
+                (restart_timestamp,),
+            )
             self._add_column_if_missing(
                 connection, "chat_runs", "memory_used", "INTEGER NOT NULL DEFAULT 0"
             )
@@ -506,6 +561,66 @@ class AnalysisRepository:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS project_delivery_plan_revisions (
+                    plan_revision_id TEXT PRIMARY KEY,
+                    delivery_job_id TEXT NOT NULL,
+                    revision_number INTEGER NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    revision_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(delivery_job_id, revision_number),
+                    UNIQUE(delivery_job_id, content_hash),
+                    FOREIGN KEY(delivery_job_id) REFERENCES project_delivery_jobs(delivery_job_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_delivery_work_unit_states (
+                    delivery_job_id TEXT NOT NULL,
+                    plan_revision_id TEXT NOT NULL,
+                    work_unit_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    state_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(delivery_job_id, plan_revision_id, work_unit_id),
+                    FOREIGN KEY(delivery_job_id) REFERENCES project_delivery_jobs(delivery_job_id),
+                    FOREIGN KEY(plan_revision_id) REFERENCES project_delivery_plan_revisions(plan_revision_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_state_manifests (
+                    manifest_hash TEXT PRIMARY KEY,
+                    delivery_job_id TEXT NOT NULL,
+                    complete INTEGER NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(delivery_job_id) REFERENCES project_delivery_jobs(delivery_job_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_verifier_results (
+                    verifier_result_id TEXT PRIMARY KEY,
+                    delivery_job_id TEXT NOT NULL,
+                    plan_revision_id TEXT NOT NULL,
+                    criterion_id TEXT NOT NULL,
+                    result_hash TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    checked_at TEXT NOT NULL,
+                    UNIQUE(delivery_job_id, result_hash),
+                    FOREIGN KEY(delivery_job_id) REFERENCES project_delivery_jobs(delivery_job_id),
+                    FOREIGN KEY(plan_revision_id) REFERENCES project_delivery_plan_revisions(plan_revision_id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS project_delivery_audit_events (
                     event_id TEXT PRIMARY KEY,
                     delivery_job_id TEXT NOT NULL,
@@ -515,6 +630,25 @@ class AnalysisRepository:
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stage0_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    aggregate_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stage0_audit_aggregate
+                ON stage0_audit_events (domain, aggregate_id, created_at ASC)
                 """
             )
             connection.execute(
@@ -787,8 +921,136 @@ class AnalysisRepository:
 
         return [AnalysisHistoryItem.model_validate(dict(row)) for row in rows]
 
-    def store_chat_run(self, run: ChatRunResponse) -> None:
+    def create_chat_request(
+        self,
+        *,
+        request_id: str,
+        conversation_id: str,
+        user_message: str,
+        request_payload: dict[str, Any],
+        created_at: datetime,
+    ) -> ChatRequestRecord:
+        timestamp = created_at.isoformat()
         with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO chat_conversations (conversation_id, created_at, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (conversation_id, timestamp, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO chat_requests (
+                    request_id, conversation_id, user_message, request_json, status,
+                    run_id, execution_attempts, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'pending', NULL, 0, NULL, ?, ?)
+                """,
+                (
+                    request_id, conversation_id, user_message,
+                    json.dumps(request_payload, sort_keys=True), timestamp, timestamp,
+                ),
+            )
+        return self.get_chat_request(request_id)
+
+    def create_chat_conversation(self, *, conversation_id: str, created_at: datetime) -> ChatConversationDetail:
+        timestamp = created_at.isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_conversations (conversation_id, created_at, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (conversation_id, timestamp, timestamp),
+            )
+        return self.get_chat_conversation(conversation_id)
+
+    def chat_conversation_exists(self, conversation_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM chat_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return row is not None
+
+    def get_chat_request(self, request_id: str) -> ChatRequestRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM chat_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Chat request not found.")
+        return self._chat_request_from_row(row)
+
+    def list_chat_requests_for_conversation(self, conversation_id: str) -> list[ChatRequestRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM chat_requests
+                WHERE conversation_id = ?
+                ORDER BY created_at ASC, request_id ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [self._chat_request_from_row(row) for row in rows]
+
+    def claim_chat_request(self, request_id: str) -> ChatRequestRecord:
+        timestamp = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_requests
+                SET status = 'active', execution_attempts = execution_attempts + 1,
+                    error = NULL, updated_at = ?
+                WHERE request_id = ? AND status = 'pending'
+                """,
+                (timestamp, request_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM chat_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("Chat request not found.")
+        record = self._chat_request_from_row(row)
+        if cursor.rowcount != 1 and record.status == "pending":
+            raise RuntimeError("Chat request could not be claimed.")
+        return record
+
+    def update_chat_request_status(
+        self,
+        request_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+    ) -> ChatRequestRecord:
+        if status not in {"pending", "active", "completed", "failed", "cancelled", "interrupted"}:
+            raise ValueError("Unsupported chat request status.")
+        timestamp = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_requests SET status = ?, error = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (status, error, timestamp, request_id),
+            )
+        if cursor.rowcount != 1:
+            raise LookupError("Chat request not found.")
+        return self.get_chat_request(request_id)
+
+    def store_chat_run(self, run: ChatRunResponse, *, request_id: str | None = None) -> None:
+        with self._connect() as connection:
+            timestamp = run.created_at.isoformat()
+            connection.execute(
+                """
+                INSERT INTO chat_conversations (conversation_id, created_at, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (run.conversation_id, timestamp, timestamp),
+            )
             connection.execute(
                 """
                 INSERT INTO chat_runs (
@@ -873,6 +1135,17 @@ class AnalysisRepository:
                     json.dumps(run.action, sort_keys=True) if run.action is not None else None,
                 ),
             )
+            if request_id is not None:
+                cursor = connection.execute(
+                    """
+                    UPDATE chat_requests
+                    SET status = 'completed', run_id = ?, error = NULL, updated_at = ?
+                    WHERE request_id = ? AND conversation_id = ? AND status = 'active'
+                    """,
+                    (run.run_id, timestamp, request_id, run.conversation_id),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("The active chat request could not be completed atomically.")
 
     def chat_run_action_matches_plan(
         self,
@@ -1168,26 +1441,35 @@ class AnalysisRepository:
 
     def get_chat_conversation(self, conversation_id: str) -> ChatConversationDetail:
         turns = self.list_chat_runs_for_conversation(conversation_id)
-        if not turns:
+        requests = self.list_chat_requests_for_conversation(conversation_id)
+        if not turns and not requests and not self.chat_conversation_exists(conversation_id):
             raise LookupError("Conversation not found.")
         latest_summary = next(
             (turn.memory_summary for turn in reversed(turns) if turn.memory_summary),
             None,
         )
+        first_message = turns[0].user_message if turns else requests[0].user_message if requests else ""
         return ChatConversationDetail(
             conversation_id=conversation_id,
-            title=_conversation_title(turns[0].user_message),
+            title=_conversation_title(first_message),
             memory_summary=latest_summary,
             turns=turns,
+            requests=requests,
         )
 
     def delete_chat_conversation(self, conversation_id: str) -> int:
         with self._connect() as connection:
+            request_count = int(connection.execute(
+                "SELECT COUNT(*) FROM chat_requests WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()[0])
+            connection.execute("DELETE FROM chat_requests WHERE conversation_id = ?", (conversation_id,))
             cursor = connection.execute(
                 "DELETE FROM chat_runs WHERE conversation_id = ?",
                 (conversation_id,),
             )
-        return int(cursor.rowcount)
+            connection.execute("DELETE FROM chat_conversations WHERE conversation_id = ?", (conversation_id,))
+        return int(cursor.rowcount) + request_count
 
     def store_project_patch(self, proposal: dict[str, Any], snapshot: list[dict[str, Any]] | None = None) -> None:
         now = datetime.now().astimezone().isoformat()
@@ -1242,6 +1524,7 @@ class AnalysisRepository:
                     stored["created_at"], stored["updated_at"],
                 ),
             )
+            self._persist_stage0_delivery_state(connection, stored)
 
     def get_project_delivery_job(self, delivery_job_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -1305,7 +1588,80 @@ class AnalysisRepository:
                     stored["folder_access_id"], expected_version,
                 ),
             )
+            if cursor.rowcount == 1:
+                self._persist_stage0_delivery_state(connection, stored)
         return stored if cursor.rowcount == 1 else None
+
+    def _persist_stage0_delivery_state(self, connection: sqlite3.Connection, job: dict[str, Any]) -> None:
+        revision = job.get("plan_revision")
+        if isinstance(revision, dict) and revision.get("plan_revision_id"):
+            connection.execute(
+                """
+                INSERT INTO project_delivery_plan_revisions (
+                    plan_revision_id, delivery_job_id, revision_number, content_hash,
+                    revision_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_revision_id) DO NOTHING
+                """,
+                (
+                    revision["plan_revision_id"], job["delivery_job_id"],
+                    int(revision["revision_number"]), revision["content_hash"],
+                    json.dumps(revision, sort_keys=True), revision["created_at"],
+                ),
+            )
+            for state in job.get("work_unit_execution_states") or []:
+                if not isinstance(state, dict):
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO project_delivery_work_unit_states (
+                        delivery_job_id, plan_revision_id, work_unit_id, status,
+                        state_version, state_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(delivery_job_id, plan_revision_id, work_unit_id) DO UPDATE SET
+                        status = excluded.status,
+                        state_version = excluded.state_version,
+                        state_json = excluded.state_json,
+                        updated_at = excluded.updated_at
+                    WHERE excluded.state_version > project_delivery_work_unit_states.state_version
+                    """,
+                    (
+                        job["delivery_job_id"], state["plan_revision_id"], state["work_unit_id"],
+                        state["status"], int(state["state_version"]), json.dumps(state, sort_keys=True),
+                        str(job.get("updated_at") or datetime.now().astimezone().isoformat()),
+                    ),
+                )
+        manifest = job.get("project_state_manifest")
+        if isinstance(manifest, dict) and manifest.get("manifest_hash"):
+            connection.execute(
+                """
+                INSERT INTO project_state_manifests (
+                    manifest_hash, delivery_job_id, complete, manifest_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(manifest_hash) DO NOTHING
+                """,
+                (
+                    manifest["manifest_hash"], job["delivery_job_id"], int(bool(manifest.get("complete"))),
+                    json.dumps(manifest, sort_keys=True), str(manifest.get("generated_at") or datetime.now().astimezone().isoformat()),
+                ),
+            )
+        for result in job.get("verifier_results") or []:
+            if not isinstance(result, dict) or not result.get("verifier_result_id"):
+                continue
+            connection.execute(
+                """
+                INSERT INTO project_verifier_results (
+                    verifier_result_id, delivery_job_id, plan_revision_id, criterion_id,
+                    result_hash, outcome, result_json, checked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(verifier_result_id) DO NOTHING
+                """,
+                (
+                    result["verifier_result_id"], job["delivery_job_id"], result["plan_revision_id"],
+                    result["criterion_id"], result["result_hash"], result["outcome"],
+                    json.dumps(result, sort_keys=True), result["checked_at"],
+                ),
+            )
 
     def store_project_delivery_record(
         self,
@@ -1317,7 +1673,14 @@ class AnalysisRepository:
         record_id: str | None = None,
     ) -> dict[str, Any]:
         created_at = str(record.get("created_at") or record.get("verified_at") or datetime.now().astimezone().isoformat())
-        identifier = record_id or str(record.get("record_id") or record.get("verification_id") or record.get("handoff_id") or immutable_hash)
+        intrinsic_id = (
+            record.get("record_id") or record.get("verification_id")
+            or record.get("verifier_result_id") or record.get("handoff_id")
+            or record.get("plan_revision_id") or record.get("approval_id")
+        )
+        identifier = record_id or hashlib.sha256(
+            f"{delivery_job_id}:{record_type}:{intrinsic_id or immutable_hash}".encode("utf-8")
+        ).hexdigest()
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1384,6 +1747,35 @@ class AnalysisRepository:
             "status": row["status"], "metadata": json.loads(row["metadata_json"]),
             "created_at": row["created_at"],
         } for row in rows]
+
+    def store_stage0_audit_event(self, event: dict[str, Any]) -> None:
+        metadata = json.dumps(event.get("metadata") or {}, sort_keys=True, default=str)
+        if len(metadata) > 4_000:
+            metadata = json.dumps({"bounded": True, "summary": metadata[:3_800]}, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO stage0_audit_events (
+                    event_id, domain, aggregate_id, operation, status, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                (
+                    event["event_id"], event["domain"], event["aggregate_id"],
+                    event["operation"], event["status"], metadata, event["created_at"],
+                ),
+            )
+
+    def list_stage0_audit_events(self, domain: str, aggregate_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM stage0_audit_events
+                WHERE domain = ? AND aggregate_id = ? ORDER BY created_at ASC
+                """,
+                (domain, aggregate_id),
+            ).fetchall()
+        return [{**dict(row), "metadata": json.loads(row["metadata_json"])} for row in rows]
 
     def store_client_engagement(self, engagement: dict[str, Any]) -> dict[str, Any]:
         stored = dict(engagement)
@@ -2099,6 +2491,19 @@ class AnalysisRepository:
             created_at=row["created_at"],
             trace_summary=json.loads(row["trace_summary_json"]),
             action=(json.loads(row["action_json"]) if row["action_json"] else None),
+        )
+
+    def _chat_request_from_row(self, row: sqlite3.Row) -> ChatRequestRecord:
+        return ChatRequestRecord(
+            request_id=str(row["request_id"]),
+            conversation_id=str(row["conversation_id"]),
+            user_message=str(row["user_message"]),
+            status=str(row["status"]),
+            run_id=str(row["run_id"]) if row["run_id"] else None,
+            execution_attempts=int(row["execution_attempts"]),
+            error=str(row["error"]) if row["error"] else None,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:

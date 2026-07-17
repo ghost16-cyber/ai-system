@@ -3,16 +3,55 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.rag.corpus_retrieval import CorpusSourceMetadata
 
 
+class IntakeStrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SourceSpan(IntakeStrictModel):
+    schema_version: Literal["astra.document-source-span.v1"] = "astra.document-source-span.v1"
+    source_id: str
+    source_type: str
+    document_path_or_name: str
+    block_index: int = Field(ge=0)
+    paragraph_index: int | None = Field(default=None, ge=0)
+    table_index: int | None = Field(default=None, ge=0)
+    row_index: int | None = Field(default=None, ge=0)
+    column_index: int | None = Field(default=None, ge=0)
+
+
+DocumentBlockType = Literal[
+    "paragraph", "heading", "table", "table_row", "table_cell", "list_item"
+]
+
+
+class DocumentBlock(IntakeStrictModel):
+    schema_version: Literal["astra.document-block.v1"] = "astra.document-block.v1"
+    block_id: str
+    block_type: DocumentBlockType
+    order_index: int = Field(ge=0)
+    text: str
+    raw_text: str
+    source_span: SourceSpan
+    style_name: str | None = None
+    heading_level: int | None = Field(default=None, ge=1, le=9)
+    table_id: str | None = None
+    row_index: int | None = Field(default=None, ge=0)
+    column_index: int | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ParsedAssignmentDocument(BaseModel):
+    schema_version: Literal["astra.parsed-assignment-document.v2"] = "astra.parsed-assignment-document.v2"
     document_id: str
     title: str
     source_path: str
     extracted_text: str
+    document_blocks: list[DocumentBlock] = Field(default_factory=list)
     created_at: datetime
     warnings: list[str] = Field(default_factory=list)
 
@@ -25,6 +64,8 @@ class AssignmentTask(BaseModel):
     marks: float | None = None
     required_output: str | None = None
     optional: bool = False
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
 
 
 class ScreenshotRequirement(BaseModel):
@@ -32,6 +73,8 @@ class ScreenshotRequirement(BaseModel):
     description: str
     assignment_name: str | None = None
     task_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
 
 
 class MarkingCriterion(BaseModel):
@@ -39,12 +82,16 @@ class MarkingCriterion(BaseModel):
     description: str
     marks: float | None = None
     assignment_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
 
 
 class AnalysisQuestion(BaseModel):
     question_id: str
     question: str
     assignment_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
 
 
 class AssignmentSection(BaseModel):
@@ -60,6 +107,8 @@ class AssignmentSection(BaseModel):
     report_requirements: list[str] = Field(default_factory=list)
     global_instructions: list[str] = Field(default_factory=list)
     report_guidance: list[str] = Field(default_factory=list)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
 
 
 class AssignmentBrief(BaseModel):
@@ -428,7 +477,64 @@ class DatasetMappingSuggestion(BaseModel):
     placeholder: bool = False
 
 
+class MappingEvidence(IntakeStrictModel):
+    schema_version: Literal["astra.dataset-mapping-evidence.v1"] = "astra.dataset-mapping-evidence.v1"
+    evidence_type: Literal["dataset_schema", "dataset_sample", "assignment_requirement", "derived_rule"]
+    source_identifier: str
+    source_columns: tuple[str, ...] = ()
+    observation: str
+
+
+class SourceColumn(IntakeStrictModel):
+    name: str
+    inferred_type: str
+    roles: tuple[str, ...] = ()
+
+
+class SemanticField(IntakeStrictModel):
+    name: str
+    field_type: Literal["source", "derived"]
+    semantic_role: Literal["time", "measure", "dimension"]
+    source_columns: tuple[str, ...]
+    rationale: str
+    provenance: tuple[MappingEvidence, ...]
+
+
+class DerivedColumnPlan(IntakeStrictModel):
+    name: str
+    expression_type: Literal[
+        "combine_datetime", "date_part", "numeric_bin", "time_band"
+    ]
+    source_columns: tuple[str, ...]
+    deterministic_operation: str
+    output_type: str
+    rationale: str
+    provenance: tuple[MappingEvidence, ...]
+
+
+class DatasetSemanticMapping(IntakeStrictModel):
+    schema_version: Literal["astra.dataset-semantic-mapping.v1"] = "astra.dataset-semantic-mapping.v1"
+    source_columns: tuple[SourceColumn, ...]
+    derived_columns: tuple[DerivedColumnPlan, ...]
+    time_dimension: SemanticField | None
+    numeric_measures: tuple[SemanticField, ...]
+    categorical_dimensions: tuple[SemanticField, ...]
+    quality_warnings: tuple[str, ...] = ()
+    unresolved_requirements: tuple[str, ...] = ()
+    provenance: tuple[MappingEvidence, ...] = ()
+
+    @model_validator(mode="after")
+    def derivations_reference_source_columns(self) -> "DatasetSemanticMapping":
+        known = {item.name for item in self.source_columns}
+        for derived in self.derived_columns:
+            missing = set(derived.source_columns) - known
+            if missing:
+                raise ValueError(f"derived column {derived.name!r} references unknown source columns: {sorted(missing)}")
+        return self
+
+
 class AssignmentDatasetMapping(BaseModel):
+    schema_version: Literal["astra.assignment-dataset-mapping.v2"] = "astra.assignment-dataset-mapping.v2"
     dataset_path: str | None = None
     timestamp_column: DatasetMappingSuggestion
     primary_numeric_indicator: DatasetMappingSuggestion
@@ -441,6 +547,8 @@ class AssignmentDatasetMapping(BaseModel):
     redis_key_patterns: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     placeholders_used: bool = False
+    semantic_mapping: DatasetSemanticMapping | None = None
+    unresolved_requirements: list[str] = Field(default_factory=list)
 
 
 class AssignmentProjectManifest(BaseModel):

@@ -12,7 +12,7 @@ from backend.app.folders.reader import ReadLimits, read_project_file
 from backend.app.folders.safety import safe_relative_path
 from backend.app.project_analysis.inventory import file_hashes
 from backend.app.project_analysis.model_synthesis.contracts import (
-    REQUEST_VERSION, SynthesisRequest, parse_synthesis_response, response_contract_description,
+    REQUEST_VERSION, RepairContext, SynthesisRequest, parse_synthesis_response, response_contract_description,
 )
 from backend.app.project_analysis.model_synthesis.evidence import build_evidence_package, evidence_hash, evidence_summary
 from backend.app.project_analysis.model_synthesis.gateway import SynthesisGateway, SynthesisGatewayError
@@ -48,6 +48,7 @@ def synthesize_model_patch(
         root_fingerprint=str(job["root_fingerprint"]), analysis_id=evidence.analysis_id,
         index_version=evidence.index_version, evidence=evidence,
         output_contract=response_contract_description(),
+        repair_context=(RepairContext.model_validate(job["repair_context"]) if job.get("repair_context") else None),
     )
     payload = request.model_dump_json(exclude_none=False)
     attempt = _attempt(job, attempt_id, request_id, gateway, evidence, payload, started)

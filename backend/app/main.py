@@ -167,6 +167,7 @@ from backend.app.schemas.api import (
     ChatConversationDeleteResponse,
     ChatConversationDetail,
     ChatConversationsResponse,
+    ChatRequestRecord,
     ChatRunRequest,
     ChatRunResponse,
     ChatRunsResponse,
@@ -243,6 +244,9 @@ from backend.app.folders import (
 from backend.app.folders.audit import audit_event
 from backend.app.project_analysis import (
     ProjectAnalysisError,
+    ProjectManifestError,
+    IncompleteProjectManifestError,
+    build_project_state_manifest,
     analysis_audit_metadata,
     build_analysis_plan,
     build_project_index,
@@ -272,6 +276,7 @@ from backend.app.project_jobs import (
     build_job_chat_run,
     create_project_job,
     detect_project_job_followup,
+    detect_project_delivery_task,
     detect_project_task,
     detect_repair_request,
     interpret_validation_result,
@@ -281,8 +286,11 @@ from backend.app.project_jobs import (
 from backend.app.project_delivery import (
     DeliveryStatus,
     ProjectDeliveryError,
+    ProjectVerifierError,
     VerificationMode,
     VerificationState,
+    VerifierOutcome,
+    adapt_legacy_delivery_job,
     activate_next_work_unit,
     approve_plan as approve_delivery_plan,
     build_delivery_action,
@@ -298,6 +306,7 @@ from backend.app.project_delivery import (
     record_verification as record_delivery_verification,
     submit_clarification as submit_delivery_clarification,
     record_scope_change as record_delivery_scope_change,
+    run_deterministic_verifier,
 )
 from backend.app.client_engagement import (
     EngagementError,
@@ -1143,12 +1152,20 @@ def create_app(
 
     @application.post("/assignments/parse")
     def assignment_parse(request: AssignmentParseRequest) -> dict:
+        audit_id = hashlib.sha256(str(request.path).encode("utf-8")).hexdigest()[:24]
         try:
             parsed = parse_assignment_document(_resolve_assignment_path(request.path))
         except FileNotFoundError as error:
+            _stage0_audit("document", audit_id, "document_parse_failure", "not_found", {"error_type": type(error).__name__})
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
+            operation = "incomplete_document_parse" if getattr(error, "code", "") == "document_limit_exceeded" else "document_parse_failure"
+            _stage0_audit("document", audit_id, operation, "rejected", {"error_code": getattr(error, "code", "invalid_document")})
             raise HTTPException(status_code=400, detail=str(error)) from error
+        _stage0_audit("document", parsed.document_id, "document_parse_completion", "completed", {
+            "schema_version": parsed.schema_version, "block_count": len(parsed.document_blocks),
+            "source_id": parsed.document_blocks[0].source_span.source_id if parsed.document_blocks else None,
+        })
         return parsed.model_dump(mode="json")
 
     @application.post("/assignments/extract")
@@ -1892,14 +1909,16 @@ def create_app(
 
     @application.post("/chat/projects/deliveries/{delivery_job_id}/plan/approve", response_model=ChatRunResponse)
     def chat_project_delivery_plan_approve(delivery_job_id: str, request: ProjectDeliveryHashRequest) -> ChatRunResponse:
-        current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
         try:
-            updated = approve_delivery_plan(current, plan_hash=request.immutable_hash)
+            updated = approve_delivery_plan(current, plan_hash=request.immutable_hash, root=access["approved_root"])
         except ProjectDeliveryError as error:
+            operation = "legacy_approval_reapproval_required" if error.code == "migration_reapproval_required" else "plan_approval_rejected"
+            _delivery_audit(current, operation, "rejected", {"error_code": error.code})
             raise _delivery_http_error(error) from error
         if updated is current:
             return build_delivery_chat_run(current, message="Approve the current delivery plan.", response="This exact plan was already approved. No patch or command was started.")
-        stored = _save_delivery_transition(current, updated, "plan_approval", "approved", {"plan_hash": request.immutable_hash})
+        stored = _save_delivery_transition(current, updated, "plan_approval_granted", "approved", {"plan_hash": request.immutable_hash})
         run = build_delivery_chat_run(stored, message="Approve the current delivery plan.", response="Plan approved. This authorizes only work-unit preparation; no files changed and no command ran.")
         repository.store_chat_run(run)
         _sync_delivery_action(stored)
@@ -1967,21 +1986,40 @@ def create_app(
         if criterion is None:
             raise HTTPException(status_code=404, detail={"code": "unknown_criterion", "message": "Acceptance criterion not found."})
         mode = VerificationMode(str(criterion["verification_mode"]))
-        if mode in {VerificationMode.STRUCTURAL, VerificationMode.FILE_PRESENCE, VerificationMode.CONFIGURATION, VerificationMode.EXACT_ASSERTION}:
-            evidence = [current.get("analysis_id")] if mode == VerificationMode.STRUCTURAL else [current.get("project_state_hash")]
+        if mode in {VerificationMode.STRUCTURAL, VerificationMode.FILE_PRESENCE, VerificationMode.CONFIGURATION, VerificationMode.EXACT_ASSERTION, VerificationMode.MANUAL}:
+            _delivery_audit(current, "verifier_start", "started", {"criterion_id": request.criterion_id, "verifier_type": mode.value})
             try:
+                verifier = run_deterministic_verifier(
+                    current, root=access["approved_root"], criterion_id=request.criterion_id,
+                )
+                verification_state = {
+                    VerifierOutcome.PASSED: VerificationState.SATISFIED,
+                    VerifierOutcome.FAILED: VerificationState.FAILED,
+                    VerifierOutcome.INCONCLUSIVE: VerificationState.BLOCKED,
+                    VerifierOutcome.MANUAL_REQUIRED: VerificationState.MANUAL,
+                }[verifier.outcome]
                 updated = record_delivery_verification(
                     current, work_unit_id=str(current["active_work_unit_id"]), criterion_id=request.criterion_id,
-                    state=VerificationState.SATISFIED, method=mode,
-                    evidence_references=evidence,
+                    state=verification_state, method=mode,
+                    evidence_references=[verifier.verifier_result_id],
                     relevant_file_hashes={path: digest for ref in current.get("patch_references", []) if ref.get("status") == "applied" for path, digest in ref.get("after_hashes", {}).items()},
-                    structural_analysis_references=[str(current.get("analysis_id"))] if mode == VerificationMode.STRUCTURAL else [],
+                    structural_analysis_references=[verifier.verifier_result_id] if mode == VerificationMode.STRUCTURAL else [],
+                    failure_explanation=verifier.failure_reason,
+                    verifier_result=verifier,
                 )
-            except ProjectDeliveryError as error:
+            except (ProjectDeliveryError, ProjectVerifierError, ProjectManifestError) as error:
+                operation = "stale_verifier_rejected" if getattr(error, "code", "") == "stale_verifier_result" else "verifier_completion"
+                _delivery_audit(current, operation, "rejected", {"criterion_id": request.criterion_id, "error_code": getattr(error, "code", "verifier_error")})
                 raise _delivery_http_error(error) from error
-            stored = _save_delivery_transition(current, updated, "verification_outcome", "satisfied", {"criterion_id": request.criterion_id})
+            stored = _save_delivery_transition(current, updated, "verifier_completion", verifier.outcome.value, {"criterion_id": request.criterion_id, "verifier_result_id": verifier.verifier_result_id})
             _sync_delivery_action(stored)
-            run = build_delivery_chat_run(stored, message="Verify the acceptance criterion.", response="The criterion was satisfied using matching independent project evidence. No command was needed.")
+            response = {
+                VerifierOutcome.PASSED: "A fresh deterministic verifier passed the criterion with typed evidence.",
+                VerifierOutcome.FAILED: "Deterministic verification failed. Review the recorded checks before repair.",
+                VerifierOutcome.INCONCLUSIVE: "Verification was inconclusive because a required deterministic check could not be completed.",
+                VerifierOutcome.MANUAL_REQUIRED: "This criterion requires manual validation and was not passed automatically.",
+            }[verifier.outcome]
+            run = build_delivery_chat_run(stored, message="Verify the acceptance criterion.", response=response)
             repository.store_chat_run(run)
             return run
         if int(current.get("budgets", {}).get("command_executions", 0)) >= int(current.get("limits", {}).get("max_command_executions", 15)):
@@ -2030,8 +2068,13 @@ def create_app(
 
     @application.post("/chat/projects/deliveries/{delivery_job_id}/handoff", response_model=ChatRunResponse)
     def chat_project_delivery_handoff(delivery_job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
-        current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
-        updated = generate_handoff(current)
+        current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        try:
+            updated = generate_handoff(current, root=access["approved_root"])
+        except (ProjectDeliveryError, ProjectManifestError) as error:
+            if getattr(error, "code", "") == "stale_verifier_result":
+                _delivery_audit(current, "stale_verifier_rejected", "rejected", {"context": "handoff"})
+            raise _delivery_http_error(error) from error
         stored = _save_delivery_transition(current, updated, "handoff_generation", str((updated.get("handoff") or {}).get("completion_status") or "recorded"))
         run = build_delivery_chat_run(stored, message="Prepare the client handoff.")
         repository.store_chat_run(run)
@@ -2046,6 +2089,13 @@ def create_app(
         except ProjectDeliveryError as error:
             raise _delivery_http_error(error) from error
         stored = _save_delivery_transition(current, updated, "scope_revision", "awaiting_plan_approval")
+        _delivery_audit(stored, "plan_revision_superseded", "completed", {
+            "superseded_revision_id": (stored.get("plan_revision") or {}).get("supersedes_revision_id"),
+            "new_revision_id": (stored.get("plan_revision") or {}).get("plan_revision_id"),
+        })
+        _delivery_audit(stored, "plan_revision_created", "completed", {
+            "plan_revision_id": (stored.get("plan_revision") or {}).get("plan_revision_id"),
+        })
         run = build_delivery_chat_run(stored, message=request.answer, response="The material scope change produced a new immutable specification and plan. Previous approvals remain invalid.")
         repository.store_chat_run(run)
         _sync_delivery_action(stored)
@@ -2494,10 +2544,14 @@ def create_app(
         if delivery_relation is not None:
             delivery, _delivery_access = delivery_relation
             try:
+                current_manifest = build_project_state_manifest(
+                    access["approved_root"], workspace_id=delivery["folder_access_id"],
+                )
                 delivery_updated = record_delivery_patch_applied(
                     delivery, patch_id=patch_id,
-                    current_state_hash=project_state_hash(access["approved_root"]),
+                    current_state_hash=current_manifest.manifest_hash,
                 )
+                delivery_updated["project_state_manifest"] = current_manifest.model_dump(mode="json")
             except ProjectDeliveryError as error:
                 raise _delivery_http_error(error) from error
             delivery_stored = _save_delivery_transition(
@@ -2575,10 +2629,14 @@ def create_app(
         if delivery_relation is not None:
             delivery, _delivery_access = delivery_relation
             try:
+                restored_manifest = build_project_state_manifest(
+                    access["approved_root"], workspace_id=delivery["folder_access_id"],
+                )
                 delivery_updated = record_delivery_rollback(
                     delivery, patch_id=patch_id,
-                    restored_state_hash=project_state_hash(access["approved_root"]),
+                    restored_state_hash=restored_manifest.manifest_hash,
                 )
+                delivery_updated["project_state_manifest"] = restored_manifest.model_dump(mode="json")
             except ProjectDeliveryError as error:
                 raise _delivery_http_error(error) from error
             delivery_stored = _save_delivery_transition(
@@ -2795,18 +2853,30 @@ def create_app(
                     budgets = dict(delivery_with_command.get("budgets") or {})
                     budgets["command_executions"] = int(budgets.get("command_executions", 0)) + 1
                     delivery_with_command["budgets"] = budgets
+                    _delivery_audit(delivery, "verifier_start", "started", {
+                        "criterion_id": reference["criterion_id"], "verifier_type": reference["method"],
+                    })
                     try:
+                        verifier = run_deterministic_verifier(
+                            delivery_with_command, root=_delivery_access["approved_root"],
+                            criterion_id=str(reference["criterion_id"]), command_result=result,
+                        )
                         delivery_updated = record_delivery_verification(
                             delivery_with_command,
                             work_unit_id=str(reference["work_unit_id"]),
                             criterion_id=str(reference["criterion_id"]),
-                            state=VerificationState.SATISFIED if succeeded else VerificationState.FAILED,
+                            state=VerificationState.SATISFIED if verifier.outcome == VerifierOutcome.PASSED else VerificationState.FAILED,
                             method=VerificationMode(str(reference["method"])),
                             evidence_references=[str(result.get("execution_id") or plan_id)],
                             command_run_references=[str(result.get("execution_id") or plan_id)],
                             failure_explanation=None if succeeded else summary,
+                            verifier_result=verifier,
                         )
-                    except ProjectDeliveryError as error:
+                    except (ProjectDeliveryError, ProjectVerifierError, ProjectManifestError) as error:
+                        operation = "stale_verifier_rejected" if getattr(error, "code", "") == "stale_verifier_result" else "verifier_completion"
+                        _delivery_audit(delivery, operation, "rejected", {
+                            "criterion_id": reference["criterion_id"], "error_code": getattr(error, "code", "verifier_error"),
+                        })
                         raise _delivery_http_error(error) from error
                     if not succeeded:
                         latest_bridge = repository.get_project_job(job_id)
@@ -2819,7 +2889,7 @@ def create_app(
                         }
                     delivery_updated["updated_at"] = datetime.now(timezone.utc).isoformat()
                     delivery_stored = _save_delivery_transition(
-                        delivery, delivery_updated, "verification_outcome", "passed" if succeeded else "stage8_diagnosis",
+                        delivery, delivery_updated, "verifier_completion", "passed" if succeeded else "stage8_diagnosis",
                         {"plan_id": plan_id, "criterion_id": reference["criterion_id"], "exit_code": result.get("exit_code")},
                     )
                     _sync_delivery_action(delivery_stored)
@@ -3948,7 +4018,10 @@ def create_app(
                 folder_access_id=access["action_id"], user_task=message,
                 action_run_id=f"delivery-shadow-{action_run_id}",
             )
-        except (ProjectDeliveryError, ProjectJobError, ProjectAnalysisError, ProjectSafetyError, OSError) as error:
+        except IncompleteProjectManifestError as error:
+            _stage0_audit("project_manifest", str(access.get("action_id") or "unknown"), "incomplete_manifest_rejected", "rejected", {"error_code": error.code})
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
+        except (ProjectDeliveryError, ProjectJobError, ProjectAnalysisError, ProjectManifestError, ProjectSafetyError, OSError) as error:
             raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         shadow.update({
             "status": "planned", "delivery_job_id": delivery["delivery_job_id"],
@@ -3965,6 +4038,15 @@ def create_app(
             "specification_hash": stored["specification"]["specification_hash"],
             "plan_hash": (stored.get("plan") or {}).get("plan_hash"),
         })
+        _delivery_audit(stored, "project_manifest_created", "completed", {
+            "manifest_hash": stored.get("project_state_hash"),
+            "entry_count": len((stored.get("project_state_manifest") or {}).get("entries") or []),
+        })
+        if stored.get("plan_revision"):
+            _delivery_audit(stored, "plan_revision_created", "completed", {
+                "plan_revision_id": stored["plan_revision"]["plan_revision_id"],
+                "content_hash": stored["plan_revision"]["content_hash"],
+            })
         run = build_delivery_chat_run(stored, message=message, run_id=action_run_id)
         if persist_run:
             repository.store_chat_run(run)
@@ -3981,6 +4063,16 @@ def create_app(
             raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Project delivery job not found."}) from error
         if conversation_id is not None and job.get("conversation_id") != conversation_id:
             raise HTTPException(status_code=409, detail={"code": "ownership_mismatch", "message": "The delivery job belongs to a different conversation."})
+        adapted = adapt_legacy_delivery_job(job)
+        if adapted is not job:
+            stored = repository.transition_project_delivery_job(
+                adapted, expected_version=int(job.get("state_version") or 1)
+            )
+            job = stored or repository.get_project_delivery_job(delivery_job_id)
+            if stored is not None:
+                _persist_delivery_records(job)
+                operation = "legacy_approval_reapproval_required" if (job.get("legacy_migration") or {}).get("legacy_approval_discarded") else "legacy_plan_adapted"
+                _delivery_audit(job, operation, "reapproval_required" if operation.startswith("legacy_approval") else "completed", {})
         access = _completed_project_access(str(job.get("conversation_id") or ""))
         if job.get("folder_access_id") != access.get("action_id"):
             raise HTTPException(status_code=409, detail={"code": "workspace_mismatch", "message": "The delivery job belongs to a different folder authorization."})
@@ -4011,12 +4103,21 @@ def create_app(
         plan = job.get("plan")
         if isinstance(plan, dict) and plan.get("plan_hash"):
             values.append(("execution_plan", plan, str(plan["plan_hash"])))
+        plan_revision = job.get("plan_revision")
+        if isinstance(plan_revision, dict) and plan_revision.get("content_hash"):
+            values.append(("execution_plan_revision", plan_revision, str(plan_revision["content_hash"])))
+        manifest = job.get("project_state_manifest")
+        if isinstance(manifest, dict) and manifest.get("manifest_hash"):
+            values.append(("project_state_manifest", manifest, str(manifest["manifest_hash"])))
         approval = job.get("plan_approval")
         if isinstance(approval, dict) and approval.get("approval_id"):
             values.append(("plan_approval", approval, str(approval["approval_id"]).ljust(64, "0")[:64]))
         for record in job.get("verification_records") or []:
             if isinstance(record, dict) and record.get("verification_hash"):
                 values.append(("verification", record, str(record["verification_hash"])))
+        for result in job.get("verifier_results") or []:
+            if isinstance(result, dict) and result.get("result_hash"):
+                values.append(("verifier_result", result, str(result["result_hash"])))
         handoff = job.get("handoff")
         if isinstance(handoff, dict) and handoff.get("handoff_hash"):
             values.append(("handoff", handoff, str(handoff["handoff_hash"])))
@@ -4040,6 +4141,19 @@ def create_app(
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
+    def _stage0_audit(domain: str, aggregate_id: str, operation: str, status: str, metadata: dict) -> None:
+        safe_metadata = json.loads(json.dumps(metadata, default=str))
+        for key, value in list(safe_metadata.items()):
+            if any(term in key.lower() for term in ("token", "password", "secret", "authorization", "cookie", "content", "output")):
+                safe_metadata[key] = "[REDACTED]"
+            elif isinstance(value, str):
+                safe_metadata[key] = value[:1000]
+        repository.store_stage0_audit_event({
+            "event_id": uuid4().hex, "domain": domain[:80], "aggregate_id": aggregate_id[:160],
+            "operation": operation[:120], "status": status[:80], "metadata": safe_metadata,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     def _sync_delivery_action(job: dict) -> None:
         action = build_delivery_action(job)
         updated = 0
@@ -4049,7 +4163,7 @@ def create_app(
         if updated == 0:
             raise HTTPException(status_code=409, detail={"code": "missing_action_card", "message": "The persisted delivery card could not be updated."})
 
-    def _delivery_http_error(error: ProjectDeliveryError) -> HTTPException:
+    def _delivery_http_error(error: ProjectDeliveryError | ProjectVerifierError | ProjectManifestError) -> HTTPException:
         status_code = 400 if error.code in {"invalid_request", "hash_mismatch"} else 409
         return HTTPException(status_code=status_code, detail={"code": error.code, "message": str(error)})
 
@@ -4695,10 +4809,11 @@ def create_app(
 
     def _is_delivery_request(message: str) -> bool:
         normalized = " ".join(str(message or "").lower().split())
-        return bool(
+        explicit_delivery = bool(
             re.search(r"\b(?:deliver|delivery)\b", normalized)
             and re.search(r"\b(?:project|feature|change|fix|implementation|task)\b", normalized)
         )
+        return explicit_delivery or detect_project_delivery_task(message)
 
     def _audit_project_run(run: ChatRunResponse, access: dict) -> None:
         metadata = {"relative_paths": run.source_paths, "file_count": run.source_count}
@@ -5073,6 +5188,25 @@ def create_app(
                 "technical_details": {"command_plan": plan, "project_scope": {"folder_access_id": access["action_id"], **({"job_id": job_id} if job_id else {})}},
             },
         )
+    def _create_pending_chat_request(request: ChatRunRequest) -> ChatRequestRecord:
+        if request.request_id is not None:
+            raise HTTPException(status_code=400, detail={"code": "request_id_not_allowed", "message": "Request IDs are issued by the backend."})
+        conversation_id = request.conversation_id or uuid4().hex
+        if request.conversation_id and not repository.chat_conversation_exists(conversation_id):
+            raise HTTPException(status_code=404, detail={"code": "conversation_not_found", "message": "Conversation not found."})
+        request_id = uuid4().hex
+        return repository.create_chat_request(
+            request_id=request_id,
+            conversation_id=conversation_id,
+            user_message=request.message,
+            request_payload=request.model_dump(mode="json", exclude={"request_id"}),
+            created_at=datetime.now(timezone.utc),
+        )
+
+    @application.post("/chat/requests", response_model=ChatRequestRecord)
+    def chat_request_create(request: ChatRunRequest) -> ChatRequestRecord:
+        return _create_pending_chat_request(request)
+
     @application.post("/chat/run", response_model=ChatRunResponse)
     def chat_run(request: ChatRunRequest) -> ChatRunResponse:
         folder_path = detect_folder_request(request.message)
@@ -5212,6 +5346,33 @@ def create_app(
 
     @application.post("/chat/stream")
     def chat_stream(request: ChatRunRequest) -> StreamingResponse:
+        if request.request_id:
+            try:
+                durable_request = repository.get_chat_request(request.request_id)
+            except LookupError as error:
+                raise HTTPException(status_code=404, detail={"code": "request_not_found", "message": str(error)}) from error
+            if durable_request.conversation_id != request.conversation_id or durable_request.user_message != request.message:
+                raise HTTPException(status_code=409, detail={"code": "request_binding_mismatch", "message": "The stream request does not match its persisted conversation and message."})
+        else:
+            durable_request = _create_pending_chat_request(request)
+            request = request.model_copy(update={
+                "conversation_id": durable_request.conversation_id,
+                "request_id": durable_request.request_id,
+            })
+        if durable_request.status == "completed" and durable_request.run_id:
+            completed_run = repository.get_chat_run(durable_request.run_id)
+
+            def completed_event_stream():
+                yield f"{json.dumps({'event': 'request_accepted', 'data': {'request': durable_request.model_dump(mode='json')}}, default=str)}\n"
+                yield f"{json.dumps({'event': 'run_completed', 'data': {'run': completed_run.model_dump(mode='json'), 'trace_summary': completed_run.trace_summary}}, default=str)}\n"
+
+            return StreamingResponse(completed_event_stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache"})
+        if durable_request.status != "pending":
+            raise HTTPException(status_code=409, detail={
+                "code": "request_not_pending",
+                "message": f"The persisted request is {durable_request.status} and cannot start another execution attempt.",
+            })
+        durable_request = repository.claim_chat_request(durable_request.request_id)
         folder_path = detect_folder_request(request.message)
         conversation_turns = (
             repository.list_chat_runs_for_conversation(request.conversation_id)
@@ -5359,7 +5520,7 @@ def create_app(
                         previous_turns=previous_turns,
                         event_sink=events.put,
                     )
-                repository.store_chat_run(run)
+                repository.store_chat_run(run, request_id=durable_request.request_id)
                 if (engagement_request or engagement_clarification or engagement_change) and run.action is not None:
                     events.put({"event": "client_engagement_updated", "data": {"run": run.model_dump(mode="json"), "engagement": run.action.get("technical_details", {}).get("client_engagement", {})}})
                 if (delivery_request or delivery_clarification) and run.action is not None:
@@ -5417,6 +5578,14 @@ def create_app(
                     }
                 )
             except Exception as error:
+                try:
+                    repository.update_chat_request_status(
+                        durable_request.request_id,
+                        status="failed",
+                        error=str(error)[:1000],
+                    )
+                except (LookupError, ValueError):
+                    pass
                 events.put(
                     {
                         "event": "run_failed",
@@ -5427,6 +5596,7 @@ def create_app(
                 events.put(done)
 
         def event_stream():
+            yield f"{json.dumps({'event': 'request_accepted', 'data': {'request': durable_request.model_dump(mode='json')}}, default=str)}\n"
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
             while True:
@@ -5501,15 +5671,34 @@ def create_app(
             items=repository.list_chat_conversations(limit=limit)
         )
 
+    @application.post("/chat/conversations", response_model=ChatConversationDetail)
+    def create_chat_conversation() -> ChatConversationDetail:
+        return repository.create_chat_conversation(
+            conversation_id=uuid4().hex,
+            created_at=datetime.now(timezone.utc),
+        )
+
     @application.get(
         "/chat/conversations/{conversation_id}",
         response_model=ChatConversationDetail,
     )
     def chat_conversation(conversation_id: str) -> ChatConversationDetail:
         try:
-            return repository.get_chat_conversation(conversation_id)
+            detail = repository.get_chat_conversation(conversation_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        jobs = [
+            public_project_job(job)
+            for job in repository.list_project_jobs_for_conversation(conversation_id)
+        ]
+        deliveries = [
+            public_delivery_job(job)
+            for job in repository.list_project_delivery_jobs_for_conversation(conversation_id)
+        ]
+        return detail.model_copy(update={
+            "project_jobs": jobs,
+            "project_deliveries": deliveries,
+        })
 
     @application.delete(
         "/chat/conversations/{conversation_id}",

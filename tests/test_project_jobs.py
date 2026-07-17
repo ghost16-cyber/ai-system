@@ -8,7 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
-from backend.app.project_jobs import ProjectJobError, detect_project_task, prepare_job_patch_changes
+from backend.app.project_jobs import (
+    ProjectJobError,
+    detect_project_delivery_task,
+    detect_project_task,
+    prepare_job_patch_changes,
+)
 
 
 TASK = "Review this project and implement the feature described in README.md."
@@ -85,6 +90,15 @@ def test_natural_project_tasks_are_detected(message: str) -> None:
 ])
 def test_ordinary_questions_are_not_jobs(message: str) -> None:
     assert not detect_project_task(message)
+
+
+def test_scoped_file_generation_request_is_detected_as_project_delivery() -> None:
+    assert detect_project_delivery_task(
+        "Analyze household_power_consumption.csv and create a Python script, four PNG charts, "
+        "and a Markdown report. Do not modify unrelated files, use external services, or deploy."
+    )
+    assert not detect_project_delivery_task("How should I analyze a household power dataset?")
+    assert not detect_project_delivery_task("Improve authentication implementation")
 
 
 def test_job_requires_completed_access_and_persists_safe_structured_state(tmp_path: Path) -> None:
@@ -290,6 +304,16 @@ def test_failed_validation_is_bounded_and_job_can_cancel(tmp_path: Path) -> None
         revised = client.post(
             f"/chat/projects/jobs/{job['job_id']}/prepare",
             json={"conversation_id": conversation_id},
+        )
+        assert revised.status_code == 409
+        assert "diagnosis" in revised.text.lower()
+        revised = client.post(
+            "/chat/run",
+            json={
+                "message": "Diagnose the failed validation and prepare a repair.",
+                "conversation_id": conversation_id,
+                "use_rag": True,
+            },
         )
         assert revised.status_code == 200, revised.text
         assert revised.json()["action"]["action_type"] == "project_patch"

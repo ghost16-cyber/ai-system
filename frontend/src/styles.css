@@ -15,7 +15,8 @@
   --amber: #8a5c17;
   --amber-soft: #fff4dd;
   --shadow: 0 12px 35px rgb(24 48 36 / 8%);
-  --composer-clearance: 260px;
+  --composer-height: 128px;
+  --composer-clearance: calc(var(--composer-height) + 24px);
 }
 
 * { box-sizing: border-box; }
@@ -41,7 +42,9 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 
 .chat-shell { width: min(900px, 100%); min-height: calc(100vh - 68px); margin: 0 auto; padding: 30px clamp(15px, 3vw, 28px) 0; }
 .conversation { display: grid; gap: 24px; padding-bottom: var(--composer-clearance); scroll-padding-bottom: var(--composer-clearance); }
-.message { display: flex; gap: 11px; align-items: flex-start; }
+.conversation-end { width: 100%; height: 1px; scroll-margin-bottom: var(--composer-clearance); }
+.startup-loading { min-height: 52vh; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); }
+.message { display: flex; min-width: 0; max-width: 100%; gap: 11px; align-items: flex-start; }
 .message.user { flex-direction: row-reverse; }
 .avatar { flex: 0 0 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: var(--green-dark); background: var(--green-soft); font-size: .75rem; font-weight: 700; }
 .message.user .avatar { color: white; background: #35483f; }
@@ -58,7 +61,9 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .suggestions button { padding: 11px 14px; border: 1px solid var(--line); border-radius: 11px; color: #29382f; background: var(--surface); text-align: left; }
 .suggestions button:hover { border-color: #9db9aa; background: var(--green-soft); }
 
-.action-card, .info-card { display: grid; gap: 14px; padding: 19px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); box-shadow: var(--shadow); }
+.action-card, .info-card { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; max-width: 100%; gap: 14px; padding: 19px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); box-shadow: var(--shadow); }
+.action-card > *, .info-card > * { width: 100%; min-width: 0; max-width: 100%; }
+.action-card :where(p, li, code) { overflow-wrap: anywhere; }
 .card-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .card-heading h2 { margin: 2px 0 0; font-size: 1.08rem; }
 .eyebrow { color: var(--green); font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -128,7 +133,6 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 640px) {
-  :root { --composer-clearance: 285px; }
   .app-header { height: auto; min-height: 68px; padding-block: 10px; }
   .connection { font-size: 0; }
   .connection > span { margin-right: 0; }
@@ -182,7 +186,8 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .patch-diff { max-height: 380px; margin: 8px 10px 10px; padding: 11px; overflow: auto; white-space: pre; border-radius: 8px; background: #f1f5f2; font-size: .7rem; }
 .project-plan-steps { margin: 10px 0; padding-left: 22px; color: #34443b; }
 .project-job-card { border-color: #b9d5c5; }
-.job-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.job-section { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.job-section > * { min-width: 0; max-width: 100%; }
 .job-section h3 { margin: 0; color: #29382f; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
 .job-section p { margin: 0; }
 .job-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -224,9 +229,11 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .delivery-progress { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 12px 0; }
 .delivery-progress span { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); font-size: .82rem; }
 .delivery-progress strong { display: block; color: var(--text); font-size: .95rem; }
-.criterion-list, .work-unit-list { display: grid; gap: 8px; margin-top: 10px; }
+.criterion-list, .work-unit-list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; margin-top: 10px; }
 .criterion, .work-unit { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .criterion > span, .work-unit > span { display: grid; place-items: center; flex: 0 0 27px; height: 27px; border-radius: 50%; background: var(--panel); color: var(--muted); font-size: .78rem; }
+.criterion > div, .work-unit > div { min-width: 0; flex: 1 1 auto; }
+.criterion :where(strong, small), .work-unit :where(strong, small) { overflow-wrap: anywhere; }
 .criterion > div, .work-unit > div { min-width: 0; display: grid; gap: 3px; }
 .criterion p, .work-unit p { margin: 0; }
 .criterion small, .work-unit small { color: var(--muted); }
@@ -241,7 +248,7 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   .folder-inventory-row { grid-template-columns: 1fr; }
   .patch-summary { display: grid; grid-template-columns: 1fr; }
   .patch-diff { max-width: calc(100vw - 72px); }
-  .job-columns { grid-template-columns: 1fr; }
+  .job-columns { grid-template-columns: minmax(0, 1fr); }
   .analysis-heading { align-items: flex-start; flex-direction: column; }
   .analysis-findings > div { grid-template-columns: 1fr; }
   .completion-report dl div { grid-template-columns: 1fr; gap: 3px; }

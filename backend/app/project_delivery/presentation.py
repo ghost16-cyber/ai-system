@@ -13,13 +13,23 @@ def build_delivery_action(job: dict[str, Any]) -> dict[str, Any]:
     status = str(job["status"])
     plan = job.get("plan") if isinstance(job.get("plan"), dict) else {}
     units = [item for item in plan.get("work_units", []) if isinstance(item, dict)]
-    completed = sum(1 for item in units if item.get("status") == WorkUnitStatus.SATISFIED.value)
+    runtime = {str(item.get("work_unit_id")): str(item.get("status")) for item in job.get("work_unit_execution_states") or [] if isinstance(item, dict)}
+    completed = sum(1 for item in units if runtime.get(str(item.get("work_unit_id"))) == "completed")
     criteria = list((job.get("specification") or {}).get("acceptance_criteria") or [])
     required = [item for item in criteria if item.get("required") is not False]
     latest: dict[str, str] = {}
+    revision_id = str((job.get("plan_revision") or {}).get("plan_revision_id") or "")
+    manifest_hash = str(job.get("project_state_hash") or "")
+    fresh_results = {
+        str(item.get("verifier_result_id")) for item in job.get("verifier_results") or []
+        if isinstance(item, dict) and item.get("plan_revision_id") == revision_id and item.get("input_manifest_hash") == manifest_hash
+    }
     for record in job.get("verification_records") or []:
         if isinstance(record, dict):
-            latest[str(record.get("criterion_id") or "")] = str(record.get("state") or "pending")
+            state = str(record.get("state") or "pending")
+            if state == VerificationState.SATISFIED.value and str(record.get("verifier_result_id")) not in fresh_results:
+                state = "stale"
+            latest[str(record.get("criterion_id") or "")] = state
     satisfied = sum(1 for item in required if latest.get(str(item.get("criterion_id"))) in {VerificationState.SATISFIED.value, VerificationState.WAIVED.value})
     title = {
         DeliveryStatus.CLARIFICATION.value: "Project delivery needs clarification",
@@ -67,7 +77,7 @@ def build_delivery_chat_run(
         elif status == DeliveryStatus.AWAITING_PLAN_APPROVAL.value:
             response = "I prepared an immutable project delivery plan. Approving it only allows the first work unit to be prepared; it does not modify files or run commands."
         elif status == DeliveryStatus.COMPLETED.value:
-            response = "All required acceptance criteria have independent evidence. The client-ready handoff is available in this conversation."
+            response = "All required acceptance criteria have fresh typed verifier evidence. The client-ready handoff is available in this conversation."
         else:
             response = "The bounded project delivery state was updated. No unapproved file or command action was performed."
     paths = list((job.get("specification") or {}).get("evidence_references") or [])[:20]

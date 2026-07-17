@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend.app.assignments.schemas import AssignmentAnalysisPlan, AssignmentAnalysisQuestion
+from backend.app.assignments.dataset_mapper import map_dataset_columns, require_resolved_semantic_mapping
 from backend.app.datasets.schemas import DatasetProfile
 
 
@@ -53,9 +54,10 @@ def _q(assignment: int, index: int, question: str, method: str, logic: str, outp
 
 
 def _columns(profile: DatasetProfile | None) -> dict[str, str]:
-    date = profile.detected_date_columns[0] if profile and profile.detected_date_columns else "TIMESTAMP_COLUMN"
-    numeric = profile.detected_numeric_columns[0] if profile and profile.detected_numeric_columns else "NUMERIC_COLUMN"
-    category = profile.detected_categorical_columns[0] if profile and profile.detected_categorical_columns else "CATEGORY_COLUMN"
+    mapping = require_resolved_semantic_mapping(profile) if profile is not None else map_dataset_columns(None)
+    date = mapping.timestamp_column.column if profile else "TIMESTAMP_COLUMN"
+    numeric = mapping.primary_numeric_indicator.column if profile else "NUMERIC_COLUMN"
+    category = mapping.category_grouping_column.column if profile else "CATEGORY_COLUMN"
     classification = "CLASSIFICATION_COLUMN"
     if profile and profile.detected_numeric_columns:
         classification = next((col for col in profile.detected_numeric_columns if col.lower() in {"label", "target", "severity", "indicator"}), profile.detected_numeric_columns[0])

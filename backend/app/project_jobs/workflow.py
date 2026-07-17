@@ -67,12 +67,47 @@ _INJECTION_TERMS = (
     "reveal secret", "show secret", "printenv", "git push", "git commit", "deploy now",
 )
 
+_DELIVERY_MUTATION_PATTERN = re.compile(
+    r"\b(?:create|build|generate|write|produce|save|export|modify|update|implement|"
+    r"refactor|fix|complete|analy[sz]e)\b",
+    re.I,
+)
+_DELIVERY_ARTIFACT_PATTERN = re.compile(
+    r"\b(?:deliverables?|files?|scripts?|reports?|charts?|plots?|dashboards?|notebooks?|"
+    r"tests?|documentation|markdown|csv|json|html|pdf|png|jpe?g|svg|\.py|\.md)\b",
+    re.I,
+)
+_DELIVERY_RESTRICTION_PATTERN = re.compile(
+    r"\b(?:do\s+not|don't|must\s+not|without|only|restrict(?:ed|ions?)?|unrelated|"
+    r"no\s+external|no\s+deployment|local\s+only|before\s+(?:approval|execut)|"
+    r"requires?\s+approval|approval\s+required)\b",
+    re.I,
+)
+
 
 def detect_project_task(message: str) -> bool:
     text = (message or "").strip()
     if not text or any(pattern.search(text) for pattern in _ORDINARY_QUESTION_PATTERNS):
         return False
     return any(pattern.search(text) for pattern in _TASK_PATTERNS)
+
+
+def detect_project_delivery_task(message: str) -> bool:
+    """Detect scoped, execution-oriented project requests with explicit deliverables.
+
+    This intentionally requires all three signals. Ordinary project questions and
+    underspecified implementation requests continue through their existing paths.
+    Folder authority is checked separately by the chat route and is never inferred
+    from a path embedded in the message.
+    """
+    text = " ".join((message or "").split())
+    if not text or any(pattern.search(text) for pattern in _ORDINARY_QUESTION_PATTERNS):
+        return False
+    return bool(
+        _DELIVERY_MUTATION_PATTERN.search(text)
+        and _DELIVERY_ARTIFACT_PATTERN.search(text)
+        and _DELIVERY_RESTRICTION_PATTERN.search(text)
+    )
 
 
 def detect_project_job_followup(message: str) -> bool:
@@ -766,6 +801,6 @@ def _now() -> str:
 __all__ = [
     "MAX_REPAIR_CYCLES", "MAX_REPAIR_FAILURES", "MAX_REVISION_CYCLES", "ProjectJobError", "answer_clarification",
     "build_completion_summary", "build_job_action", "build_job_chat_run",
-    "create_project_job", "detect_project_job_followup", "detect_project_task", "detect_repair_request",
+    "create_project_job", "detect_project_delivery_task", "detect_project_job_followup", "detect_project_task", "detect_repair_request",
     "interpret_validation_result", "prepare_job_patch_bundle", "prepare_job_patch_changes", "public_project_job",
 ]

@@ -32,10 +32,24 @@ test("ordinary chat and command cards remain in the single conversation", () => 
 });
 
 test("conversation leaves scroll clearance for the fixed composer", () => {
-  assert.match(stylesSource, /--composer-clearance:\s*260px/);
+  assert.match(stylesSource, /--composer-height:\s*128px/);
+  assert.match(stylesSource, /--composer-clearance:\s*calc\(var\(--composer-height\) \+ 24px\)/);
   assert.match(stylesSource, /\.conversation\s*\{[^}]*padding-bottom:\s*var\(--composer-clearance\)/s);
   assert.match(stylesSource, /\.conversation\s*\{[^}]*scroll-padding-bottom:\s*var\(--composer-clearance\)/s);
+  assert.match(stylesSource, /\.conversation-end\s*\{[^}]*scroll-margin-bottom:\s*var\(--composer-clearance\)/s);
+  assert.match(stylesSource, /\.message\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s);
+  assert.match(stylesSource, /\.action-card, \.info-card\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s);
+  assert.match(stylesSource, /\.action-card, \.info-card\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(stylesSource, /\.action-card > \*, \.info-card > \*\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s);
+  assert.match(stylesSource, /\.action-card :where\(p, li, code\)\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(stylesSource, /\.criterion > div, \.work-unit > div\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 auto/s);
   assert.match(stylesSource, /\.composer\s*\{[^}]*position:\s*fixed/s);
+  assert.match(appSource, /new ResizeObserver\(update\)/);
+  assert.match(appSource, /conversationEndRef\.current\?\.scrollIntoView/);
+  assert.match(appSource, /const movedUp = currentTop < lastScrollTopRef\.current - 1/);
+  assert.match(appSource, /if \(movedUp\) stickToBottomRef\.current = false/);
+  assert.match(appSource, /pendingScrollRestoreRef\.current = readScrollSnapshot/);
+  assert.match(appSource, /conversationId && !scrollRestoreConversation/);
 });
 
 test("completed command output is bounded and scrollable", () => {
@@ -213,17 +227,59 @@ test("project job cards deduplicate stream and reload state by job id", () => {
   assert.match(projectJobStateSource, /normalized\.startsWith\("\/"\)/);
 });
 
+test("Stage 6 structural analysis stays bounded inside the existing job card", () => {
+  assert.match(appSource, /Analyzed project structure/);
+  assert.match(appSource, /Relevant symbols/);
+  assert.match(appSource, /Coherent file set/);
+  assert.match(appSource, /Impacted tests/);
+  assert.match(appSource, /Pre-preview validation/);
+  assert.match(appSource, /Plan-only safety stop/);
+  assert.match(projectJobStateSource, /safePath\(readString\(item\.relative_path\)\)/);
+  assert.match(clientSource, /project_analysis_completed/);
+  assert.match(clientSource, /project_impact_ready/);
+  assert.match(clientSource, /\/analysis\/refresh/);
+  assert.doesNotMatch(appSource, /StructuralAnalysisPage|DependencyGraphPage|CodeEditor/);
+});
+
 test("the active conversation is restored automatically after a page reload", () => {
   assert.match(appSource, /ACTIVE_CONVERSATION_KEY/);
   assert.match(appSource, /localStorage\.setItem\(ACTIVE_CONVERSATION_KEY, conversationId\)/);
-  assert.match(appSource, /client\.getChatRuns\(100\)/);
-  assert.match(appSource, /run\.conversation_id === savedConversationId/);
+  assert.match(appSource, /client\.getChatConversation\(selectedConversationId\)/);
+  assert.match(appSource, /restoreConversationMessages\(detail/);
+  assert.match(appSource, /canonicalConversationTurns\(detail\.turns\)/);
+  assert.match(appSource, /hydrationStatus === "loading"/);
   assert.match(appSource, /localStorage\.removeItem\(ACTIVE_CONVERSATION_KEY\)/);
+});
+
+test("reload recovery never resends a prompt or trusts browser project state", () => {
+  const hydrateStart = appSource.indexOf("async function hydrateConversation");
+  const submitStart = appSource.indexOf("async function submit");
+  assert.ok(hydrateStart > -1 && submitStart > hydrateStart);
+  const hydrationSource = appSource.slice(hydrateStart, submitStart);
+  assert.doesNotMatch(hydrationSource, /streamChat|runChat|approveProjectDelivery|prepareProjectDelivery/);
+  assert.match(appSource, /detail\.project_deliveries/);
+  assert.match(appSource, /client\.createChatRequest/);
+  assert.match(appSource, /request_id:\s*pendingRequest\.request_id/);
+  assert.match(clientSource, /postJson<ChatRequestRecord>\("\/chat\/requests"/);
+  assert.match(appSource, /clearStreamRecovery\(sessionStorage\)/);
+  assert.match(appSource, /It was not replayed automatically/);
+});
+
+test("New chat clears transient authority and scroll state without deleting history", () => {
+  const newChatStart = appSource.indexOf("function newChat");
+  const continueStart = appSource.indexOf("async function continueConversation");
+  const source = appSource.slice(newChatStart, continueStart);
+  assert.match(source, /clearStreamRecovery\(sessionStorage\)/);
+  assert.match(source, /clearScrollSnapshot\(sessionStorage, conversationId\)/);
+  assert.match(source, /setMessages\(\[\]\)/);
+  assert.doesNotMatch(source, /deleteChat|\/chat\/conversations/);
 });
 
 test("project job layout preserves the existing mobile composer", () => {
   assert.match(stylesSource, /\.project-job-card\s*\{/);
   assert.match(stylesSource, /\.job-columns\s*\{[^}]*grid-template-columns:\s*repeat\(2/s);
-  assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*\.job-columns\s*\{[^}]*grid-template-columns:\s*1fr/s);
+  assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*\.job-columns\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(stylesSource, /\.job-section\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)[^}]*min-width:\s*0/s);
   assert.match(stylesSource, /\.completion-report dl div\s*\{/);
+  assert.match(stylesSource, /@media \(max-width: 640px\)[\s\S]*\.analysis-heading\s*\{[^}]*flex-direction:\s*column/s);
 });

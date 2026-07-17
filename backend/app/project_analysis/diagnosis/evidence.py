@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from backend.app.folders.reader import iter_project_files
+from backend.app.project_analysis.state_manifest import build_project_state_manifest
 from backend.app.folders.safety import project_root_fingerprint, safe_relative_path
 from backend.app.project_analysis.diagnosis.models import (
     FAILURE_EVIDENCE_VERSION, MAX_MODEL_FAILURE_CHARS, MAX_REFERENCED_FILES,
@@ -109,16 +109,16 @@ def model_failure_text(evidence: ProjectFailureEvidence) -> str:
     return "\n".join(sections)[:MAX_MODEL_FAILURE_CHARS]
 
 
-def project_state_hash(root: str | Path, *, max_files: int = 160) -> str:
-    approved = Path(root).resolve()
-    values: list[str] = []
-    for path in iter_project_files(approved, max_files=max_files):
-        try:
-            relative = safe_relative_path(path.relative_to(approved).as_posix())
-            values.append(f"{relative}:{hashlib.sha256(path.read_bytes()).hexdigest()}")
-        except (OSError, ValueError):
-            continue
-    return hashlib.sha256("\n".join(sorted(values)).encode("utf-8")).hexdigest()
+def project_state_hash(root: str | Path, *, max_files: int | None = None) -> str:
+    """Compatibility adapter returning only a complete Stage 0 manifest identity.
+
+    ``max_files`` remains accepted for callers and tests, but reaching that bound
+    now raises instead of silently creating a partial repository identity.
+    """
+    if max_files is None:
+        return build_project_state_manifest(root).manifest_hash
+    from backend.app.project_analysis.state_manifest import ProjectManifestLimits
+    return build_project_state_manifest(root, limits=ProjectManifestLimits(max_files=max_files)).manifest_hash
 
 
 def _sanitize_output(value: str, root: Path, limit: int) -> tuple[str, list[str]]:

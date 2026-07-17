@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 SPECIFICATION_VERSION = "astra.project-delivery.specification.v1"
 PLAN_VERSION = "astra.project-delivery.plan.v1"
+PLAN_REVISION_VERSION = "astra.project-delivery.plan-revision.v2"
+WORK_UNIT_STATE_VERSION = "astra.project-delivery.work-unit-state.v1"
+APPROVAL_GRANT_VERSION = "astra.project-delivery.plan-approval.v2"
+VERIFIER_RESULT_VERSION = "astra.project-delivery.verifier-result.v1"
 MODEL_SPECIFICATION_VERSION = "astra.project-delivery.model-specification.v1"
 MODEL_PLAN_VERSION = "astra.project-delivery.model-plan.v1"
 MAX_MODEL_RESPONSE_CHARS = 120_000
@@ -81,6 +85,31 @@ class WorkUnitStatus(StrEnum):
     ROLLED_BACK = "rolled_back"
 
 
+class WorkUnitExecutionStatus(StrEnum):
+    PENDING = "pending"
+    READY = "ready"
+    ACTIVE = "active"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    ROLLED_BACK = "rolled_back"
+
+
+class VerifierOutcome(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    INCONCLUSIVE = "inconclusive"
+    MANUAL_REQUIRED = "manual_required"
+
+
+class VerificationRule(StrictModel):
+    rule_type: Literal["file_exists", "json_value", "yaml_value", "python_symbol", "text_contains", "patch_scope"]
+    relative_path: str | None = Field(default=None, max_length=500)
+    selector: str | None = Field(default=None, max_length=500)
+    expected_value: str | int | float | bool | None = None
+
+
 class AcceptanceCriterion(StrictModel):
     criterion_id: str = Field(min_length=1, max_length=80)
     requirement: str = Field(min_length=1, max_length=1000)
@@ -89,6 +118,7 @@ class AcceptanceCriterion(StrictModel):
     expected_evidence_type: str = Field(min_length=1, max_length=120)
     verification_state: VerificationState = VerificationState.PENDING
     blocked_reason: str | None = Field(default=None, max_length=1000)
+    checker_rule: VerificationRule | None = None
 
 
 class TaskSpecification(StrictModel):
@@ -162,6 +192,118 @@ class ExecutionPlan(StrictModel):
     plan_hash: str = Field(min_length=64, max_length=64)
 
 
+class ImmutableWorkUnitDefinition(StrictModel):
+    work_unit_id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    objective: str = Field(min_length=1, max_length=1000)
+    requirement_references: tuple[str, ...] = Field(min_length=1, max_length=20)
+    acceptance_criteria_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    dependencies: tuple[str, ...] = Field(max_length=20)
+    expected_files: tuple[str, ...] = Field(max_length=30)
+    expected_symbols: tuple[str, ...] = Field(max_length=30)
+    bounded_inputs: tuple[str, ...] = Field(max_length=30)
+    bounded_outputs: tuple[str, ...] = Field(max_length=30)
+    expected_patch_scope: str = Field(min_length=1, max_length=1000)
+    expected_validation_commands: tuple[str, ...] = Field(max_length=15)
+    completion_conditions: tuple[str, ...] = Field(min_length=1, max_length=20)
+    risk_level: Literal["low", "medium", "high"]
+    clarification_may_be_required: bool = False
+
+
+class ExecutionPlanRevision(StrictModel):
+    schema_version: Literal["astra.project-delivery.plan-revision.v2"] = PLAN_REVISION_VERSION
+    plan_revision_id: str
+    project_run_id: str
+    revision_number: int = Field(ge=1, le=4)
+    task_specification_revision_id: str
+    specification_hash: str = Field(min_length=64, max_length=64)
+    stage6_analysis_hash: str = Field(min_length=64, max_length=64)
+    work_units: tuple[ImmutableWorkUnitDefinition, ...] = Field(min_length=1, max_length=20)
+    ordered_work_unit_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    dependencies: tuple[tuple[str, tuple[str, ...]], ...]
+    acceptance_criteria: tuple[tuple[str, tuple[str, ...]], ...]
+    estimated_patch_count: int = Field(ge=1, le=10)
+    estimated_command_count: int = Field(ge=0, le=15)
+    explicit_exclusions: tuple[str, ...] = Field(max_length=20)
+    plan_source: Literal["deterministic", "model-assisted"]
+    confidence: float = Field(ge=0, le=1)
+    confidence_reasons: tuple[str, ...] = Field(max_length=20)
+    created_at: datetime
+    content_hash: str = Field(min_length=64, max_length=64)
+    supersedes_revision_id: str | None = None
+
+
+class WorkUnitExecutionState(StrictModel):
+    schema_version: Literal["astra.project-delivery.work-unit-state.v1"] = WORK_UNIT_STATE_VERSION
+    project_run_id: str
+    plan_revision_id: str
+    work_unit_id: str
+    status: WorkUnitExecutionStatus
+    attempt_count: int = Field(ge=0)
+    active_attempt_id: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    state_version: int = Field(ge=1)
+
+
+class PlanApprovalGrant(StrictModel):
+    schema_version: Literal["astra.project-delivery.plan-approval.v2"] = APPROVAL_GRANT_VERSION
+    approval_id: str
+    project_run_id: str
+    plan_revision_id: str
+    plan_content_hash: str = Field(min_length=64, max_length=64)
+    specification_hash: str = Field(min_length=64, max_length=64)
+    scope_revision: int = Field(ge=1)
+    workspace_id: str
+    root_fingerprint: str = Field(min_length=64, max_length=64)
+    approved_by: str = Field(min_length=1, max_length=80)
+    approved_at: datetime
+    expires_at: datetime | None = None
+    expected_project_state_version: int = Field(ge=1)
+    authority: Literal["prepare_work_units_only"] = "prepare_work_units_only"
+
+
+class PerformedCheck(StrictModel):
+    checker: str
+    checker_version: str
+    inputs: tuple[str, ...] = Field(max_length=30)
+    condition: str = Field(max_length=1000)
+    observed_value: str = Field(max_length=2000)
+    expected_value_or_rule: str = Field(max_length=2000)
+    outcome: Literal["passed", "failed", "inconclusive"]
+
+
+class VerificationEvidence(StrictModel):
+    evidence_type: str = Field(max_length=80)
+    source_identifier: str = Field(max_length=500)
+    relevant_file_or_artifact: str | None = Field(default=None, max_length=500)
+    content_hash: str = Field(min_length=64, max_length=64)
+    observation: str = Field(max_length=2000)
+    provenance: tuple[str, ...] = Field(max_length=20)
+    observed_at: datetime
+
+
+class VerifierResult(StrictModel):
+    schema_version: Literal["astra.project-delivery.verifier-result.v1"] = VERIFIER_RESULT_VERSION
+    verifier_result_id: str
+    project_run_id: str
+    plan_revision_id: str
+    work_unit_id: str | None = None
+    criterion_id: str
+    criterion_definition_hash: str = Field(min_length=64, max_length=64)
+    verifier_type: str
+    verifier_version: str
+    attempt_id: str
+    input_manifest_hash: str = Field(min_length=64, max_length=64)
+    checked_at: datetime
+    performed_checks: tuple[PerformedCheck, ...]
+    evidence_items: tuple[VerificationEvidence, ...]
+    outcome: VerifierOutcome
+    summary: str = Field(max_length=2000)
+    failure_reason: str | None = Field(default=None, max_length=2000)
+    result_hash: str = Field(min_length=64, max_length=64)
+
+
 class VerificationRecord(StrictModel):
     verification_id: str
     delivery_job_id: str
@@ -175,6 +317,10 @@ class VerificationRecord(StrictModel):
     relevant_diff_hashes: list[str] = Field(max_length=15)
     structural_analysis_references: list[str] = Field(max_length=10)
     failure_explanation: str | None = Field(default=None, max_length=4000)
+    verifier_result_id: str | None = None
+    verifier_result_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    input_manifest_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    plan_revision_id: str | None = None
     verified_at: datetime
     verification_hash: str = Field(min_length=64, max_length=64)
 
@@ -211,6 +357,7 @@ class HandoffReport(StrictModel):
     known_limitations: list[str]
     manual_checks_still_required: list[str]
     relevant_hashes: dict[str, str]
+    verifier_result_ids: list[str] = Field(default_factory=list, max_length=30)
     completion_status: Literal["completed", "partially_completed", "blocked", "awaiting_manual_verification"]
     completed_at: datetime
     handoff_hash: str = Field(min_length=64, max_length=64)
@@ -268,10 +415,12 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 __all__ = [
-    "AcceptanceCriterion", "DeliveryStatus", "ExecutionPlan", "HandoffReport",
+    "AcceptanceCriterion", "DeliveryStatus", "ExecutionPlan", "ExecutionPlanRevision",
+    "ImmutableWorkUnitDefinition", "PlanApprovalGrant", "PerformedCheck", "HandoffReport",
     "MODEL_PLAN_VERSION", "MODEL_SPECIFICATION_VERSION", "ModelPlanResponse",
     "ModelSpecificationResponse", "PLAN_VERSION", "SPECIFICATION_VERSION",
-    "ScopeChange", "TaskSpecification", "VerificationMode", "VerificationRecord",
-    "VerificationState", "WorkUnit", "WorkUnitStatus", "parse_model_plan",
+    "ScopeChange", "TaskSpecification", "VerificationEvidence", "VerificationMode", "VerificationRecord",
+    "VerificationRule", "VerificationState", "VerifierOutcome", "VerifierResult", "WorkUnit",
+    "WorkUnitExecutionState", "WorkUnitExecutionStatus", "WorkUnitStatus", "parse_model_plan",
     "parse_model_specification",
 ]
