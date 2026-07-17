@@ -76,3 +76,6 @@ models/specialists/
 /astra-assignment-*.zip
 /astra-assignment-*.patch
 *:Zone.Identifier
+
+# Generated assignment test workspaces
+assignment_tests/
