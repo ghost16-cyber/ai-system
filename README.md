@@ -1,13 +1,13 @@
-# AI Coding Assistant
+# Astra — Local-first Coding Assistant
 
 A local-first Python coding assistant backend built in working releases.
 
-## Current Checkpoint: Release 4.1 - Foundation Stabilization
+## Current Checkpoint: Stage 0 — Trustworthy Intake and Approval Integrity
 
-Release 4.1 stabilizes the deterministic backend before any ML, RAG, or SLM
-layer is activated. The current system is a local FastAPI service with
-allowlisted tools, deterministic Python analysis, validated proposals, feedback,
-metrics, and queued project analysis.
+The active system is a local FastAPI backend plus a single chat-native React
+interface. Stage 0 hardens assignment intake, dataset grounding, project-plan
+approval, repository staleness, and acceptance verification. It is a security
+and integrity checkpoint, not a claim of full production readiness.
 
 ### Active Capabilities
 
@@ -25,18 +25,24 @@ metrics, and queued project analysis.
 - Hardware-aware AI optimizer report endpoint with low-VRAM training recommendations.
 - Local Runtime Intelligence context for hardware, installed tools, capability planning, and task-specific execution settings.
 - Runtime-aware plan gating with trace audits and benchmark decision metrics.
+- Chat-native assignment parsing, planning, evidence, report, and workspace flows.
+- Stage 9 `project_delivery` as the canonical delivery aggregate, bridged to the
+  legacy project-job execution machinery.
+- Immutable approved plan revisions with separately persisted work-unit runtime state.
+- Complete, fail-closed project-state manifests and fresh typed verifier results.
+- Explicit plan, patch, command, scope, rollback, and human-validation approval boundaries.
 
-### Inactive / Future Layers
+### Explicit boundaries and later stages
 
-The repository still contains experimental modules for later stages, but they are
-not loaded by the active backend:
+Some experimental modules remain in the repository, but Stage 0 does not make
+them trusted execution authorities. File changes and commands remain approval
+gated. Command sandboxing and filesystem/network isolation are a later Stage 2
+requirement; Stage 0 does not provide container isolation. Distributed workers,
+cloud model adapters, GPU scheduling, team collaboration, and a completed VS
+Code extension also remain outside this checkpoint.
 
-- ML classifier hints are inactive.
-- RAG and embeddings are inactive.
-- Local SLM/Ollama coordination is inactive.
-- The orchestrator currently uses a deterministic scripted proposer until a local SLM adapter is connected.
-- Dashboard and VS Code extension layers are inactive.
-- No automatic code rewriting is active.
+See [`docs/stage0-trust-integrity.md`](docs/stage0-trust-integrity.md) for the
+contracts, failure behavior, compatibility policy, and regression commands.
 
 ## Active Rules
 
@@ -182,7 +188,7 @@ shell inherits a Windows temporary directory.
 
 ## Next Step
 
-After this stabilization checkpoint, the next planned implementation layer is a
-non-authoritative ML hints layer. ML hints should be returned separately from
-rule findings, should not produce validated patches, and should not affect safety
-decisions.
+Continue validating Stage 0 on real local projects before increasing autonomy.
+Stage 2 command isolation remains a separate prerequisite for stronger execution
+authority; model or classifier output must remain non-authoritative for approval
+and verification decisions.
