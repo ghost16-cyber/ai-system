@@ -139,3 +139,34 @@ test("Stage 9 stays in the chat and keeps technical details collapsed", () => {
   assert.match(client, /\/chat\/projects\/deliveries/);
   assert.match(client, /immutable_hash: planHash/);
 });
+
+test("Stage 1 canonical read model owns approval, progress, verification, handoff, and action bindings", () => {
+  const value = payload("plan_approved");
+  const delivery = value.technical_details.project_delivery as Record<string, unknown>;
+  delivery.project_control = {
+    project_run_id: "delivery-1", lifecycle_state: "awaiting_plan_approval",
+    plan_revision_id: "canonical-plan", scope_revision_id: "canonical-scope",
+    manifest_hash: "d".repeat(64), manifest_complete: true,
+    approval_fresh: false, approval_state: "reapproval_required",
+    progress: { completed_work_units: 1, total_work_units: 2 },
+    pending_user_action: "approve_plan", state_version: 9,
+    handoff_eligible: false,
+    verification_summary: { passed: 0, failed: 1, manual_required: 0, total: 1 },
+    criterion_states: { "criterion-01": { outcome: "failed", result_hash: "e".repeat(64) } },
+  };
+  delivery.plan_approval = { plan_revision_id: "canonical-plan", plan_content_hash: "b".repeat(64) };
+  const action = projectDeliveryActionFromPayload(value);
+  assert.ok(action);
+  assert.equal(action.lifecycleState, "awaiting_plan_approval");
+  assert.equal(action.plan?.revisionId, "canonical-plan");
+  assert.equal(action.scopeRevisionId, "canonical-scope");
+  assert.equal(action.stateVersion, 9);
+  assert.equal(action.plan?.approvalFresh, false);
+  assert.equal(action.criteria[0].state, "failed");
+  assert.equal(action.progress.completedWorkUnits, 1);
+  assert.equal(action.handoffEligible, false);
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /expected_state_version: action\.stateVersion/);
+  assert.match(app, /scope_revision_id: action\.scopeRevisionId/);
+  assert.doesNotMatch(app, /const handoffReady/);
+});

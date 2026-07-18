@@ -792,12 +792,12 @@ export interface AstraClient {
   proposeProjectJobValidation(jobId: string, conversationId: string): Promise<ChatRunResponse>;
   cancelProjectJob(jobId: string, conversationId: string): Promise<Record<string, unknown>>;
   getProjectDelivery(deliveryJobId: string): Promise<Record<string, unknown>>;
-  approveProjectDeliveryPlan(deliveryJobId: string, conversationId: string, planHash: string): Promise<ChatRunResponse>;
-  clarifyProjectDelivery(deliveryJobId: string, conversationId: string, answer: string): Promise<ChatRunResponse>;
-  prepareProjectDelivery(deliveryJobId: string, conversationId: string): Promise<ChatRunResponse>;
-  verifyProjectDelivery(deliveryJobId: string, conversationId: string, criterionId: string): Promise<ChatRunResponse>;
-  generateProjectDeliveryHandoff(deliveryJobId: string, conversationId: string): Promise<ChatRunResponse>;
-  cancelProjectDelivery(deliveryJobId: string, conversationId: string): Promise<Record<string, unknown>>;
+  approveProjectDeliveryPlan(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  clarifyProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  prepareProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  verifyProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  generateProjectDeliveryHandoff(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
+  cancelProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<Record<string, unknown>>;
   getClientEngagement(engagementId: string, conversationId: string): Promise<Record<string, unknown>>;
   submitEngagementAnswers(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   approveEngagementScope(engagementId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
@@ -1168,45 +1168,46 @@ export class HttpAstraClient implements AstraClient {
     );
   }
 
-  async approveProjectDeliveryPlan(deliveryJobId: string, conversationId: string, planHash: string) {
+  async approveProjectDeliveryPlan(deliveryJobId: string, request: Record<string, unknown>) {
+    const { immutable_hash: planHash, ...binding } = request;
     return this.postJson<ChatRunResponse>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/plan/approve`,
-      { conversation_id: conversationId, immutable_hash: planHash },
+      { ...binding, immutable_hash: planHash },
     );
   }
 
-  async clarifyProjectDelivery(deliveryJobId: string, conversationId: string, answer: string) {
+  async clarifyProjectDelivery(deliveryJobId: string, request: Record<string, unknown>) {
     return this.postJson<ChatRunResponse>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/clarify`,
-      { conversation_id: conversationId, answer },
+      request,
     );
   }
 
-  async prepareProjectDelivery(deliveryJobId: string, conversationId: string) {
+  async prepareProjectDelivery(deliveryJobId: string, request: Record<string, unknown>) {
     return this.postJson<ChatRunResponse>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/prepare`,
-      { conversation_id: conversationId },
+      request,
     );
   }
 
-  async verifyProjectDelivery(deliveryJobId: string, conversationId: string, criterionId: string) {
+  async verifyProjectDelivery(deliveryJobId: string, request: Record<string, unknown>) {
     return this.postJson<ChatRunResponse>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/verification`,
-      { conversation_id: conversationId, criterion_id: criterionId },
+      request,
     );
   }
 
-  async generateProjectDeliveryHandoff(deliveryJobId: string, conversationId: string) {
+  async generateProjectDeliveryHandoff(deliveryJobId: string, request: Record<string, unknown>) {
     return this.postJson<ChatRunResponse>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/handoff`,
-      { conversation_id: conversationId },
+      request,
     );
   }
 
-  async cancelProjectDelivery(deliveryJobId: string, conversationId: string) {
+  async cancelProjectDelivery(deliveryJobId: string, request: Record<string, unknown>) {
     return this.postJson<Record<string, unknown>>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/cancel`,
-      { conversation_id: conversationId },
+      request,
     );
   }
 

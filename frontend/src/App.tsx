@@ -701,7 +701,10 @@ export default function App() {
     const lockId = `delivery-plan:${action.deliveryJobId}`;
     if (!request || !tryLockCommandAction(locks.current, lockId)) return;
     try {
-      await client.approveProjectDeliveryPlan(action.deliveryJobId, conversationId, request.immutable_hash);
+      await client.approveProjectDeliveryPlan(action.deliveryJobId, {
+        ...projectDeliveryMutationRequest(action, conversationId, newId("delivery-plan")),
+        immutable_hash: request.immutable_hash,
+      });
       await refreshProjectDelivery(action.deliveryJobId);
     } catch (caught) {
       setError(cleanError(caught));
@@ -710,11 +713,14 @@ export default function App() {
   }
 
   async function prepareProjectDelivery(action: ProjectDeliveryAction) {
-    if (!conversationId || action.status !== "plan_approved") return;
+    if (!conversationId || action.lifecycleState !== "ready_for_work") return;
     const lockId = `delivery-prepare:${action.deliveryJobId}`;
     if (!tryLockCommandAction(locks.current, lockId)) return;
     try {
-      const run = await client.prepareProjectDelivery(action.deliveryJobId, conversationId);
+      const run = await client.prepareProjectDelivery(
+        action.deliveryJobId,
+        projectDeliveryMutationRequest(action, conversationId, newId("delivery-prepare")),
+      );
       setMessages((current) => [...current, {
         ...makeMessage("assistant", ""), createdAt: run.created_at, run,
         action: genericActionFromRun(run) ?? undefined,
@@ -727,13 +733,16 @@ export default function App() {
   }
 
   async function verifyProjectDelivery(action: ProjectDeliveryAction) {
-    if (!conversationId || action.status !== "patch_applied_not_verified") return;
+    if (!conversationId || action.pendingUserAction !== "request_verification") return;
     const criterion = action.criteria.find((item) => !["satisfied", "waived-by-user"].includes(item.state));
     if (!criterion) return;
     const lockId = `delivery-verify:${action.deliveryJobId}:${criterion.id}`;
     if (!tryLockCommandAction(locks.current, lockId)) return;
     try {
-      const run = await client.verifyProjectDelivery(action.deliveryJobId, conversationId, criterion.id);
+      const run = await client.verifyProjectDelivery(action.deliveryJobId, {
+        ...projectDeliveryMutationRequest(action, conversationId, newId("delivery-verification")),
+        criterion_id: criterion.id,
+      });
       const generic = genericActionFromRun(run);
       if (generic) setMessages((current) => [...current, {
         ...makeMessage("assistant", ""), createdAt: run.created_at, run, action: generic,
@@ -741,6 +750,7 @@ export default function App() {
       await refreshProjectDelivery(action.deliveryJobId);
     } catch (caught) {
       setError(cleanError(caught));
+      await refreshProjectDelivery(action.deliveryJobId).catch(() => undefined);
     } finally { locks.current.delete(lockId); }
   }
 
@@ -749,9 +759,15 @@ export default function App() {
     const lockId = `delivery-handoff:${action.deliveryJobId}`;
     if (!tryLockCommandAction(locks.current, lockId)) return;
     try {
-      await client.generateProjectDeliveryHandoff(action.deliveryJobId, conversationId);
+      await client.generateProjectDeliveryHandoff(
+        action.deliveryJobId,
+        projectDeliveryMutationRequest(action, conversationId, newId("delivery-handoff")),
+      );
       await refreshProjectDelivery(action.deliveryJobId);
-    } catch (caught) { setError(cleanError(caught)); }
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshProjectDelivery(action.deliveryJobId).catch(() => undefined);
+    }
     finally { locks.current.delete(lockId); }
   }
 
@@ -760,9 +776,15 @@ export default function App() {
     const lockId = `delivery-cancel:${action.deliveryJobId}`;
     if (!tryLockCommandAction(locks.current, lockId)) return;
     try {
-      await client.cancelProjectDelivery(action.deliveryJobId, conversationId);
+      await client.cancelProjectDelivery(
+        action.deliveryJobId,
+        projectDeliveryMutationRequest(action, conversationId, newId("delivery-cancel")),
+      );
       await refreshProjectDelivery(action.deliveryJobId);
-    } catch (caught) { setError(cleanError(caught)); }
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshProjectDelivery(action.deliveryJobId).catch(() => undefined);
+    }
     finally { locks.current.delete(lockId); }
   }
 
@@ -1474,9 +1496,7 @@ function ProjectDeliveryCard({
   onHandoff: () => void;
   onCancel: () => void;
 }) {
-  const terminal = ["delivery_completed", "cancelled"].includes(action.status);
-  const handoffReady = action.progress.totalRequiredCriteria > 0
-    && action.progress.satisfiedRequiredCriteria === action.progress.totalRequiredCriteria;
+  const terminal = ["completed", "cancelled"].includes(action.lifecycleState);
   const currentIndex = action.plan?.workUnits.findIndex((unit) => unit.id === action.activeWorkUnitId) ?? -1;
   return <div className="action-card project-delivery-card">
     <div className="card-heading"><div><span className="eyebrow">Project delivery</span><h2>{action.status === "delivery_completed" ? "Client-ready handoff" : "Bounded project task"}</h2></div><span className={`status status-${action.status}`}>{action.status.replace(/_/g, " ")}</span></div>
@@ -1500,10 +1520,10 @@ function ProjectDeliveryCard({
     {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Delivery paused</strong><p>{action.error}</p></div></div>}
     {action.handoff && <section className="job-section handoff-card"><h3>Client handoff</h3><p><strong>{action.handoff.status.replace(/_/g, " ")}</strong></p><div className="job-columns"><div><strong>Changed files</strong><List items={action.handoff.changedFiles} /></div><div><strong>Verified validations</strong><List items={action.handoff.validations} /></div></div>{action.handoff.limitations.length > 0 && <div><strong>Known limitations</strong><List items={action.handoff.limitations} /></div>}{action.handoff.manualChecks.length > 0 && <div><strong>Manual checks still required</strong><List items={action.handoff.manualChecks} /></div>}<p className="muted">Rollback {action.handoff.rollbackAvailable ? "is available" : "is not available"} for applied Astra patches.</p></section>}
     <div className="button-row">
-      {action.status === "awaiting_plan_approval" && <button className="primary-button" disabled={!action.manifest.complete} aria-label="Approve exact project delivery plan" onClick={onApprovePlan}><ShieldCheck size={16} />Approve plan</button>}
-      {action.status === "plan_approved" && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare next patch</button>}
-      {action.status === "patch_applied_not_verified" && <button className="primary-button" onClick={onVerify}><ShieldCheck size={16} />Verify next criterion</button>}
-      {!action.handoff && (handoffReady || ["blocked", "awaiting_manual_verification", "partially_completed"].includes(action.status)) && <button className="secondary-button" onClick={onHandoff}><FileText size={16} />Prepare handoff</button>}
+      {action.lifecycleState === "awaiting_plan_approval" && <button className="primary-button" disabled={!action.manifest.complete} aria-label="Approve exact project delivery plan" onClick={onApprovePlan}><ShieldCheck size={16} />Approve plan</button>}
+      {action.lifecycleState === "ready_for_work" && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare next patch</button>}
+      {action.pendingUserAction === "request_verification" && <button className="primary-button" onClick={onVerify}><ShieldCheck size={16} />Verify next criterion</button>}
+      {!action.handoff && action.handoffEligible && <button className="secondary-button" onClick={onHandoff}><FileText size={16} />Prepare handoff</button>}
       {!terminal && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel delivery</button>}
     </div>
     <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Specification source: {action.specificationSource}</span><span>Plan revision: {action.plan?.revisionId ?? action.plan?.revision ?? "not ready"}</span><span>Approval: {action.plan?.approvalFresh ? "fresh" : "not active"}</span><JsonBlock value={action.technical} /></div></details>
@@ -1848,6 +1868,16 @@ function projectDeliveryIdFromAction(action: ChatAction): string | undefined {
   const scope = action.technicalDetails.project_scope;
   if (scope && typeof scope === "object" && !Array.isArray(scope) && typeof (scope as Record<string, unknown>).delivery_job_id === "string") return (scope as Record<string, unknown>).delivery_job_id as string;
   return undefined;
+}
+function projectDeliveryMutationRequest(action: ProjectDeliveryAction, conversationId: string, idempotencyKey: string) {
+  return {
+    conversation_id: conversationId,
+    project_run_id: action.projectRunId,
+    plan_revision_id: action.plan?.revisionId ?? null,
+    scope_revision_id: action.scopeRevisionId ?? null,
+    expected_state_version: action.stateVersion,
+    idempotency_key: idempotencyKey,
+  };
 }
 function joinSummary(value: unknown, fallback = "None"): string {
   return Array.isArray(value) ? value.map(String).join(", ") || fallback : typeof value === "string" && value ? value : fallback;

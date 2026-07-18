@@ -463,6 +463,58 @@ def test_conversation_hydration_returns_current_canonical_delivery_once(tmp_path
     assert hydrated["project_deliveries"][0]["plan_approval"]["plan_revision_id"]
 
 
+def test_stage1_delivery_card_binds_actions_and_reloads_same_control_run(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    app = create_app(tmp_path / "app.db", tmp_path)
+    with TestClient(app) as client:
+        conversation_id = _connect(client, project)
+        started = client.post("/chat/projects/deliveries", json={
+            "conversation_id": conversation_id, "user_request": TASK,
+        })
+        assert started.status_code == 200, started.text
+        delivery = started.json()["action"]["technical_details"]["project_delivery"]
+        control = delivery["project_control"]
+        assert control["project_run_id"] == delivery["delivery_job_id"]
+        assert control["lifecycle_state"] == "awaiting_plan_approval"
+        request = {
+            "conversation_id": conversation_id,
+            "project_run_id": control["project_run_id"],
+            "plan_revision_id": control["plan_revision_id"],
+            "scope_revision_id": control["scope_revision_id"],
+            "expected_state_version": control["state_version"],
+            "idempotency_key": "browser-plan-approval-1",
+            "immutable_hash": delivery["plan"]["plan_hash"],
+        }
+        approved = client.post(
+            f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve", json=request,
+        )
+        assert approved.status_code == 200, approved.text
+        replay = client.post(
+            f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve", json=request,
+        )
+        assert replay.status_code == 200, replay.text
+        conflict = client.post(
+            f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve",
+            json={**request, "immutable_hash": "f" * 64},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+        stale = client.post(
+            f"/chat/projects/deliveries/{delivery['delivery_job_id']}/prepare", json={
+                **{key: value for key, value in request.items() if key != "immutable_hash"},
+                "idempotency_key": "stale-prepare",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "stale_state_version"
+        hydrated = client.get(f"/chat/conversations/{conversation_id}").json()
+        restored = hydrated["project_deliveries"][0]["project_control"]
+        assert restored["project_run_id"] == control["project_run_id"]
+        assert restored["lifecycle_state"] == "ready_for_work"
+        assert restored["approval_fresh"] is True
+        assert app.state.project_control.get_project(control["project_run_id"]).state_version == restored["state_version"]
+
+
 def test_pending_request_is_durable_before_stream_and_duplicate_stream_does_not_reexecute(tmp_path: Path) -> None:
     project = _project(tmp_path)
     (project / "household_power_consumption.csv").write_text(
