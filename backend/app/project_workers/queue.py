@@ -645,7 +645,7 @@ class ProjectWorkerQueue:
                 """
                 SELECT request_json
                 FROM project_worker_requests
-                WHERE status IN ('failed', 'cancelled', 'interrupted', 'timed_out')
+                WHERE status IN ('succeeded', 'failed', 'cancelled', 'interrupted', 'timed_out')
                   AND canonical_reconciled_at IS NULL
                 ORDER BY finished_at, worker_request_id
                 """
@@ -663,15 +663,10 @@ class ProjectWorkerQueue:
         try:
             connection.execute("BEGIN IMMEDIATE")
             request = self._load_request(connection, worker_request_id)
-            if request.status not in {
-                WorkerRequestStatus.FAILED,
-                WorkerRequestStatus.CANCELLED,
-                WorkerRequestStatus.INTERRUPTED,
-                WorkerRequestStatus.TIMED_OUT,
-            }:
+            if request.status not in TERMINAL_WORKER_STATUSES:
                 raise ProjectWorkerError(
                     ProjectWorkerErrorCode.INVALID_REQUEST,
-                    "Only a terminal non-success request can be marked canonically reconciled.",
+                    "Only a terminal worker request can be marked canonically reconciled.",
                 )
             if request.canonical_reconciled_at is not None:
                 connection.execute("COMMIT")

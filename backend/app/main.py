@@ -310,7 +310,11 @@ from backend.app.project_delivery import (
 )
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode, ProjectControlPlane
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
-from backend.app.project_workers import ProjectWorkerQueue, ProjectWorkerService
+from backend.app.project_workers import (
+    ProjectSubprocessExecutor,
+    ProjectWorkerQueue,
+    ProjectWorkerService,
+)
 from backend.app.client_engagement import (
     EngagementError,
     EngagementService,
@@ -783,6 +787,10 @@ def create_app(
     delivery_control = ProjectDeliveryControlAdapter(project_control)
     project_worker_queue = ProjectWorkerQueue(configured_path)
     project_worker_service = ProjectWorkerService(project_control, project_worker_queue)
+    project_worker_executor = ProjectSubprocessExecutor(
+        project_worker_service,
+        configured_workspace_root / "data" / "project_worker_results",
+    )
     job_queue = JobQueue(configured_path)
     synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
@@ -824,6 +832,7 @@ def create_app(
     application.state.project_control = project_control
     application.state.project_worker_queue = project_worker_queue
     application.state.project_worker_service = project_worker_service
+    application.state.project_worker_executor = project_worker_executor
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
     application.include_router(specialists_router)
