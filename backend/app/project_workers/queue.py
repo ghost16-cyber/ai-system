@@ -24,6 +24,7 @@ from backend.app.project_control.contracts import (
 from backend.app.project_workers.contracts import (
     WORKER_EVENT_VERSION,
     WORKER_REQUEST_VERSION,
+    WORKER_RUNTIME_INSTANCE_VERSION,
     ProjectWorkerEvent,
     ProjectWorkerRequest,
     TERMINAL_WORKER_STATUSES,
@@ -33,6 +34,7 @@ from backend.app.project_workers.contracts import (
     WorkerEventType,
     WorkerLease,
     WorkerRequestStatus,
+    WorkerRuntimeInstance,
 )
 from backend.app.project_workers.errors import ProjectWorkerError, ProjectWorkerErrorCode
 
@@ -122,7 +124,124 @@ class ProjectWorkerQueue:
                     PRIMARY KEY(project_run_id, operation_key),
                     FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS project_worker_runtime_instances (
+                    worker_id TEXT PRIMARY KEY,
+                    execution_backend TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    instance_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_worker_runtime_heartbeat
+                    ON project_worker_runtime_instances(status, last_heartbeat_at);
                 """
+            )
+
+    def record_runtime_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        execution_backend: str,
+        supported_attempt_types: Iterable[ExecutionAttemptType | str],
+        supported_toolchains: Iterable[str] = (),
+        now: datetime | None = None,
+    ) -> WorkerRuntimeInstance:
+        current = self._as_utc(now or self._now())
+        identity = self._required_text(worker_id, "worker_id", 160)
+        backend = self._required_text(execution_backend, "execution_backend", 80)
+        attempts = tuple(ExecutionAttemptType(value) for value in supported_attempt_types)
+        toolchains = tuple(sorted({str(value)[:80] for value in supported_toolchains if str(value)}))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT started_at FROM project_worker_runtime_instances WHERE worker_id = ?",
+                (identity,),
+            ).fetchone()
+            started = (
+                datetime.fromisoformat(str(row["started_at"]))
+                if row is not None else current
+            )
+            instance = WorkerRuntimeInstance(
+                worker_id=identity,
+                execution_backend=backend,
+                status="available",
+                supported_attempt_types=attempts,
+                supported_toolchains=toolchains,
+                started_at=started,
+                last_heartbeat_at=current,
+            )
+            connection.execute(
+                "INSERT INTO project_worker_runtime_instances "
+                "(worker_id, execution_backend, status, schema_version, instance_json, "
+                "started_at, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(worker_id) DO UPDATE SET execution_backend = excluded.execution_backend, "
+                "status = excluded.status, schema_version = excluded.schema_version, "
+                "instance_json = excluded.instance_json, last_heartbeat_at = excluded.last_heartbeat_at",
+                (
+                    identity,
+                    backend,
+                    instance.status,
+                    WORKER_RUNTIME_INSTANCE_VERSION,
+                    instance.model_dump_json(),
+                    started.isoformat(),
+                    current.isoformat(),
+                ),
+            )
+            connection.execute("COMMIT")
+            return instance
+
+    def list_active_runtime_instances(
+        self,
+        *,
+        now: datetime | None = None,
+        stale_after_seconds: int = 15,
+    ) -> list[WorkerRuntimeInstance]:
+        current = self._as_utc(now or self._now())
+        cutoff = current - timedelta(seconds=max(5, min(int(stale_after_seconds), 300)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT schema_version, instance_json FROM project_worker_runtime_instances "
+                "WHERE status = 'available' AND last_heartbeat_at >= ? "
+                "ORDER BY last_heartbeat_at DESC, worker_id",
+                (cutoff.isoformat(),),
+            ).fetchall()
+        instances: list[WorkerRuntimeInstance] = []
+        for row in rows:
+            if str(row["schema_version"]) != WORKER_RUNTIME_INSTANCE_VERSION:
+                continue
+            instances.append(self._stored_model(
+                WorkerRuntimeInstance,
+                str(row["instance_json"]),
+                "worker runtime instance",
+            ))
+        return instances
+
+    def mark_runtime_stopped(
+        self,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        current = self._as_utc(now or self._now())
+        identity = self._required_text(worker_id, "worker_id", 160)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT instance_json FROM project_worker_runtime_instances WHERE worker_id = ?",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                return
+            instance = self._stored_model(
+                WorkerRuntimeInstance,
+                str(row["instance_json"]),
+                "worker runtime instance",
+            ).model_copy(update={"status": "stopped", "last_heartbeat_at": current})
+            connection.execute(
+                "UPDATE project_worker_runtime_instances SET status = 'stopped', "
+                "instance_json = ?, last_heartbeat_at = ? WHERE worker_id = ?",
+                (instance.model_dump_json(), current.isoformat(), identity),
             )
 
     def enqueue(self, command: WorkerEnqueueCommand | dict[str, Any]) -> ProjectWorkerRequest:
@@ -489,7 +608,18 @@ class ProjectWorkerQueue:
                 parsed.lease_token,
                 current_time,
             )
-            if request.status == WorkerRequestStatus.CANCEL_REQUESTED and parsed.outcome != WorkerCompletionOutcome.CANCELLED:
+            finishing_mutation = (
+                request.attempt_type in {
+                    ExecutionAttemptType.PATCH,
+                    ExecutionAttemptType.ROLLBACK,
+                }
+                and parsed.outcome == WorkerCompletionOutcome.SUCCEEDED
+            )
+            if (
+                request.status == WorkerRequestStatus.CANCEL_REQUESTED
+                and parsed.outcome != WorkerCompletionOutcome.CANCELLED
+                and not finishing_mutation
+            ):
                 raise ProjectWorkerError(
                     ProjectWorkerErrorCode.INVALID_REQUEST,
                     "A cancellation-requested lease may only acknowledge cancellation.",

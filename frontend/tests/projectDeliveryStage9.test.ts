@@ -170,3 +170,32 @@ test("Stage 1 canonical read model owns approval, progress, verification, handof
   assert.match(app, /scope_revision_id: action\.scopeRevisionId/);
   assert.doesNotMatch(app, /const handoffReady/);
 });
+
+test("canonical queue and coordinator identities survive delivery reload parsing", () => {
+  const value = payload("preparing_work_unit");
+  const delivery = value.technical_details.project_delivery as Record<string, unknown>;
+  delivery.project_control = {
+    project_run_id: "delivery-1", lifecycle_state: "work_in_progress",
+    plan_revision_id: "plan-1", scope_revision_id: "scope-1",
+    manifest_hash: "d".repeat(64), manifest_complete: true,
+    approval_fresh: true, approval_state: "approved",
+    progress: {}, pending_user_action: "record_patch_result", state_version: 12,
+    handoff_eligible: false, verification_summary: {}, criterion_states: {},
+    active_execution_attempt_id: "attempt-1",
+    active_execution_attempt_type: "patch_application",
+    active_execution_attempt_status: "active",
+    execution_dispatch_id: "dispatch-1", execution_dispatch_status: "dispatched",
+    worker_request_id: "worker-request-1", worker_request_status: "running",
+    execution_evidence_references: { image_digest: "sha256:abc" },
+  };
+  delivery.coordinator_intents = [{
+    coordinator_intent_id: "intent-1", intent_type: "prepare_work_unit", status: "claimed",
+  }];
+  const action = projectDeliveryActionFromPayload(value);
+  assert.ok(action);
+  assert.equal(action.execution?.attemptId, "attempt-1");
+  assert.equal(action.execution?.workerRequestId, "worker-request-1");
+  assert.equal(action.execution?.workerStatus, "running");
+  assert.equal(action.coordinatorIntent?.id, "intent-1");
+  assert.equal(action.coordinatorIntent?.status, "claimed");
+});

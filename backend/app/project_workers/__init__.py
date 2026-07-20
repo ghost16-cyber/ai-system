@@ -3,19 +3,55 @@ from backend.app.project_workers.contracts import (
     ProjectWorkerRequest,
     WorkerCompletion,
     WorkerCompletionOutcome,
+    WorkerDispatchReport,
     WorkerEnqueueCommand,
     WorkerEventType,
     WorkerLease,
     WorkerLimits,
     WorkerRecoveryReport,
     WorkerRequestStatus,
+    WorkerRuntimeInstance,
 )
 from backend.app.project_workers.errors import ProjectWorkerError, ProjectWorkerErrorCode
 from backend.app.project_workers.execution import ProjectSubprocessExecutor
+from backend.app.project_workers.isolated_execution import ProjectIsolatedExecutor
+from backend.app.project_workers.isolation import (
+    DockerIsolationBackend,
+    IsolationBackend,
+    container_identity_for,
+    create_workspace_snapshot,
+    default_isolation_profile,
+)
+from backend.app.project_workers.mutation_contracts import (
+    FileMutationKind,
+    FileMutationResult,
+    FileMutationSpec,
+    FileOperationKind,
+    FileOperationSpec,
+    build_file_mutation_spec,
+)
+from backend.app.project_workers.mutations import (
+    FileMutationEngine,
+    FileMutationError,
+    FileMutationErrorCode,
+    MutationJournalStatus,
+    calculate_expected_manifest_hash,
+)
+from backend.app.project_workers.mutation_execution import (
+    CompositeProjectExecutor,
+    ProjectMutationExecutor,
+)
 from backend.app.project_workers.policy import ProjectExecutionPolicyError
 from backend.app.project_workers.queue import ProjectWorkerQueue
 from backend.app.project_workers.runtime_contracts import (
     ExecutionInputArtifact,
+    IsolationBackendKind,
+    IsolationCapability,
+    IsolationExecutionResult,
+    IsolationFilesystemMode,
+    IsolationNetworkMode,
+    IsolationProfile,
+    IsolationToolchain,
     WorkerCommandAction,
     WorkerExecutionSpec,
     WorkerProcessResult,
@@ -25,8 +61,29 @@ from backend.app.project_workers.runtime_contracts import (
 from backend.app.project_workers.service import ProjectWorkerService
 
 __all__ = [
+    "CompositeProjectExecutor",
     "ExecutionInputArtifact",
+    "FileMutationEngine",
+    "FileMutationError",
+    "FileMutationErrorCode",
+    "FileMutationKind",
+    "FileMutationResult",
+    "FileMutationSpec",
+    "FileOperationKind",
+    "FileOperationSpec",
+    "DockerIsolationBackend",
+    "IsolationBackend",
+    "IsolationBackendKind",
+    "IsolationCapability",
+    "IsolationExecutionResult",
+    "IsolationFilesystemMode",
+    "IsolationNetworkMode",
+    "IsolationProfile",
+    "IsolationToolchain",
+    "MutationJournalStatus",
     "ProjectExecutionPolicyError",
+    "ProjectIsolatedExecutor",
+    "ProjectMutationExecutor",
     "ProjectSubprocessExecutor",
     "ProjectWorkerError",
     "ProjectWorkerErrorCode",
@@ -37,6 +94,7 @@ __all__ = [
     "WorkerCommandAction",
     "WorkerCompletion",
     "WorkerCompletionOutcome",
+    "WorkerDispatchReport",
     "WorkerEnqueueCommand",
     "WorkerEventType",
     "WorkerExecutionSpec",
@@ -45,6 +103,12 @@ __all__ = [
     "WorkerProcessResult",
     "WorkerRecoveryReport",
     "WorkerRequestStatus",
+    "WorkerRuntimeInstance",
     "build_execution_spec",
+    "build_file_mutation_spec",
     "calculate_execution_hash",
+    "calculate_expected_manifest_hash",
+    "container_identity_for",
+    "create_workspace_snapshot",
+    "default_isolation_profile",
 ]

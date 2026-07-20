@@ -94,6 +94,7 @@ from backend.app.commands import (
     plan_assignment_command,
     suggest_assignment_actions,
     suggest_command,
+    validate_assignment_command_execution,
 )
 from backend.app.core.path_utils import resolve_user_path
 from backend.app.chat_workflow import run_chat_workflow
@@ -310,10 +311,25 @@ from backend.app.project_delivery import (
 )
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode, ProjectControlPlane
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
+from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
+from backend.app.project_coordinator import (
+    CoordinatorIntentError,
+    ProjectCoordinatorService,
+)
 from backend.app.project_workers import (
-    ProjectSubprocessExecutor,
+    DockerIsolationBackend,
+    ExecutionInputArtifact,
+    FileMutationKind,
+    FileMutationEngine,
+    FileMutationError,
+    FileOperationKind,
+    FileOperationSpec,
     ProjectWorkerQueue,
     ProjectWorkerService,
+    build_execution_spec,
+    build_file_mutation_spec,
+    calculate_expected_manifest_hash,
+    default_isolation_profile,
 )
 from backend.app.client_engagement import (
     EngagementError,
@@ -787,10 +803,11 @@ def create_app(
     delivery_control = ProjectDeliveryControlAdapter(project_control)
     project_worker_queue = ProjectWorkerQueue(configured_path)
     project_worker_service = ProjectWorkerService(project_control, project_worker_queue)
-    project_worker_executor = ProjectSubprocessExecutor(
-        project_worker_service,
-        configured_workspace_root / "data" / "project_worker_results",
+    project_mutation_engine = FileMutationEngine(
+        configured_path,
+        configured_workspace_root / "data" / "project_mutation_journals",
     )
+    project_coordinator = ProjectCoordinatorService(configured_path, project_control)
     job_queue = JobQueue(configured_path)
     synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
@@ -805,6 +822,9 @@ def create_app(
         repository.initialize()
         project_control.initialize()
         project_worker_queue.initialize()
+        project_mutation_engine.initialize()
+        project_coordinator.initialize()
+        project_coordinator.recover_expired_leases()
         project_worker_service.recover_expired_leases()
         job_queue.initialize()
         yield
@@ -832,7 +852,8 @@ def create_app(
     application.state.project_control = project_control
     application.state.project_worker_queue = project_worker_queue
     application.state.project_worker_service = project_worker_service
-    application.state.project_worker_executor = project_worker_executor
+    application.state.project_mutation_engine = project_mutation_engine
+    application.state.project_coordinator = project_coordinator
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
     application.include_router(specialists_router)
@@ -849,6 +870,38 @@ def create_app(
             timestamp=datetime.now(timezone.utc),
         )
 
+
+    @application.get("/chat/projects/runtime-capabilities")
+    def project_runtime_capabilities() -> dict:
+        execution_backend = os.getenv(
+            "ASTRA_PROJECT_EXECUTION_BACKEND",
+            "docker",
+        ).strip().lower()
+        profile = default_isolation_profile()
+        capability = (
+            DockerIsolationBackend(profile).probe()
+            if execution_backend == "docker" else None
+        )
+        workers = project_worker_service.list_active_runtime_instances()
+        return {
+            "schema_version": "astra.project-workers.runtime-capabilities.v1",
+            "execution_backend": execution_backend,
+            "worker_process_required": True,
+            "worker_available": bool(workers),
+            "active_workers": [worker.model_dump(mode="json") for worker in workers],
+            "isolation_profile": profile.model_dump(mode="json"),
+            "isolation_capability": (
+                capability.model_dump(mode="json") if capability is not None else None
+            ),
+            "supported_attempt_types": [
+                "patch_application",
+                "rollback",
+                "command_execution",
+                "verification",
+            ],
+            "supported_toolchains": ["python", "node"],
+            "host_execution_fallback": False,
+        }
     @application.get(
         "/hardware-ai/report",
         response_model=HardwareOptimizerResponse,
@@ -1902,7 +1955,15 @@ def create_app(
     @application.get("/chat/projects/deliveries/{delivery_job_id}")
     def chat_project_delivery_get(delivery_job_id: str) -> dict:
         job, _access = _validated_project_delivery(delivery_job_id)
-        return public_delivery_job(job)
+        payload = public_delivery_job(job)
+        payload["canonical_project"] = project_control.get_read_model(
+            delivery_job_id
+        ).model_dump(mode="json")
+        payload["coordinator_intents"] = [
+            item.model_dump(mode="json")
+            for item in project_coordinator.list_for_project(delivery_job_id)
+        ]
+        return payload
 
     @application.get("/chat/conversations/{conversation_id}/project-deliveries")
     def chat_project_deliveries_list(conversation_id: str) -> dict:
@@ -1911,7 +1972,18 @@ def create_app(
             _validated_project_delivery(str(job["delivery_job_id"]), conversation_id=conversation_id)[0]
             for job in jobs
         ]
-        return {"items": [public_delivery_job(job) for job in canonical], "count": len(canonical)}
+        items: list[dict] = []
+        for job in canonical:
+            payload = public_delivery_job(job)
+            payload["canonical_project"] = project_control.get_read_model(
+                str(job["delivery_job_id"])
+            ).model_dump(mode="json")
+            payload["coordinator_intents"] = [
+                item.model_dump(mode="json")
+                for item in project_coordinator.list_for_project(str(job["delivery_job_id"]))
+            ]
+            items.append(payload)
+        return {"items": items, "count": len(items)}
 
     @application.get("/chat/projects/deliveries/{delivery_job_id}/specification")
     def chat_project_delivery_specification(delivery_job_id: str) -> dict:
@@ -2558,9 +2630,131 @@ def create_app(
         if delivery_relation is not None:
             delivery, delivery_access = delivery_relation
             try:
-                delivery_control.begin_patch_application(delivery, delivery_access["approved_root"], patch_id)
-            except ProjectControlError as error:
-                raise _control_http_error(error) from error
+                canonical_run = project_control.get_project(str(delivery["delivery_job_id"]))
+                current_manifest = build_project_state_manifest(
+                    delivery_access["approved_root"],
+                    workspace_id=canonical_run.workspace_id,
+                )
+                if current_manifest.manifest_hash != canonical_run.current_manifest_hash:
+                    raise FileMutationError(
+                        "stale_manifest",
+                        "The repository changed after the patch authority was approved.",
+                    )
+                operations: list[FileOperationSpec] = []
+                for change in proposal.get("changes") or []:
+                    encoding = str(change.get("encoding") or "utf-8").lower().replace("_", "-")
+                    if encoding not in {"utf-8", "utf8"}:
+                        raise ValueError("Canonical mutations currently require UTF-8 project files.")
+                    operation_name = str(change.get("operation") or "")
+                    operation = {
+                        "create": FileOperationKind.CREATE,
+                        "modify": FileOperationKind.UPDATE,
+                        "delete": FileOperationKind.DELETE,
+                    }.get(operation_name)
+                    if operation is None:
+                        raise ValueError("The approved patch contains an unsupported operation.")
+                    operations.append(FileOperationSpec(
+                        relative_path=str(change.get("relative_path") or ""),
+                        operation=operation,
+                        preimage_sha256=(
+                            None if operation == FileOperationKind.CREATE
+                            else str(change.get("before_hash") or "")
+                        ),
+                        result_sha256=(
+                            None if operation == FileOperationKind.DELETE
+                            else str(change.get("after_hash") or "")
+                        ),
+                        new_content=(
+                            None if operation == FileOperationKind.DELETE
+                            else str(change.get("after_content") or "")
+                        ),
+                    ))
+                attempt_key = f"legacy:patch-start:{patch_id}"
+                attempt_id = (
+                    "attempt-"
+                    + content_hash([
+                        canonical_run.project_run_id,
+                        ExecutionAttemptType.PATCH.value,
+                        attempt_key,
+                    ])[:24]
+                )
+                expected_manifest_hash = calculate_expected_manifest_hash(
+                    delivery_access["approved_root"],
+                    workspace_id=canonical_run.workspace_id,
+                    operations=operations,
+                )
+                mutation_spec = build_file_mutation_spec(
+                    project_run_id=canonical_run.project_run_id,
+                    execution_attempt_id=attempt_id,
+                    mutation_kind=FileMutationKind.PATCH,
+                    authority_id=patch_id,
+                    repository_root=canonical_run.repository_root,
+                    repository_root_fingerprint=canonical_run.repository_root_fingerprint,
+                    workspace_id=canonical_run.workspace_id,
+                    plan_revision_id=str(canonical_run.current_plan_revision_id),
+                    scope_revision_id=str(canonical_run.current_scope_revision_id),
+                    manifest_hash=str(canonical_run.current_manifest_hash),
+                    expected_result_manifest_hash=expected_manifest_hash,
+                    approved_paths=tuple(str(path) for path in proposal.get("file_set") or ()),
+                    operations=tuple(operations),
+                )
+                canonical_read = delivery_control.begin_patch_application(
+                    delivery,
+                    delivery_access["approved_root"],
+                    patch_id,
+                    worker_dispatch={
+                        "payload": {"file_mutation": mutation_spec.model_dump(mode="json")},
+                        "idempotency_key": f"dispatch:{mutation_spec.file_mutation_id}",
+                    },
+                )
+            except (ProjectControlError, FileMutationError, ValueError) as error:
+                if isinstance(error, ProjectControlError):
+                    raise _control_http_error(error) from error
+                raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+            claimed = {**proposal, "status": "applying"}
+            if not repository.transition_project_patch(claimed, expected_status="approved"):
+                raise HTTPException(status_code=409, detail="Patch application was already started or completed.")
+            dispatches = project_control.list_execution_dispatches(canonical_run.project_run_id)
+            active_dispatch = dispatches[-1] if dispatches else None
+            repository.update_chat_run_action_for_id(
+                request.chat_run_id,
+                patch_id,
+                {
+                    "status": "queued",
+                    "approval_required": False,
+                    "error": None,
+                    "result_summary": "The exact approved patch is queued for the separate project worker.",
+                    "technical_details": {
+                        "project_patch": public_patch_proposal(claimed),
+                        "canonical_project_run_id": canonical_read.project_run_id,
+                        "execution_attempt_id": canonical_read.active_execution_attempt_id,
+                        "execution_dispatch_id": (
+                            active_dispatch.execution_dispatch_id if active_dispatch else None
+                        ),
+                        "worker_request_id": (
+                            active_dispatch.worker_request_id if active_dispatch else None
+                        ),
+                        "execution_status": (
+                            active_dispatch.status.value if active_dispatch else "pending"
+                        ),
+                    },
+                },
+            )
+            audit_event(
+                repository,
+                conversation_id=run.conversation_id,
+                folder_access_id=access["action_id"],
+                patch_id=patch_id,
+                operation="patch_queued",
+                status="queued",
+                metadata={
+                    "execution_attempt_id": canonical_read.active_execution_attempt_id,
+                    "execution_dispatch_id": (
+                        active_dispatch.execution_dispatch_id if active_dispatch else None
+                    ),
+                },
+            )
+            return repository.get_chat_run(request.chat_run_id)
         claimed = {**proposal, "status": "applying"}
         if not repository.transition_project_patch(claimed, expected_status="approved"):
             raise HTTPException(status_code=409, detail="Patch application was already started or completed.")
@@ -2665,6 +2859,17 @@ def create_app(
             raise HTTPException(status_code=409, detail="The patch belongs to a different folder access.")
         run = _project_rollback_run(proposal, request.user_message)
         repository.store_chat_run(run)
+        delivery_relation = _delivery_for_patch(proposal)
+        if delivery_relation is not None:
+            delivery, delivery_access = delivery_relation
+            try:
+                delivery_control.record_rollback_preview(
+                    delivery,
+                    delivery_access["approved_root"],
+                    f"rollback:{proposal['patch_id']}",
+                )
+            except ProjectControlError as error:
+                raise _control_http_error(error) from error
         audit_event(repository, conversation_id=request.conversation_id, folder_access_id=access["action_id"], patch_id=proposal["patch_id"], operation="rollback_proposed", status="awaiting_approval", metadata={"relative_paths": proposal["file_set"]})
         return run
 
@@ -2678,6 +2883,124 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Explicit confirmation must exactly match: APPROVE ROLLBACK {patch_id}")
         if proposal.get("status") != "applied" or proposal.get("folder_access_id") != access["action_id"]:
             raise HTTPException(status_code=409, detail="Rollback is unavailable or belongs to another folder access.")
+        delivery_relation = _delivery_for_patch(proposal)
+        if delivery_relation is not None:
+            delivery, delivery_access = delivery_relation
+            canonical_run = project_control.get_project(str(delivery["delivery_job_id"]))
+            completed_patch = next(
+                (
+                    attempt
+                    for attempt in reversed(project_control.list_attempts(canonical_run.project_run_id))
+                    if attempt.attempt_type == ExecutionAttemptType.PATCH
+                    and attempt.status.value == "completed"
+                    and str(attempt.authority.get("patch_id") or "") == patch_id
+                ),
+                None,
+            )
+            file_mutation_id = str(
+                (completed_patch.result_reference or {}).get("file_mutation_id")
+                if completed_patch is not None
+                else ""
+            )
+            if not file_mutation_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "rollback_snapshot_unavailable",
+                        "message": "The canonical patch has no durable rollback snapshot.",
+                    },
+                )
+            rollback_id = f"rollback:{patch_id}"
+            try:
+                operations = project_mutation_engine.build_rollback_operations(
+                    file_mutation_id
+                )
+                attempt_id = (
+                    "attempt-"
+                    + content_hash([
+                        canonical_run.project_run_id,
+                        ExecutionAttemptType.ROLLBACK.value,
+                        f"legacy:rollback-start:{rollback_id}",
+                    ])[:24]
+                )
+                expected_manifest_hash = calculate_expected_manifest_hash(
+                    access["approved_root"],
+                    workspace_id=canonical_run.workspace_id,
+                    operations=operations,
+                )
+                mutation_spec = build_file_mutation_spec(
+                    project_run_id=canonical_run.project_run_id,
+                    execution_attempt_id=attempt_id,
+                    mutation_kind=FileMutationKind.ROLLBACK,
+                    authority_id=rollback_id,
+                    repository_root=canonical_run.repository_root,
+                    repository_root_fingerprint=canonical_run.repository_root_fingerprint,
+                    workspace_id=canonical_run.workspace_id,
+                    plan_revision_id=str(canonical_run.current_plan_revision_id),
+                    scope_revision_id=str(canonical_run.current_scope_revision_id),
+                    manifest_hash=str(canonical_run.current_manifest_hash),
+                    expected_result_manifest_hash=expected_manifest_hash,
+                    approved_paths=tuple(item.relative_path for item in operations),
+                    operations=operations,
+                )
+                delivery_control.approve_rollback(
+                    delivery,
+                    delivery_access["approved_root"],
+                    rollback_id,
+                    mutation_spec_hash=mutation_spec.spec_hash,
+                )
+                canonical_read = delivery_control.begin_rollback(
+                    delivery,
+                    delivery_access["approved_root"],
+                    rollback_id,
+                    mutation_spec_hash=mutation_spec.spec_hash,
+                    worker_dispatch={
+                        "payload": {"file_mutation": mutation_spec.model_dump(mode="json")},
+                        "idempotency_key": f"dispatch:{mutation_spec.file_mutation_id}",
+                    },
+                )
+            except (ProjectControlError, FileMutationError, ValueError) as error:
+                if isinstance(error, ProjectControlError):
+                    raise _control_http_error(error) from error
+                raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
+            approved = {**proposal, "status": "rollback_approved"}
+            if not repository.transition_project_patch(
+                approved, expected_status="applied", snapshot=snapshot
+            ):
+                raise HTTPException(status_code=409, detail="Rollback was already started or completed.")
+            repository.update_chat_run_action_for_id(
+                request.chat_run_id,
+                rollback_id,
+                {
+                    "status": "queued",
+                    "approval_required": False,
+                    "result_summary": "The exact approved rollback is queued for the separate project worker.",
+                    "technical_details": {
+                        "project_rollback": {
+                            "patch_id": patch_id,
+                            "rollback_id": rollback_id,
+                            "relative_paths": proposal["file_set"],
+                            "status": "queued",
+                            "execution_attempt_id": canonical_read.active_execution_attempt_id,
+                            "execution_dispatch_id": canonical_read.execution_dispatch_id,
+                        }
+                    },
+                },
+            )
+            audit_event(
+                repository,
+                conversation_id=run.conversation_id,
+                folder_access_id=access["action_id"],
+                patch_id=patch_id,
+                operation="rollback_queued",
+                status="queued",
+                metadata={
+                    "rollback_id": rollback_id,
+                    "execution_attempt_id": canonical_read.active_execution_attempt_id,
+                    "execution_dispatch_id": canonical_read.execution_dispatch_id,
+                },
+            )
+            return repository.get_chat_run(request.chat_run_id)
         approved = {**proposal, "status": "rollback_approved"}
         if not repository.transition_project_patch(approved, expected_status="applied", snapshot=snapshot):
             raise HTTPException(status_code=409, detail="Rollback was already started or completed.")
@@ -2773,9 +3096,19 @@ def create_app(
             if delivery_id:
                 delivery, delivery_access = _validated_project_delivery(str(delivery_id), conversation_id=run.conversation_id)
                 try:
-                    delivery_control.approve_command(delivery, delivery_access["approved_root"], plan_id)
-                except ProjectControlError as error:
-                    raise _control_http_error(error) from error
+                    execution_spec = _canonical_execution_spec(plan)
+                    delivery_control.approve_command(
+                        delivery,
+                        delivery_access["approved_root"],
+                        plan_id,
+                        execution_hash=execution_spec.execution_hash,
+                    )
+                except (ProjectControlError, CommandExecutionError, ValueError) as error:
+                    if isinstance(error, ProjectControlError):
+                        raise _control_http_error(error) from error
+                    raise HTTPException(
+                        status_code=400, detail=_controlled_project_error(error)
+                    ) from error
         repository.update_chat_run_action_for_plan(request.chat_run_id or "", plan_id, {"status": "approved", "technical_details": {"command_plan": plan}})
         audit_event(repository, conversation_id=run.conversation_id, folder_access_id=access["action_id"], job_id=job_id, command_plan_id=plan_id, operation="command_approved", status="approved", metadata={"action": plan.get("action")})
         return {"plan": plan, "approval_token": token}
@@ -2792,9 +3125,58 @@ def create_app(
             if delivery_id:
                 delivery, delivery_access = _validated_project_delivery(str(delivery_id), conversation_id=run.conversation_id)
                 try:
-                    delivery_control.begin_command_execution(delivery, delivery_access["approved_root"], plan_id)
+                    command = validate_assignment_command_execution(
+                        assignment_command_store,
+                        access["approved_root"],
+                        plan_id,
+                        assignment_id=request.assignment_id,
+                        workspace=access["approved_root"],
+                        approval_token=request.approval_token,
+                    )
+                    execution_spec = _canonical_execution_spec(command)
+                    canonical = delivery_control.begin_command_execution(
+                        delivery,
+                        delivery_access["approved_root"],
+                        plan_id,
+                        execution_hash=execution_spec.execution_hash,
+                        worker_dispatch=_canonical_command_dispatch(command, execution_spec),
+                    )
                 except ProjectControlError as error:
                     raise _control_http_error(error) from error
+                except (CommandExecutionError, ValueError, FileNotFoundError) as error:
+                    raise HTTPException(
+                        status_code=400, detail=_controlled_project_error(error)
+                    ) from error
+                queued = {
+                    **command,
+                    "status": "queued",
+                    "display_state": "queued",
+                    "canonical_project": canonical.model_dump(mode="json"),
+                }
+                repository.update_chat_run_action_for_plan(
+                    request.chat_run_id or "",
+                    plan_id,
+                    {
+                        "status": "queued",
+                        "result_summary": "The exact approved command is queued for isolated execution.",
+                        "technical_details": {"command_plan": queued},
+                    },
+                )
+                audit_event(
+                    repository,
+                    conversation_id=run.conversation_id,
+                    folder_access_id=access["action_id"],
+                    job_id=preflight_job_id,
+                    command_plan_id=plan_id,
+                    operation="command_queued",
+                    status="queued",
+                    metadata={
+                        "action": command.get("action"),
+                        "execution_attempt_id": canonical.active_execution_attempt_id,
+                        "execution_dispatch_id": canonical.execution_dispatch_id,
+                    },
+                )
+                return queued
         try:
             result = execute_assignment_command(
                 assignment_command_store, access["approved_root"], plan_id,
@@ -4170,6 +4552,11 @@ def create_app(
             job = delivery_control.decorate(job, access["approved_root"], migrated=True)
         except ProjectControlError as error:
             raise _control_http_error(error) from error
+        job = _reconcile_completed_delivery_mutation(job, access)
+        try:
+            project_coordinator.reconcile(delivery_job_id)
+        except CoordinatorIntentError:
+            pass
         return job, access
 
     def _save_delivery_transition(
@@ -4194,9 +4581,168 @@ def create_app(
         _persist_delivery_records(stored)
         _delivery_audit(stored, operation, status, metadata or {})
         try:
+            project_coordinator.reconcile(str(stored["delivery_job_id"]))
+        except CoordinatorIntentError:
+            pass
+        try:
             return delivery_control.decorate(stored, access["approved_root"], migrated=False)
         except ProjectControlError as error:
             raise _control_http_error(error) from error
+
+    def _reconcile_completed_delivery_mutation(job: dict, access: dict) -> dict:
+        attempts = project_control.list_attempts(str(job["delivery_job_id"]))
+        completed_rollback = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.attempt_type == ExecutionAttemptType.ROLLBACK
+                and attempt.status.value == "completed"
+                and attempt.resulting_manifest_hash
+            ),
+            None,
+        )
+        if completed_rollback is not None:
+            rollback_id = str(completed_rollback.authority.get("rollback_id") or "")
+            patch_id = rollback_id.removeprefix("rollback:")
+            live_manifest = build_project_state_manifest(
+                access["approved_root"], workspace_id=str(job["folder_access_id"])
+            )
+            if live_manifest.manifest_hash != completed_rollback.resulting_manifest_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "canonical_projection_manifest_mismatch",
+                        "message": "The live repository no longer matches the completed canonical rollback.",
+                    },
+                )
+            stored = job
+            reference = next(
+                (
+                    item
+                    for item in stored.get("patch_references") or []
+                    if item.get("patch_id") == patch_id
+                ),
+                None,
+            )
+            if reference is not None and reference.get("status") == "applied":
+                updated = record_delivery_rollback(
+                    stored,
+                    patch_id=patch_id,
+                    restored_state_hash=live_manifest.manifest_hash,
+                )
+                updated["project_state_manifest"] = live_manifest.model_dump(mode="json")
+                stored = _save_delivery_transition(
+                    stored,
+                    updated,
+                    "canonical_rollback_projection",
+                    "rolled_back",
+                    {
+                        "patch_id": patch_id,
+                        "rollback_id": rollback_id,
+                        "execution_attempt_id": completed_rollback.execution_attempt_id,
+                        "canonical_preapplied": True,
+                    },
+                )
+                _sync_delivery_action(stored)
+            try:
+                proposal, snapshot = _get_project_patch(patch_id)
+            except (LookupError, HTTPException):
+                return stored
+            if proposal.get("status") == "rollback_approved":
+                repository.update_project_patch(
+                    {
+                        **proposal,
+                        "status": "rolled_back",
+                        "rolled_back_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    snapshot,
+                )
+            return stored
+
+        completed_patch = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.attempt_type == ExecutionAttemptType.PATCH
+                and attempt.status.value == "completed"
+                and attempt.resulting_manifest_hash
+            ),
+            None,
+        )
+        if completed_patch is None:
+            return job
+        patch_id = str(completed_patch.authority.get("patch_id") or "")
+        if not patch_id:
+            return job
+
+        live_manifest = build_project_state_manifest(
+            access["approved_root"], workspace_id=str(job["folder_access_id"])
+        )
+        if live_manifest.manifest_hash != completed_patch.resulting_manifest_hash:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "canonical_projection_manifest_mismatch",
+                    "message": "The live repository no longer matches the completed canonical mutation.",
+                },
+            )
+
+        stored = job
+        reference = next(
+            (item for item in stored.get("patch_references") or [] if item.get("patch_id") == patch_id),
+            None,
+        )
+        if reference is not None and reference.get("status") != "applied":
+            updated = record_delivery_patch_applied(
+                stored,
+                patch_id=patch_id,
+                current_state_hash=live_manifest.manifest_hash,
+            )
+            updated["project_state_manifest"] = live_manifest.model_dump(mode="json")
+            stored = _save_delivery_transition(
+                stored,
+                updated,
+                "canonical_patch_projection",
+                "applied",
+                {
+                    "patch_id": patch_id,
+                    "execution_attempt_id": completed_patch.execution_attempt_id,
+                    "canonical_preapplied": True,
+                },
+            )
+            _sync_delivery_action(stored)
+
+        try:
+            proposal, snapshot = _get_project_patch(patch_id)
+        except (LookupError, HTTPException):
+            return stored
+        evidence = dict(completed_patch.result_reference or {})
+        if proposal.get("status") == "applying":
+            projected = {
+                **proposal,
+                "status": "applied",
+                "after_hashes": dict(evidence.get("resulting_file_hashes") or {}),
+                "project_state_hash_after": live_manifest.manifest_hash,
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+            }
+            repository.update_project_patch(projected, snapshot)
+            proposal = projected
+        if proposal.get("job_id"):
+            try:
+                shadow = repository.get_project_job(str(proposal["job_id"]))
+            except LookupError:
+                return stored
+            if shadow.get("status") == "patch_approved":
+                implementing = {
+                    **shadow,
+                    "status": "implementing",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if repository.transition_project_job(
+                    implementing, expected_statuses={"patch_approved"}
+                ):
+                    _sync_project_job_action(implementing)
+        return stored
 
     def _validate_delivery_action_binding(job: dict, request: ProjectJobActionRequest) -> None:
         control = dict(job.get("project_control") or {})
@@ -4377,6 +4923,71 @@ def create_app(
         if plan_id not in job.get("command_plan_ids", []):
             raise HTTPException(status_code=409, detail="This command is not associated with the project job.")
         return job_id
+    def _canonical_execution_spec(command: dict):
+        action = str(command.get("action") or "")
+        if action in {"docker_ps", "docker_compose_up", "streamlit"}:
+            raise CommandExecutionError(
+                f"The {action or 'requested'} action is unavailable for canonical project execution."
+            )
+        argv = [str(item) for item in command.get("argv") or []]
+        workspace = str(command.get("workspace") or ".").strip().replace("\\", "/")
+        workspace = "." if workspace in {"", "."} else workspace.strip("/")
+
+        def repository_relative(value: str) -> str:
+            relative = value.strip().replace("\\", "/").strip("/")
+            return relative if workspace == "." else f"{workspace}/{relative}"
+
+        target = None
+        arguments: list[str] = []
+        if action == "pytest":
+            arguments = ["-q"]
+            if len(argv) == 5:
+                arguments.append(repository_relative(argv[4]))
+        elif action == "python_script":
+            if len(argv) != 2:
+                raise CommandExecutionError("The approved Python command shape is invalid.")
+            target = repository_relative(argv[1])
+        elif action == "node_test":
+            if len(argv) != 3:
+                raise CommandExecutionError("The approved Node test command shape is invalid.")
+            target = repository_relative(argv[2])
+        elif action not in {
+            "npm_test", "npm_run_lint", "npm_run_build", "npm_run_typecheck"
+        }:
+            raise CommandExecutionError("The approved action is unsupported by the isolated runtime.")
+
+        artifacts = tuple(
+            ExecutionInputArtifact(
+                relative_path=repository_relative(str(item.get("path") or "")),
+                sha256=str(item.get("sha256") or ""),
+            )
+            for item in command.get("approved_artifacts") or []
+            if isinstance(item, dict)
+        )
+        profile = default_isolation_profile()
+        return build_execution_spec(
+            action=action,
+            command_id=str(command.get("plan_id") or ""),
+            working_directory=workspace,
+            target=target,
+            arguments=arguments,
+            input_artifacts=artifacts,
+            isolation_profile_id=profile.profile_id,
+            image_digest=profile.image_digest,
+        )
+
+    def _canonical_command_dispatch(command: dict, execution_spec) -> dict:
+        plan_id = str(command.get("plan_id") or "")
+        return {
+            "payload": {"execution": execution_spec.model_dump(mode="json")},
+            "limits": {
+                "timeout_seconds": int(command.get("timeout_seconds") or 30),
+                "max_output_bytes": 1_048_576,
+                "max_deliveries": 1,
+            },
+            "idempotency_key": f"canonical-command:{plan_id}:{execution_spec.execution_hash}",
+        }
+
 
     def _latest_applied_job_patch(job_id: str) -> dict:
         patches = repository.list_project_patches_for_job(job_id)

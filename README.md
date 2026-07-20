@@ -32,14 +32,14 @@ and integrity checkpoint, not a claim of full production readiness.
 - Complete, fail-closed project-state manifests and fresh typed verifier results.
 - Explicit plan, patch, command, scope, rollback, and human-validation approval boundaries.
 
-### Explicit boundaries and later stages
+### Current local-MVP boundary
 
-Some experimental modules remain in the repository, but Stage 0 does not make
-them trusted execution authorities. File changes and commands remain approval
-gated. Command sandboxing and filesystem/network isolation are a later Stage 2
-requirement; Stage 0 does not provide container isolation. Distributed workers,
-cloud model adapters, GPU scheduling, team collaboration, and a completed VS
-Code extension also remain outside this checkpoint.
+File changes and commands remain exactly approval gated. New canonical projects
+use a transactional execution outbox, a separate worker process, durable file
+mutation journals, and fail-closed Docker isolation with networking disabled.
+FastAPI initializes and reports queue state but does not own the execution loop.
+Distributed/cloud execution, team collaboration, request-time dependency
+installation, arbitrary user images, and automatic approval remain out of scope.
 
 See [`docs/stage0-trust-integrity.md`](docs/stage0-trust-integrity.md) for the
 contracts, failure behavior, compatibility policy, and regression commands.
@@ -183,12 +183,35 @@ database is `data/app/ai_system.db`, which is excluded from Git. Set
 `AI_SYSTEM_WORKSPACE_ROOT` to limit `POST /analyze-file` to a specific local
 project root; file and project requests must stay within that root.
 
+### Canonical project worker
+
+The runtime image must already exist locally and its configured digest must match.
+Astra never pulls, builds, or installs dependencies while processing a request.
+
+```bash
+export ASTRA_PROJECT_EXECUTION_BACKEND=docker
+export ASTRA_PROJECT_RUNTIME_IMAGE=astra-project-runtime:stage2c-v1
+export ASTRA_PROJECT_RUNTIME_IMAGE_DIGEST=sha256:<local-image-id-or-digest>
+export AI_SYSTEM_DB_PATH=data/app/ai_system.db
+export AI_SYSTEM_WORKSPACE_ROOT="$PWD"
+python -m backend.app.project_workers
+```
+
+Use `--once` for one cycle or `--dispatch-only` to enqueue without executing.
+Isolation or cleanup failure blocks safely; there is no host fallback. Runtime
+health is available at `GET /chat/projects/runtime-capabilities`.
+
+See [`docs/stage2c-container-isolation-and-control.md`](docs/stage2c-container-isolation-and-control.md)
+for the ownership model, fail-closed isolation contract, worker startup, test
+commands, and current limitations. Exact stabilization evidence is recorded in
+[`docs/stabilization-checkpoint.md`](docs/stabilization-checkpoint.md).
+
 The `TMP=/tmp TEMP=/tmp` prefix prevents WSL pytest capture errors when the
 shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Continue validating Stage 0 on real local projects before increasing autonomy.
-Stage 2 command isolation remains a separate prerequisite for stronger execution
-authority; model or classifier output must remain non-authoritative for approval
-and verification decisions.
+Complete coordinator artifact processing, one-repair orchestration, Docker-gated
+integration tests, browser reproductions, and the checked-in MVP benchmark gates.
+Model or classifier output remains non-authoritative for approval and
+verification decisions.

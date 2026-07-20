@@ -14,6 +14,7 @@ SCOPE_REVISION_VERSION = "astra.project-control.scope-revision.v1"
 PLAN_REVISION_VERSION = "astra.project-control.plan-revision.v1"
 APPROVAL_GRANT_VERSION = "astra.project-control.approval-grant.v1"
 EXECUTION_ATTEMPT_VERSION = "astra.project-control.execution-attempt.v1"
+EXECUTION_DISPATCH_VERSION = "astra.project-control.execution-dispatch.v1"
 PROJECT_EVENT_VERSION = "astra.project-control.event.v1"
 PROJECT_COMMAND_VERSION = "astra.project-control.command.v1"
 TRANSITION_RESULT_VERSION = "astra.project-control.transition-result.v1"
@@ -67,6 +68,9 @@ class ProjectCommandType(StrEnum):
     APPROVE_PATCH = "approve_patch"
     BEGIN_PATCH_APPLICATION = "begin_patch_application"
     RECORD_PATCH_RESULT = "record_patch_result"
+    RECORD_ROLLBACK_PREVIEW = "record_rollback_preview"
+    APPROVE_ROLLBACK = "approve_rollback"
+    BEGIN_ROLLBACK = "begin_rollback"
     RECORD_COMMAND_PREVIEW = "record_command_preview"
     APPROVE_COMMAND = "approve_command"
     BEGIN_COMMAND_EXECUTION = "begin_command_execution"
@@ -89,6 +93,7 @@ class ProjectCommandType(StrEnum):
 class ApprovalType(StrEnum):
     PLAN = "plan"
     PATCH = "patch"
+    ROLLBACK = "rollback"
     COMMAND = "command"
     MANUAL_VERIFICATION = "manual_verification"
     HANDOFF = "handoff"
@@ -112,6 +117,12 @@ class ExecutionAttemptStatus(StrEnum):
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
     TIMED_OUT = "timed_out"
+
+class ExecutionDispatchStatus(StrEnum):
+    PENDING = "pending"
+    DISPATCHED = "dispatched"
+    CANCELLED = "cancelled"
+
 
 
 class ScopeRevision(StrictModel):
@@ -194,6 +205,35 @@ class ExecutionAttempt(StrictModel):
     resulting_manifest_hash: str | None = None
     started_at: datetime
     finished_at: datetime | None = None
+
+
+class ExecutionDispatch(StrictModel):
+    schema_version: str = EXECUTION_DISPATCH_VERSION
+    execution_dispatch_id: str
+    project_run_id: str
+    execution_attempt_id: str
+    attempt_type: ExecutionAttemptType
+    conversation_id: str
+    workspace_id: str
+    repository_root: str
+    repository_root_fingerprint: str
+    actor_id: str
+    plan_revision_id: str
+    scope_revision_id: str
+    manifest_hash: str = Field(min_length=64, max_length=64)
+    expected_project_state_version: int = Field(ge=1)
+    authority: dict[str, Any]
+    payload: dict[str, Any]
+    priority: int = Field(default=0, ge=-100, le=100)
+    limits: dict[str, Any] = Field(default_factory=dict)
+    enqueue_idempotency_key: str = Field(min_length=1, max_length=200)
+    status: ExecutionDispatchStatus = ExecutionDispatchStatus.PENDING
+    worker_request_id: str | None = None
+    available_at: datetime
+    created_at: datetime
+    dispatched_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    failure_classification: str | None = None
 
 
 class ProjectEvent(StrictModel):
@@ -297,3 +337,14 @@ class ProjectReadModel(StrictModel):
     handoff_eligible: bool
     state_version: int
     terminal: bool
+    active_execution_attempt_id: str | None = None
+    active_execution_attempt_type: ExecutionAttemptType | None = None
+    active_execution_attempt_status: ExecutionAttemptStatus | None = None
+    execution_dispatch_id: str | None = None
+    execution_dispatch_status: ExecutionDispatchStatus | None = None
+    worker_request_id: str | None = None
+    worker_request_status: str | None = None
+    execution_failure_classification: str | None = None
+    execution_evidence_references: dict[str, Any] = Field(default_factory=dict)
+    execution_timestamps: dict[str, str | None] = Field(default_factory=dict)
+    next_permitted_action: str | None = None

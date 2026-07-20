@@ -10,6 +10,7 @@ from backend.app.commands.execution import (
     get_assignment_execution_summary,
     plan_assignment_command,
     suggest_assignment_actions,
+    validate_assignment_command_execution,
 )
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "plan_assignment_command",
     "suggest_command",
     "suggest_assignment_actions",
+    "validate_assignment_command_execution",
 ]

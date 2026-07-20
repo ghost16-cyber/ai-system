@@ -100,6 +100,13 @@ COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
         ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.REPAIR_REQUIRED, ProjectLifecycle.BLOCKED,
     }),
     ProjectCommandType.INITIATE_REPAIR: frozenset({ProjectLifecycle.REPAIR_REQUIRED, ProjectLifecycle.BLOCKED}),
+    ProjectCommandType.RECORD_ROLLBACK_PREVIEW: frozenset({
+        ProjectLifecycle.WORK_IN_PROGRESS,
+        ProjectLifecycle.REPAIR_REQUIRED,
+        ProjectLifecycle.BLOCKED,
+    }),
+    ProjectCommandType.APPROVE_ROLLBACK: frozenset({ProjectLifecycle.ROLLBACK_PENDING}),
+    ProjectCommandType.BEGIN_ROLLBACK: frozenset({ProjectLifecycle.ROLLBACK_PENDING}),
     ProjectCommandType.RECORD_ROLLBACK: frozenset({ProjectLifecycle.ROLLBACK_PENDING, ProjectLifecycle.REPAIR_REQUIRED}),
     ProjectCommandType.COMPLETE_WORK_UNIT: frozenset({ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.VERIFICATION_PENDING}),
     ProjectCommandType.REQUEST_HANDOFF: frozenset({ProjectLifecycle.VERIFICATION_PENDING, ProjectLifecycle.READY_FOR_WORK}),

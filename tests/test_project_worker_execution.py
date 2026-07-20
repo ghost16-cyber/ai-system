@@ -177,6 +177,24 @@ def test_exact_python_command_executes_and_reconciles_canonical_success(tmp_path
     assert len(evidence) == 1
 
 
+def test_nonzero_exit_records_domain_failure_and_enters_repair(tmp_path: Path) -> None:
+    _root, _script, control, queue, _service, request, executor = _runtime(
+        tmp_path,
+        "raise SystemExit(3)\n",
+    )
+
+    assert executor.run_once("worker-a") is True
+
+    finished = queue.get(request.worker_request_id)
+    assert finished.status == WorkerRequestStatus.FAILED
+    assert finished.failure_classification == "process_exit_nonzero"
+    assert finished.canonical_reconciled_at is not None
+    assert control.get_project("project-1").lifecycle_status == ProjectLifecycle.REPAIR_REQUIRED
+    attempt = control.list_attempts("project-1")[-1]
+    assert attempt.status.value == "failed"
+    assert attempt.failure_classification == "process_exit_nonzero"
+
+
 def test_changed_approved_artifact_fails_closed(tmp_path: Path) -> None:
     _root, script, control, queue, _service, request, executor = _runtime(
         tmp_path,

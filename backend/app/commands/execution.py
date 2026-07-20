@@ -206,30 +206,13 @@ def execute_assignment_command(
 ) -> dict[str, Any]:
     with _STORE_LOCK:
         record = _read_record(store_root, plan_id)
-        _verify_assignment_association(record, assignment_id, workspace, project_root)
-        if record["status"] != "approved":
-            raise CommandExecutionError("Command must be approved and can execute only once.")
-        _verify_fingerprint(record)
-        try:
-            expires = datetime.fromisoformat(record["approval_expires_at"])
-        except (TypeError, ValueError) as error:
-            raise CommandExecutionError("Command approval metadata is malformed.") from error
-        if datetime.now(timezone.utc) >= expires:
-            record["status"] = "approval_expired"
-            record["approval_token_hash"] = None
-            _write_record(store_root, record)
-            raise CommandExecutionError("Command approval has expired; create a new plan.")
-        stored_token_hash = record.get("approval_token_hash")
-        if not isinstance(stored_token_hash, str) or not secrets.compare_digest(
-            stored_token_hash, _token_hash(approval_token)
-        ):
-            raise CommandExecutionError("Invalid approval token.")
-
-        workdir = Path(record["workspace_path"]).resolve()
-        root = Path(project_root).expanduser().resolve()
-        _require_inside(workdir, root, "Command workspace")
-        _validate_argv(record["action"], list(record["argv"]), workdir)
-        _verify_approved_artifacts(record, workdir)
+        workdir = _validate_execution_record(
+            record,
+            assignment_id=assignment_id,
+            workspace=workspace,
+            project_root=project_root,
+            approval_token=approval_token,
+        )
         record["status"] = "running"
         record["started_at"] = _now()
         record["execution_id"] = uuid4().hex
@@ -256,6 +239,60 @@ def execute_assignment_command(
     with _STORE_LOCK:
         _write_record(store_root, record)
     return public_command_record(record, project_root=project_root)
+
+
+def validate_assignment_command_execution(
+    store_root: str | Path,
+    project_root: str | Path,
+    plan_id: str,
+    *,
+    assignment_id: str,
+    workspace: str | Path,
+    approval_token: str,
+) -> dict[str, Any]:
+    """Validate an exact approved command without starting host execution."""
+    with _STORE_LOCK:
+        record = _read_record(store_root, plan_id)
+        _validate_execution_record(
+            record,
+            assignment_id=assignment_id,
+            workspace=workspace,
+            project_root=project_root,
+            approval_token=approval_token,
+        )
+        return public_command_record(record, project_root=project_root)
+
+
+def _validate_execution_record(
+    record: dict[str, Any],
+    *,
+    assignment_id: str,
+    workspace: str | Path,
+    project_root: str | Path,
+    approval_token: str,
+) -> Path:
+    _verify_assignment_association(record, assignment_id, workspace, project_root)
+    if record["status"] != "approved":
+        raise CommandExecutionError("Command must be approved and can execute only once.")
+    _verify_fingerprint(record)
+    try:
+        expires = datetime.fromisoformat(record["approval_expires_at"])
+    except (TypeError, ValueError) as error:
+        raise CommandExecutionError("Command approval metadata is malformed.") from error
+    if datetime.now(timezone.utc) >= expires:
+        raise CommandExecutionError("Command approval has expired; create a new plan.")
+    stored_token_hash = record.get("approval_token_hash")
+    if not isinstance(stored_token_hash, str) or not secrets.compare_digest(
+        stored_token_hash, _token_hash(approval_token)
+    ):
+        raise CommandExecutionError("Invalid approval token.")
+
+    workdir = Path(record["workspace_path"]).resolve()
+    root = Path(project_root).expanduser().resolve()
+    _require_inside(workdir, root, "Command workspace")
+    _validate_argv(record["action"], list(record["argv"]), workdir)
+    _verify_approved_artifacts(record, workdir)
+    return workdir
 
 
 def get_assignment_command(

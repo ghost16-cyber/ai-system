@@ -31,6 +31,7 @@ from backend.app.project_delivery import (
     run_deterministic_verifier,
     stage6_analysis_hash,
 )
+from backend.app.project_workers import FileMutationEngine, ProjectMutationExecutor
 
 
 TASK = "Deliver the project change in README.md by implementing app.py."
@@ -313,10 +314,11 @@ def test_stage6_hash_changes_only_with_structural_project_state(tmp_path: Path) 
 
 def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    with TestClient(create_app(tmp_path / "app.db", tmp_path)) as client:
+    app = create_app(tmp_path / "app.db", tmp_path)
+    with TestClient(app) as client:
         conversation_id = _connect(client, project)
         started = client.post("/chat/run", json={
-            "message": TASK, "conversation_id": conversation_id, "use_rag": True,
+            "message": f"{TASK} Verify it with pytest.", "conversation_id": conversation_id, "use_rag": True,
         })
         assert started.status_code == 200, started.text
         action = started.json()["action"]
@@ -330,6 +332,15 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
         )
         assert approved.status_code == 200, approved.text
         assert (project / "app.py").read_text(encoding="utf-8") == before
+        coordinator_before_prepare = client.get(
+            f"/chat/projects/deliveries/{delivery_id}"
+        ).json()["coordinator_intents"]
+        assert len(coordinator_before_prepare) == 1
+        assert coordinator_before_prepare[0]["intent_type"] == "prepare_work_unit"
+        coordinator_replay = client.get(
+            f"/chat/projects/deliveries/{delivery_id}"
+        ).json()["coordinator_intents"]
+        assert coordinator_replay[0]["coordinator_intent_id"] == coordinator_before_prepare[0]["coordinator_intent_id"]
         preview = client.post(
             f"/chat/projects/deliveries/{delivery_id}/prepare", json={"conversation_id": conversation_id},
         )
@@ -348,10 +359,190 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
             f"/chat/projects/patches/{patch['patch_id']}/apply", json={"chat_run_id": preview.json()["run_id"]},
         )
         assert applied.status_code == 200, applied.text
+        assert (project / "app.py").read_text(encoding="utf-8") == before
         reloaded = client.get(f"/chat/projects/deliveries/{delivery_id}")
         assert reloaded.status_code == 200
-        assert reloaded.json()["status"] == "patch_applied_not_verified"
+        canonical = reloaded.json()["canonical_project"]
+        assert canonical["active_execution_attempt_id"]
+        assert canonical["execution_dispatch_status"] == "pending"
+        assert canonical["worker_request_id"] is None
+
+        dispatched = app.state.project_worker_service.dispatch_pending()
+        assert len(dispatched.dispatched_request_ids) == 1
+        mutation_engine = FileMutationEngine(
+            tmp_path / "app.db",
+            tmp_path / "data" / "project_mutation_journals",
+        )
+        mutation_engine.initialize()
+        worker = ProjectMutationExecutor(
+            app.state.project_worker_service,
+            mutation_engine,
+        )
+        assert worker.run_once("test-mutation-worker") is True
+
+        completed = client.get(f"/chat/projects/deliveries/{delivery_id}")
+        assert completed.status_code == 200
+        completed_canonical = completed.json()["canonical_project"]
+        assert completed_canonical["worker_request_status"] == "succeeded"
+        assert completed_canonical["execution_evidence_references"]["file_mutation_id"]
+        assert (project / "app.py").read_text(encoding="utf-8") != before
         assert (project / "unrelated.py").read_text(encoding="utf-8") == "VALUE = 'protected'\n"
+
+        subprocess_criterion = next(
+            item
+            for item in completed.json()["specification"]["acceptance_criteria"]
+            if item["verification_mode"] in {
+                VerificationMode.EXISTING_TEST.value,
+                VerificationMode.NEW_TEST.value,
+                VerificationMode.APPROVED_COMMAND.value,
+            }
+        )
+        verification = client.post(
+            f"/chat/projects/deliveries/{delivery_id}/verification",
+            json={
+                "conversation_id": conversation_id,
+                "criterion_id": subprocess_criterion["criterion_id"],
+                "idempotency_key": "queue-subprocess-verification",
+            },
+        )
+        assert verification.status_code == 200, verification.text
+        command_run = verification.json()
+        command = command_run["action"]["technical_details"]["command_plan"]
+        association = {
+            "assignment_id": command["assignment_id"],
+            "workspace_path": command["workspace"],
+            "chat_run_id": command_run["run_id"],
+        }
+        command_approval = client.post(
+            f"/chat/projects/commands/{command['plan_id']}/approve",
+            json={
+                **association,
+                "confirmation": f"APPROVE {command['plan_id']}",
+            },
+        )
+        assert command_approval.status_code == 200, command_approval.text
+        execute_body = {
+            **association,
+            "approval_token": command_approval.json()["approval_token"],
+        }
+        first_execute = client.post(
+            f"/chat/projects/commands/{command['plan_id']}/execute",
+            json=execute_body,
+        )
+        assert first_execute.status_code == 200, first_execute.text
+        first_card = first_execute.json()["canonical_project"]
+        assert first_execute.json()["status"] == "queued"
+        assert first_card["active_execution_attempt_type"] == "command_execution"
+        assert first_card["execution_dispatch_status"] == "pending"
+
+        replay_execute = client.post(
+            f"/chat/projects/commands/{command['plan_id']}/execute",
+            json=execute_body,
+        )
+        assert replay_execute.status_code == 200, replay_execute.text
+        replay_card = replay_execute.json()["canonical_project"]
+        assert replay_card["active_execution_attempt_id"] == first_card["active_execution_attempt_id"]
+        assert replay_card["execution_dispatch_id"] == first_card["execution_dispatch_id"]
+
+        first_dispatch = app.state.project_worker_service.dispatch_pending()
+        second_dispatch = app.state.project_worker_service.dispatch_pending()
+        assert len(first_dispatch.dispatched_request_ids) == 1
+        assert second_dispatch.dispatched_request_ids == ()
+        rehydrated = client.get(f"/chat/projects/deliveries/{delivery_id}").json()["canonical_project"]
+        assert rehydrated["active_execution_attempt_id"] == first_card["active_execution_attempt_id"]
+        assert rehydrated["execution_dispatch_id"] == first_card["execution_dispatch_id"]
+        assert rehydrated["worker_request_id"] == first_dispatch.dispatched_request_ids[0]
+
+        connection = sqlite3.connect(tmp_path / "app.db")
+        try:
+            command_attempts = connection.execute(
+                "SELECT COUNT(*) FROM project_execution_attempts WHERE project_run_id = ? AND attempt_type = 'command_execution'",
+                (first_card["project_run_id"],),
+            ).fetchone()[0]
+            command_requests = connection.execute(
+                "SELECT COUNT(*) FROM project_worker_requests WHERE project_run_id = ? AND attempt_type = 'command_execution'",
+                (first_card["project_run_id"],),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        assert command_attempts == 1
+        assert command_requests == 1
+
+
+def test_api_canonical_rollback_is_queued_and_rehydrates_exact_identity(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    original = (project / "app.py").read_text(encoding="utf-8")
+    app = create_app(tmp_path / "app.db", tmp_path)
+    with TestClient(app) as client:
+        conversation_id = _connect(client, project)
+        started = client.post("/chat/run", json={
+            "message": TASK, "conversation_id": conversation_id, "use_rag": True,
+        }).json()
+        delivery = started["action"]["technical_details"]["project_delivery"]
+        delivery_id = delivery["delivery_job_id"]
+        assert client.post(
+            f"/chat/projects/deliveries/{delivery_id}/plan/approve",
+            json={
+                "conversation_id": conversation_id,
+                "immutable_hash": delivery["plan"]["plan_hash"],
+            },
+        ).status_code == 200
+        preview = client.post(
+            f"/chat/projects/deliveries/{delivery_id}/prepare",
+            json={"conversation_id": conversation_id},
+        ).json()
+        patch = preview["action"]["technical_details"]["project_patch"]
+        assert client.post(
+            f"/chat/projects/patches/{patch['patch_id']}/approve",
+            json={
+                "chat_run_id": preview["run_id"],
+                "confirmation": f"APPROVE PATCH {patch['patch_id']}",
+            },
+        ).status_code == 200
+        assert client.post(
+            f"/chat/projects/patches/{patch['patch_id']}/apply",
+            json={"chat_run_id": preview["run_id"]},
+        ).status_code == 200
+        assert len(app.state.project_worker_service.dispatch_pending().dispatched_request_ids) == 1
+        patch_worker = ProjectMutationExecutor(
+            app.state.project_worker_service,
+            app.state.project_mutation_engine,
+        )
+        assert patch_worker.run_once("patch-worker") is True
+        projected = client.get(f"/chat/projects/deliveries/{delivery_id}")
+        assert projected.status_code == 200, projected.text
+        changed = (project / "app.py").read_text(encoding="utf-8")
+        assert changed != original
+
+        rollback = client.post(
+            "/chat/projects/rollback/request",
+            json={"conversation_id": conversation_id},
+        )
+        assert rollback.status_code == 200, rollback.text
+        rollback_run = rollback.json()
+        approved = client.post(
+            f"/chat/projects/rollback/{patch['patch_id']}/approve",
+            json={
+                "chat_run_id": rollback_run["run_id"],
+                "confirmation": f"APPROVE ROLLBACK {patch['patch_id']}",
+            },
+        )
+        assert approved.status_code == 200, approved.text
+        assert (project / "app.py").read_text(encoding="utf-8") == changed
+        queued = client.get(f"/chat/projects/deliveries/{delivery_id}").json()["canonical_project"]
+        assert queued["active_execution_attempt_type"] == "rollback"
+        assert queued["execution_dispatch_status"] == "pending"
+
+        dispatched = app.state.project_worker_service.dispatch_pending()
+        assert len(dispatched.dispatched_request_ids) == 1
+        assert patch_worker.run_once("rollback-worker") is True
+        rehydrated = client.get(f"/chat/projects/deliveries/{delivery_id}")
+        assert rehydrated.status_code == 200, rehydrated.text
+        card = rehydrated.json()["canonical_project"]
+        assert card["worker_request_id"] == dispatched.dispatched_request_ids[0]
+        assert card["worker_request_status"] == "succeeded"
+        assert rehydrated.json()["patch_references"][0]["status"] == "rolled_back"
+        assert (project / "app.py").read_text(encoding="utf-8") == original
 
 
 def test_api_wrong_conversation_and_duplicate_plan_click_are_safe(tmp_path: Path) -> None:

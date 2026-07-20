@@ -15,6 +15,8 @@ WORKER_LEASE_VERSION = "astra.project-workers.lease.v1"
 WORKER_COMPLETION_VERSION = "astra.project-workers.completion.v1"
 WORKER_EVENT_VERSION = "astra.project-workers.event.v1"
 WORKER_RECOVERY_VERSION = "astra.project-workers.recovery.v1"
+WORKER_DISPATCH_REPORT_VERSION = "astra.project-workers.dispatch-report.v1"
+WORKER_RUNTIME_INSTANCE_VERSION = "astra.project-workers.runtime-instance.v1"
 
 
 class StrictModel(BaseModel):
@@ -163,6 +165,24 @@ class ProjectWorkerEvent(StrictModel):
     created_at: datetime
 
 
+class WorkerDispatchReport(StrictModel):
+    schema_version: str = WORKER_DISPATCH_REPORT_VERSION
+    dispatched_request_ids: tuple[str, ...] = ()
+    recovered_dispatch_ids: tuple[str, ...] = ()
+    deferred_dispatch_ids: tuple[str, ...] = ()
+
+
+class WorkerRuntimeInstance(StrictModel):
+    schema_version: str = WORKER_RUNTIME_INSTANCE_VERSION
+    worker_id: str = Field(min_length=1, max_length=160)
+    execution_backend: str = Field(min_length=1, max_length=80)
+    status: str = Field(min_length=1, max_length=40)
+    supported_attempt_types: tuple[ExecutionAttemptType, ...] = ()
+    supported_toolchains: tuple[str, ...] = ()
+    started_at: datetime
+    last_heartbeat_at: datetime
+
+
 class WorkerRecoveryReport(StrictModel):
     schema_version: str = WORKER_RECOVERY_VERSION
     recovered_request_ids: tuple[str, ...] = ()
@@ -177,9 +197,11 @@ __all__ = [
     "WorkerCompletion",
     "WorkerCompletionOutcome",
     "WorkerEnqueueCommand",
+    "WorkerDispatchReport",
     "WorkerEventType",
     "WorkerLease",
     "WorkerLimits",
     "WorkerRecoveryReport",
     "WorkerRequestStatus",
+    "WorkerRuntimeInstance",
 ]

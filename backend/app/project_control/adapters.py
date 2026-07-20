@@ -125,25 +125,146 @@ class ProjectDeliveryControlAdapter:
                       payload={"patch_id": patch_id}, authority={"patch_id": patch_id, "operation": "apply_exact_patch"})
         return self.control.get_read_model(run.project_run_id)
 
-    def begin_patch_application(self, job: dict[str, Any], root: str | Path, patch_id: str) -> ProjectReadModel:
+    def begin_patch_application(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        patch_id: str,
+        *,
+        worker_dispatch: dict[str, Any] | None = None,
+    ) -> ProjectReadModel:
         self.ensure(job, root, migrated=True)
         run = self.control.get_project(str(job["delivery_job_id"]))
+        payload: dict[str, Any] = {"patch_id": patch_id}
+        if worker_dispatch is not None:
+            payload["worker_dispatch"] = worker_dispatch
         self._execute(run, ProjectCommandType.BEGIN_PATCH_APPLICATION, f"legacy:patch-start:{patch_id}",
-                      payload={"patch_id": patch_id}, authority={"patch_id": patch_id})
+                      payload=payload, authority={"patch_id": patch_id, "operation": "apply_exact_patch"})
         return self.control.get_read_model(run.project_run_id)
 
-    def approve_command(self, job: dict[str, Any], root: str | Path, command_id: str) -> ProjectReadModel:
+    def approve_command(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        command_id: str,
+        *,
+        execution_hash: str | None = None,
+    ) -> ProjectReadModel:
         self.ensure(job, root, migrated=True)
         run = self.control.get_project(str(job["delivery_job_id"]))
+        authority = {"command_id": command_id, "operation": "execute_exact_command"}
+        payload: dict[str, Any] = {"command_id": command_id}
+        if execution_hash is not None:
+            authority["execution_hash"] = execution_hash
+            payload["execution_hash"] = execution_hash
         self._execute(run, ProjectCommandType.APPROVE_COMMAND, f"legacy:command-approval:{command_id}",
-                      payload={"command_id": command_id}, authority={"command_id": command_id, "operation": "execute_exact_command"})
+                      payload=payload, authority=authority)
         return self.control.get_read_model(run.project_run_id)
 
-    def begin_command_execution(self, job: dict[str, Any], root: str | Path, command_id: str) -> ProjectReadModel:
+    def begin_command_execution(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        command_id: str,
+        *,
+        execution_hash: str | None = None,
+        worker_dispatch: dict[str, Any] | None = None,
+    ) -> ProjectReadModel:
         self.ensure(job, root, migrated=True)
         run = self.control.get_project(str(job["delivery_job_id"]))
+        payload: dict[str, Any] = {"command_id": command_id}
+        authority = {"command_id": command_id}
+        if execution_hash is not None:
+            payload["execution_hash"] = execution_hash
+            authority["execution_hash"] = execution_hash
+        if worker_dispatch is not None:
+            payload["worker_dispatch"] = worker_dispatch
+            for attempt in reversed(self.control.list_attempts(run.project_run_id)):
+                if (
+                    attempt.attempt_type.value == "command_execution"
+                    and str(attempt.authority.get("command_id") or "") == command_id
+                    and str(attempt.authority.get("execution_hash") or "") == execution_hash
+                ):
+                    return self.control.get_read_model(run.project_run_id)
         self._execute(run, ProjectCommandType.BEGIN_COMMAND_EXECUTION, f"legacy:command-start:{command_id}",
-                      payload={"command_id": command_id}, authority={"command_id": command_id})
+                      payload=payload, authority=authority)
+        return self.control.get_read_model(run.project_run_id)
+
+    def record_rollback_preview(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        self._execute(
+            run,
+            ProjectCommandType.RECORD_ROLLBACK_PREVIEW,
+            f"legacy:rollback-preview:{rollback_id}",
+            payload={"rollback_id": rollback_id},
+            authority={"rollback_id": rollback_id},
+        )
+        return self.control.get_read_model(run.project_run_id)
+
+    def approve_rollback(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+        *,
+        mutation_spec_hash: str,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        self._execute(
+            run,
+            ProjectCommandType.APPROVE_ROLLBACK,
+            f"legacy:rollback-approval:{rollback_id}",
+            payload={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+            authority={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+        )
+        return self.control.get_read_model(run.project_run_id)
+
+    def begin_rollback(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+        *,
+        mutation_spec_hash: str,
+        worker_dispatch: dict[str, Any],
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        for attempt in reversed(self.control.list_attempts(run.project_run_id)):
+            if (
+                attempt.attempt_type.value == "rollback"
+                and str(attempt.authority.get("rollback_id") or "") == rollback_id
+                and str(attempt.authority.get("mutation_spec_hash") or "")
+                == mutation_spec_hash
+            ):
+                return self.control.get_read_model(run.project_run_id)
+        self._execute(
+            run,
+            ProjectCommandType.BEGIN_ROLLBACK,
+            f"legacy:rollback-start:{rollback_id}",
+            payload={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+                "worker_dispatch": worker_dispatch,
+            },
+            authority={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+        )
         return self.control.get_read_model(run.project_run_id)
 
     def _record_verification(self, run, updated: dict[str, Any], prefix: str, metadata: dict[str, Any]) -> None:

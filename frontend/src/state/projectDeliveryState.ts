@@ -44,6 +44,23 @@ export interface ProjectDeliveryAction {
   stateVersion: number;
   pendingUserAction?: string;
   handoffEligible: boolean;
+  execution?: {
+    attemptId?: string;
+    attemptType?: string;
+    attemptStatus?: string;
+    dispatchId?: string;
+    dispatchStatus?: string;
+    workerRequestId?: string;
+    workerStatus?: string;
+    failureClassification?: string;
+    evidence: Record<string, unknown>;
+  };
+  coordinatorIntent?: {
+    id: string;
+    type: string;
+    status: string;
+    failureClassification?: string;
+  };
   objective: string;
   specificationHash: string;
   specificationSource: "deterministic" | "model-assisted" | "unknown";
@@ -117,6 +134,8 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
   const progress = object(details.progress);
   const canonicalProgress = object(control.progress);
   const canonicalCriteria = object(control.criterion_states);
+  const coordinatorIntents = objects(delivery.coordinator_intents);
+  const coordinatorIntent = coordinatorIntents[coordinatorIntents.length - 1];
   const criteria: DeliveryCriterion[] = objects(specification.acceptance_criteria).map((item) => ({
     id: string(item.criterion_id), requirement: string(item.requirement),
     required: item.required !== false, verificationMode: string(item.verification_mode),
@@ -180,6 +199,25 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     stateVersion: number(control.state_version, number(delivery.state_version, 1)),
     pendingUserAction: string(control.pending_user_action) || undefined,
     handoffEligible: control.handoff_eligible === true,
+    execution: string(control.active_execution_attempt_id) || string(control.execution_dispatch_id)
+      ? {
+        attemptId: string(control.active_execution_attempt_id) || undefined,
+        attemptType: string(control.active_execution_attempt_type) || undefined,
+        attemptStatus: string(control.active_execution_attempt_status) || undefined,
+        dispatchId: string(control.execution_dispatch_id) || undefined,
+        dispatchStatus: string(control.execution_dispatch_status) || undefined,
+        workerRequestId: string(control.worker_request_id) || undefined,
+        workerStatus: string(control.worker_request_status) || undefined,
+        failureClassification: string(control.execution_failure_classification) || undefined,
+        evidence: object(control.execution_evidence_references),
+      } : undefined,
+    coordinatorIntent: coordinatorIntent && string(coordinatorIntent.coordinator_intent_id)
+      ? {
+        id: string(coordinatorIntent.coordinator_intent_id),
+        type: string(coordinatorIntent.intent_type),
+        status: string(coordinatorIntent.status),
+        failureClassification: string(coordinatorIntent.failure_classification) || undefined,
+      } : undefined,
     objective: string(specification.normalized_objective, string(delivery.original_user_request, "Project delivery")),
     specificationHash: string(specification.specification_hash),
     specificationSource: specification.specification_source === "deterministic" || specification.specification_source === "model-assisted"

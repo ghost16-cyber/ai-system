@@ -10,11 +10,14 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from backend.app.project_control.contracts import (
+    EXECUTION_DISPATCH_VERSION,
     APPROVAL_GRANT_VERSION,
     PLAN_REVISION_VERSION,
     PROJECT_RUN_VERSION,
     SCOPE_REVISION_VERSION,
     ApprovalGrant,
+    ExecutionDispatch,
+    ExecutionDispatchStatus,
     ApprovalType,
     ExecutionAttempt,
     ExecutionAttemptStatus,
@@ -158,6 +161,32 @@ class ProjectControlPlane:
                 );
                 CREATE INDEX IF NOT EXISTS idx_project_attempt_status
                     ON project_execution_attempts(project_run_id, status, started_at);
+                CREATE TABLE IF NOT EXISTS project_execution_dispatches (
+                    execution_dispatch_id TEXT PRIMARY KEY,
+                    project_run_id TEXT NOT NULL,
+                    execution_attempt_id TEXT NOT NULL UNIQUE,
+                    attempt_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    expected_project_state_version INTEGER NOT NULL CHECK(expected_project_state_version >= 1),
+                    priority INTEGER NOT NULL,
+                    enqueue_idempotency_key TEXT NOT NULL,
+                    available_at TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    dispatch_json TEXT NOT NULL,
+                    worker_request_id TEXT,
+                    created_at TEXT NOT NULL,
+                    dispatched_at TEXT,
+                    cancelled_at TEXT,
+                    failure_classification TEXT,
+                    UNIQUE(project_run_id, enqueue_idempotency_key),
+                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
+                    FOREIGN KEY(execution_attempt_id) REFERENCES project_execution_attempts(execution_attempt_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_dispatch_pending
+                    ON project_execution_dispatches(status, available_at, priority, created_at);
+                CREATE INDEX IF NOT EXISTS idx_project_dispatch_project
+                    ON project_execution_dispatches(project_run_id, created_at);
+
 
                 CREATE TABLE IF NOT EXISTS project_events (
                     event_id TEXT PRIMARY KEY,
@@ -203,6 +232,14 @@ class ProjectControlPlane:
                 );
                 """
             )
+            dispatch_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(project_execution_dispatches)")
+            }
+            if "failure_classification" not in dispatch_columns:
+                connection.execute(
+                    "ALTER TABLE project_execution_dispatches ADD COLUMN failure_classification TEXT"
+                )
 
     def execute(self, command: ProjectCommand | dict[str, Any]) -> TransitionResult:
         try:
@@ -291,6 +328,146 @@ class ProjectControlPlane:
                 (project_run_id,),
             ).fetchall()
             return [self._stored_model(ExecutionAttempt, row["attempt_json"], "attempt") for row in rows]
+    def get_execution_dispatch(self, execution_dispatch_id: str) -> ExecutionDispatch:
+        with self._connect() as connection:
+            return self._load_execution_dispatch(connection, execution_dispatch_id)
+
+    def list_execution_dispatches(self, project_run_id: str) -> list[ExecutionDispatch]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT dispatch_json FROM project_execution_dispatches WHERE project_run_id = ? ORDER BY created_at, execution_dispatch_id",
+                (project_run_id,),
+            ).fetchall()
+            return [
+                self._stored_model(ExecutionDispatch, row["dispatch_json"], "execution dispatch")
+                for row in rows
+            ]
+
+    def list_pending_execution_dispatches(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionDispatch]:
+        bounded_limit = max(1, min(int(limit), 500))
+        current = (now or self._now()).astimezone(timezone.utc)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT dispatch_json FROM project_execution_dispatches WHERE status = 'pending' AND available_at <= ? ORDER BY priority DESC, created_at, execution_dispatch_id LIMIT ?",
+                (current.isoformat(), bounded_limit),
+            ).fetchall()
+            return [
+                self._stored_model(ExecutionDispatch, row["dispatch_json"], "execution dispatch")
+                for row in rows
+            ]
+
+    def mark_execution_dispatch_dispatched(
+        self,
+        execution_dispatch_id: str,
+        worker_request_id: str,
+    ) -> ExecutionDispatch:
+        worker_id = _text(worker_request_id)[:160]
+        if not worker_id:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "worker_request_id is required.",
+            )
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            dispatch = self._load_execution_dispatch(connection, execution_dispatch_id)
+            if dispatch.status == ExecutionDispatchStatus.DISPATCHED:
+                if dispatch.worker_request_id != worker_id:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.PERSISTENCE_CONFLICT,
+                        "The execution dispatch is already bound to another worker request.",
+                    )
+                connection.execute("COMMIT")
+                return dispatch
+            if dispatch.status != ExecutionDispatchStatus.PENDING:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
+                    "Only a pending execution dispatch can be delivered.",
+                )
+            now = self._now()
+            updated = dispatch.model_copy(update={
+                "status": ExecutionDispatchStatus.DISPATCHED,
+                "worker_request_id": worker_id,
+                "dispatched_at": now,
+            })
+            cursor = connection.execute(
+                "UPDATE project_execution_dispatches SET status = ?, worker_request_id = ?, dispatch_json = ?, dispatched_at = ? WHERE execution_dispatch_id = ? AND status = 'pending'",
+                (
+                    updated.status.value,
+                    worker_id,
+                    updated.model_dump_json(),
+                    now.isoformat(),
+                    execution_dispatch_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.PERSISTENCE_CONFLICT,
+                    "Another dispatcher changed the execution dispatch.",
+                )
+            connection.execute("COMMIT")
+            return updated
+        except ProjectControlError:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def mark_execution_dispatch_cancelled(
+        self,
+        execution_dispatch_id: str,
+        *,
+        failure_classification: str,
+    ) -> ExecutionDispatch:
+        classification = _text(failure_classification)[:160] or "dispatch_cancelled"
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            dispatch = self._load_execution_dispatch(connection, execution_dispatch_id)
+            if dispatch.status == ExecutionDispatchStatus.CANCELLED:
+                connection.execute("COMMIT")
+                return dispatch
+            if dispatch.status != ExecutionDispatchStatus.PENDING:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
+                    "Only a pending execution dispatch can be cancelled.",
+                )
+            now = self._now()
+            updated = dispatch.model_copy(update={
+                "status": ExecutionDispatchStatus.CANCELLED,
+                "cancelled_at": now,
+                "failure_classification": classification,
+            })
+            cursor = connection.execute(
+                "UPDATE project_execution_dispatches SET status = ?, dispatch_json = ?, cancelled_at = ?, failure_classification = ? WHERE execution_dispatch_id = ? AND status = 'pending'",
+                (
+                    updated.status.value,
+                    updated.model_dump_json(),
+                    now.isoformat(),
+                    classification,
+                    execution_dispatch_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.PERSISTENCE_CONFLICT,
+                    "Another dispatcher changed the execution dispatch.",
+                )
+            connection.execute("COMMIT")
+            return updated
+        except ProjectControlError:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
 
     def reconcile_legacy_delivery(
         self,
@@ -573,7 +750,19 @@ class ProjectControlPlane:
             }), tuple(created)
         if kind == ProjectCommandType.BEGIN_COMMAND_EXECUTION:
             command_id = _required(payload, "command_id")
-            self._require_authority_approval(connection, run, ApprovalType.COMMAND, "command_id", command_id)
+            grant = self._require_authority_approval(
+                connection, run, ApprovalType.COMMAND, "command_id", command_id
+            )
+            if payload.get("worker_dispatch") is not None:
+                execution_hash = self._hash(payload, "execution_hash")
+                if (
+                    str(grant.authority.get("execution_hash") or "") != execution_hash
+                    or str(command.authority_scope.get("execution_hash") or "") != execution_hash
+                ):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.MISSING_APPROVAL,
+                        "The command approval does not authorize this exact execution specification.",
+                    )
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.COMMAND)
             created.append(attempt.execution_attempt_id)
             return self._with_attempt(run, attempt).model_copy(update={"pending_user_action": "record_command_result"}), tuple(created)
@@ -653,8 +842,67 @@ class ProjectControlPlane:
                 "lifecycle_status": ProjectLifecycle.WORK_IN_PROGRESS,
                 "pending_user_action": "record_patch_preview",
             }), tuple(created)
+        if kind == ProjectCommandType.RECORD_ROLLBACK_PREVIEW:
+            rollback_id = _required(payload, "rollback_id")
+            return run.model_copy(update={
+                "lifecycle_status": ProjectLifecycle.ROLLBACK_PENDING,
+                "pending_user_action": f"approve_rollback:{rollback_id}",
+            }), ()
+        if kind == ProjectCommandType.APPROVE_ROLLBACK:
+            grant = self._create_approval(connection, run, command, ApprovalType.ROLLBACK)
+            created.append(grant.approval_grant_id)
+            return self._with_grant(run, grant).model_copy(update={
+                "lifecycle_status": ProjectLifecycle.ROLLBACK_PENDING,
+                "pending_user_action": "begin_rollback",
+            }), tuple(created)
+        if kind == ProjectCommandType.BEGIN_ROLLBACK:
+            rollback_id = _required(payload, "rollback_id")
+            grant = self._require_authority_approval(
+                connection,
+                run,
+                ApprovalType.ROLLBACK,
+                "rollback_id",
+                rollback_id,
+            )
+            if payload.get("worker_dispatch") is not None:
+                mutation_spec_hash = self._hash(payload, "mutation_spec_hash")
+                if (
+                    str(grant.authority.get("mutation_spec_hash") or "")
+                    != mutation_spec_hash
+                    or str(command.authority_scope.get("mutation_spec_hash") or "")
+                    != mutation_spec_hash
+                ):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.MISSING_APPROVAL,
+                        "The rollback approval does not authorize this exact mutation specification.",
+                    )
+            attempt = self._create_attempt(
+                connection,
+                run,
+                command,
+                ExecutionAttemptType.ROLLBACK,
+            )
+            created.append(attempt.execution_attempt_id)
+            return self._with_attempt(run, attempt).model_copy(update={
+                "lifecycle_status": ProjectLifecycle.ROLLBACK_PENDING,
+                "pending_user_action": "record_rollback",
+            }), tuple(created)
         if kind == ProjectCommandType.RECORD_ROLLBACK:
-            attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.ROLLBACK, terminal=True, succeeded=bool(payload.get("succeeded")))
+            rollback_id = _required(payload, "rollback_id")
+            self._require_authority_approval(
+                connection,
+                run,
+                ApprovalType.ROLLBACK,
+                "rollback_id",
+                rollback_id,
+            )
+            attempt = self._finish_or_create_attempt(
+                connection,
+                run,
+                command,
+                ExecutionAttemptType.ROLLBACK,
+                succeeded=bool(payload.get("succeeded")),
+            )
             created.append(attempt.execution_attempt_id)
             succeeded = bool(payload.get("succeeded"))
             return self._with_attempt(run, attempt).model_copy(update={
@@ -698,6 +946,7 @@ class ProjectControlPlane:
             }), ()
         if kind == ProjectCommandType.CANCEL_PROJECT:
             self._cancel_active_attempts(connection, run.project_run_id)
+            self._cancel_pending_dispatches(connection, run.project_run_id)
             return run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.CANCELLED,
                 "pending_user_action": None,
@@ -772,6 +1021,31 @@ class ProjectControlPlane:
                 "This idempotency key was already used for a different project command.",
             )
         return self._stored_model(TransitionResult, row["result_json"], "transition result")
+
+    def _load_execution_dispatch(
+        self,
+        connection: sqlite3.Connection,
+        execution_dispatch_id: str,
+    ) -> ExecutionDispatch:
+        row = connection.execute(
+            "SELECT schema_version, dispatch_json FROM project_execution_dispatches WHERE execution_dispatch_id = ?",
+            (execution_dispatch_id,),
+        ).fetchone()
+        if row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Execution dispatch not found.",
+            )
+        if row["schema_version"] != EXECUTION_DISPATCH_VERSION:
+            raise ProjectControlError(
+                ProjectControlErrorCode.UNSUPPORTED_STORED_STATE,
+                "The stored execution dispatch schema is unsupported.",
+            )
+        return self._stored_model(
+            ExecutionDispatch,
+            row["dispatch_json"],
+            "execution dispatch",
+        )
 
     def _load_project(self, connection: sqlite3.Connection, project_run_id: str) -> ProjectRun:
         row = connection.execute(
@@ -942,7 +1216,94 @@ class ProjectControlPlane:
              attempt.model_dump_json(), attempt.started_at.isoformat(),
              attempt.finished_at.isoformat() if attempt.finished_at else None),
         )
+        if not terminal and command.payload.get("worker_dispatch") is not None:
+            self._create_execution_dispatch(
+                connection, run, command, attempt, now,
+            )
+
         return attempt
+    def _create_execution_dispatch(
+        self,
+        connection: sqlite3.Connection,
+        run: ProjectRun,
+        command: ProjectCommand,
+        attempt: ExecutionAttempt,
+        now: datetime,
+    ) -> ExecutionDispatch:
+        raw = command.payload.get("worker_dispatch")
+        if not isinstance(raw, dict):
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "worker_dispatch must be an object.",
+            )
+        worker_payload = _dispatch_object(
+            raw.get("payload"),
+            "worker_dispatch.payload",
+            262_144,
+        )
+        limits = _dispatch_object(
+            raw.get("limits") or {},
+            "worker_dispatch.limits",
+            16_384,
+        )
+        priority_value = raw.get("priority", 0)
+        if isinstance(priority_value, bool) or not isinstance(priority_value, int):
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "worker_dispatch.priority must be an integer.",
+            )
+        if priority_value < -100 or priority_value > 100:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "worker_dispatch.priority must be between -100 and 100.",
+            )
+        enqueue_key = _text(raw.get("idempotency_key")) or (
+            f"dispatch:{attempt.execution_attempt_id}"
+        )
+        dispatch = ExecutionDispatch(
+            execution_dispatch_id=(
+                f"dispatch-{content_hash([attempt.execution_attempt_id, enqueue_key])[:24]}"
+            ),
+            project_run_id=run.project_run_id,
+            execution_attempt_id=attempt.execution_attempt_id,
+            attempt_type=attempt.attempt_type,
+            conversation_id=run.conversation_id,
+            workspace_id=run.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=run.repository_root_fingerprint,
+            actor_id=run.actor_id,
+            plan_revision_id=attempt.plan_revision_id,
+            scope_revision_id=attempt.scope_revision_id,
+            manifest_hash=attempt.manifest_hash,
+            expected_project_state_version=run.state_version + 1,
+            authority=attempt.authority,
+            payload=worker_payload,
+            priority=priority_value,
+            limits=limits,
+            enqueue_idempotency_key=enqueue_key,
+            status=ExecutionDispatchStatus.PENDING,
+            available_at=now,
+            created_at=now,
+        )
+        connection.execute(
+            "INSERT INTO project_execution_dispatches (execution_dispatch_id, project_run_id, execution_attempt_id, attempt_type, status, expected_project_state_version, priority, enqueue_idempotency_key, available_at, schema_version, dispatch_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                dispatch.execution_dispatch_id,
+                dispatch.project_run_id,
+                dispatch.execution_attempt_id,
+                dispatch.attempt_type.value,
+                dispatch.status.value,
+                dispatch.expected_project_state_version,
+                dispatch.priority,
+                dispatch.enqueue_idempotency_key,
+                dispatch.available_at.isoformat(),
+                dispatch.schema_version,
+                dispatch.model_dump_json(),
+                dispatch.created_at.isoformat(),
+            ),
+        )
+        return dispatch
+
 
     def _finish_or_create_attempt(
         self,
@@ -1094,6 +1455,55 @@ class ProjectControlPlane:
                 handoff_eligible = True
             except ProjectControlError:
                 handoff_eligible = False
+        attempt_row = connection.execute(
+            "SELECT attempt_json FROM project_execution_attempts "
+            "WHERE project_run_id = ? AND status IN ('pending', 'active') "
+            "ORDER BY started_at DESC, execution_attempt_id DESC LIMIT 1",
+            (run.project_run_id,),
+        ).fetchone()
+        active_attempt = (
+            self._stored_model(ExecutionAttempt, attempt_row["attempt_json"], "attempt")
+            if attempt_row is not None else None
+        )
+        dispatch_row = connection.execute(
+            "SELECT dispatch_json FROM project_execution_dispatches "
+            "WHERE project_run_id = ? "
+            "ORDER BY created_at DESC, execution_dispatch_id DESC LIMIT 1",
+            (run.project_run_id,),
+        ).fetchone()
+        active_dispatch = (
+            self._stored_model(
+                ExecutionDispatch,
+                dispatch_row["dispatch_json"],
+                "execution dispatch",
+            )
+            if dispatch_row is not None else None
+        )
+        worker_status: str | None = None
+        worker_failure: str | None = None
+        worker_result: dict[str, Any] = {}
+        worker_updated_at: str | None = None
+        if active_dispatch is not None and active_dispatch.worker_request_id:
+            worker_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_worker_requests'"
+            ).fetchone()
+            if worker_table is not None:
+                worker_row = connection.execute(
+                    "SELECT status, failure_classification, result_json, updated_at "
+                    "FROM project_worker_requests WHERE worker_request_id = ?",
+                    (active_dispatch.worker_request_id,),
+                ).fetchone()
+                if worker_row is not None:
+                    worker_status = str(worker_row["status"])
+                    worker_failure = _text(worker_row["failure_classification"]) or None
+                    worker_updated_at = _text(worker_row["updated_at"]) or None
+                    try:
+                        parsed_result = json.loads(str(worker_row["result_json"] or "{}"))
+                        if isinstance(parsed_result, dict):
+                            reference = parsed_result.get("result_reference")
+                            worker_result = reference if isinstance(reference, dict) else {}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        worker_result = {}
         return ProjectReadModel(
             project_run_id=run.project_run_id, conversation_id=run.conversation_id,
             lifecycle_state=run.lifecycle_status, plan_revision_id=run.current_plan_revision_id,
@@ -1117,6 +1527,37 @@ class ProjectControlPlane:
             blocked_reason=run.blocked_reason, handoff_eligible=handoff_eligible,
             state_version=run.state_version,
             terminal=run.lifecycle_status in {ProjectLifecycle.CANCELLED, ProjectLifecycle.COMPLETED},
+            active_execution_attempt_id=(
+                active_attempt.execution_attempt_id if active_attempt else None
+            ),
+            active_execution_attempt_type=(active_attempt.attempt_type if active_attempt else None),
+            active_execution_attempt_status=(active_attempt.status if active_attempt else None),
+            execution_dispatch_id=(
+                active_dispatch.execution_dispatch_id if active_dispatch else None
+            ),
+            execution_dispatch_status=(active_dispatch.status if active_dispatch else None),
+            worker_request_id=(active_dispatch.worker_request_id if active_dispatch else None),
+            worker_request_status=worker_status,
+            execution_failure_classification=(
+                worker_failure
+                or (active_dispatch.failure_classification if active_dispatch else None)
+                or (active_attempt.failure_classification if active_attempt else None)
+            ),
+            execution_evidence_references=worker_result,
+            execution_timestamps={
+                "attempt_started_at": (
+                    active_attempt.started_at.isoformat() if active_attempt else None
+                ),
+                "dispatch_created_at": (
+                    active_dispatch.created_at.isoformat() if active_dispatch else None
+                ),
+                "dispatch_delivered_at": (
+                    active_dispatch.dispatched_at.isoformat()
+                    if active_dispatch and active_dispatch.dispatched_at else None
+                ),
+                "worker_updated_at": worker_updated_at,
+            },
+            next_permitted_action=run.pending_user_action,
         )
 
     def _load_plan(self, connection: sqlite3.Connection, plan_revision_id: str | None) -> PlanRevision:
@@ -1160,6 +1601,44 @@ class ProjectControlPlane:
                 (finished.status.value, finished.model_dump_json(), finished.finished_at.isoformat(), finished.execution_attempt_id),
             )
 
+    def _cancel_pending_dispatches(
+        self,
+        connection: sqlite3.Connection,
+        project_run_id: str,
+        *,
+        execution_attempt_id: str | None = None,
+    ) -> None:
+        sql = (
+            "SELECT dispatch_json FROM project_execution_dispatches "
+            "WHERE project_run_id = ? AND status = 'pending'"
+        )
+        parameters: tuple[Any, ...] = (project_run_id,)
+        if execution_attempt_id:
+            sql += " AND execution_attempt_id = ?"
+            parameters = (project_run_id, execution_attempt_id)
+        rows = connection.execute(sql, parameters).fetchall()
+        now = self._now()
+        for row in rows:
+            dispatch = self._stored_model(
+                ExecutionDispatch,
+                row["dispatch_json"],
+                "execution dispatch",
+            )
+            cancelled = dispatch.model_copy(update={
+                "status": ExecutionDispatchStatus.CANCELLED,
+                "cancelled_at": now,
+                "failure_classification": "canonical_attempt_cancelled",
+            })
+            connection.execute(
+                "UPDATE project_execution_dispatches SET status = ?, dispatch_json = ?, cancelled_at = ? WHERE execution_dispatch_id = ? AND status = 'pending'",
+                (
+                    cancelled.status.value,
+                    cancelled.model_dump_json(),
+                    now.isoformat(),
+                    cancelled.execution_dispatch_id,
+                ),
+            )
+
     def _interrupt_attempt(self, connection: sqlite3.Connection, run: ProjectRun, attempt_id: str) -> None:
         row = connection.execute(
             "SELECT attempt_json FROM project_execution_attempts WHERE execution_attempt_id = ? AND project_run_id = ?",
@@ -1175,9 +1654,17 @@ class ProjectControlPlane:
             "UPDATE project_execution_attempts SET status = ?, attempt_json = ?, finished_at = ? WHERE execution_attempt_id = ?",
             (finished.status.value, finished.model_dump_json(), finished.finished_at.isoformat(), attempt_id),
         )
+        self._cancel_pending_dispatches(
+            connection,
+            run.project_run_id,
+            execution_attempt_id=attempt_id,
+        )
 
     def _event_metadata(self, command: ProjectCommand, created: tuple[str, ...]) -> dict[str, Any]:
-        allowed = ("work_unit_id", "patch_id", "command_id", "criterion_id", "execution_attempt_id", "reason")
+        allowed = (
+            "work_unit_id", "patch_id", "rollback_id", "command_id", "criterion_id",
+            "execution_attempt_id", "reason",
+        )
         metadata = {key: _text(command.payload.get(key))[:180] for key in allowed if _text(command.payload.get(key))}
         metadata["created_record_ids"] = list(created)[:12]
         return metadata
@@ -1234,6 +1721,32 @@ def _bounded_object(value: Any) -> dict[str, Any]:
         elif isinstance(item, dict):
             result[name] = _bounded_object(item)
     return result
+
+
+def _dispatch_object(
+    value: Any,
+    label: str,
+    max_bytes: int,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ProjectControlError(
+            ProjectControlErrorCode.INVALID_COMMAND,
+            f"{label} must be an object.",
+        )
+    try:
+        copied = json.loads(json.dumps(value))
+        encoded = canonical_json(copied).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ProjectControlError(
+            ProjectControlErrorCode.INVALID_COMMAND,
+            f"{label} must contain JSON values.",
+        ) from error
+    if len(encoded) > max_bytes:
+        raise ProjectControlError(
+            ProjectControlErrorCode.INVALID_COMMAND,
+            f"{label} exceeds its bounded size limit.",
+        )
+    return copied
 
 
 def _copy(value: dict[str, Any]) -> dict[str, Any]:
