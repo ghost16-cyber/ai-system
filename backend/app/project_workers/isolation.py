@@ -35,8 +35,11 @@ _SUPPORTED_ACTIONS = (
     WorkerCommandAction.NODE_TEST,
 )
 _EXCLUDED_NAMES = frozenset({
-    ".git", ".hg", ".svn", ".ssh", ".venv", "node_modules", "__pycache__",
+    ".aws", ".azure", ".docker", ".git", ".hg", ".ssh", ".svn", ".venv",
+    ".netrc", ".npmrc", ".pypirc", "credentials", "credentials.json",
+    "id_ed25519", "id_rsa", "node_modules", "pip.conf", "__pycache__",
 })
+_EXCLUDED_SUFFIXES = frozenset({".key", ".pem", ".p12", ".pfx"})
 
 
 class IsolationBackend(Protocol):
@@ -53,6 +56,8 @@ class IsolationBackend(Protocol):
     ) -> IsolationExecutionResult: ...
 
     def cancel(self, container_identity: str) -> bool: ...
+
+    def prepare_snapshot_cleanup(self, workspace_snapshot: Path) -> None: ...
 
     def cleanup_orphans(
         self,
@@ -213,11 +218,14 @@ class DockerIsolationBackend:
             "--user",
             self.profile.run_as_user,
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
             "--tmpfs",
-            "/home/astra:rw,noexec,nosuid,nodev,size=32m",
+            (
+                "/home/astra:rw,noexec,nosuid,nodev,size=32m,"
+                "uid=65532,gid=65532,mode=0700"
+            ),
             "--mount",
-            f"type=bind,src={snapshot},dst=/workspace,rw",
+            f"type=bind,src={snapshot},dst=/workspace",
             "--workdir",
             container_workdir,
             "--env",
@@ -349,6 +357,88 @@ class DockerIsolationBackend:
             },
         )
 
+    def prepare_snapshot_cleanup(self, workspace_snapshot: Path) -> None:
+        """Restore host-removable permissions without executing as root.
+
+        Project tools can create mode-0700 cache directories owned by the fixed
+        container UID. A second constrained container running as that same UID
+        makes only the disposable snapshot removable before host-side deletion.
+        """
+        capability = self.probe()
+        if not capability.available:
+            raise ProjectExecutionPolicyError(
+                capability.detail or "Docker isolation is unavailable for snapshot cleanup."
+            )
+        snapshot = workspace_snapshot.resolve(strict=True)
+        if not snapshot.is_dir() or "," in str(snapshot):
+            raise ProjectExecutionPolicyError(
+                "The isolated workspace snapshot cannot be cleaned safely."
+            )
+        cleanup_identity = (
+            "astra-cleanup-"
+            + hashlib.sha256(str(snapshot).encode("utf-8")).hexdigest()[:24]
+        )
+        command = [
+            self.docker_executable,
+            "run",
+            "--rm",
+            "--name",
+            cleanup_identity,
+            "--label",
+            "astra.worker.managed=true",
+            "--label",
+            "astra.worker.operation=snapshot-cleanup",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "16",
+            "--memory",
+            "64m",
+            "--cpus",
+            "0.25",
+            "--user",
+            self.profile.run_as_user,
+            "--mount",
+            f"type=bind,src={snapshot},dst=/workspace",
+            "--workdir",
+            "/workspace",
+            "--entrypoint",
+            "/usr/bin/find",
+            self.profile.image_reference,
+            "/workspace",
+            "-user",
+            "65532",
+            "-exec",
+            "/bin/chmod",
+            "a+rwX",
+            "{}",
+            "+",
+        ]
+        try:
+            result = self._run_command(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            self.cancel(cleanup_identity)
+            raise ProjectExecutionPolicyError(
+                f"The disposable snapshot cleanup helper failed: {_bounded(str(error), 300)}"
+            ) from error
+        if result.returncode != 0:
+            self.cancel(cleanup_identity)
+            detail = _bounded(result.stderr or result.stdout, 300)
+            raise ProjectExecutionPolicyError(
+                f"The disposable snapshot permissions could not be restored: {detail}"
+            )
+
     def cancel(self, container_identity: str) -> bool:
         if not _CONTAINER_NAME_RE.fullmatch(container_identity):
             return False
@@ -477,6 +567,7 @@ def create_workspace_snapshot(
         ignore=_snapshot_ignore,
         copy_function=shutil.copy2,
     )
+    _make_snapshot_writable(target)
     return target.resolve(strict=True)
 
 
@@ -556,7 +647,9 @@ def container_identity_for(worker_request_id: str) -> str:
 
 def _excluded(relative: Path) -> bool:
     return any(
-        part in _EXCLUDED_NAMES or part.startswith(".env")
+        part in _EXCLUDED_NAMES
+        or part.startswith(".env")
+        or Path(part).suffix.lower() in _EXCLUDED_SUFFIXES
         for part in relative.parts
     )
 
@@ -565,8 +658,33 @@ def _snapshot_ignore(_directory: str, names: list[str]) -> set[str]:
     return {
         name
         for name in names
-        if name in _EXCLUDED_NAMES or name.startswith(".env")
+        if name in _EXCLUDED_NAMES
+        or name.startswith(".env")
+        or Path(name).suffix.lower() in _EXCLUDED_SUFFIXES
     }
+
+
+def _make_snapshot_writable(target: Path) -> None:
+    """Grant the fixed container UID access only to the disposable snapshot."""
+    target.chmod(0o777)
+    for directory, names, filenames in os.walk(target, followlinks=False):
+        directory_path = Path(directory)
+        directory_path.chmod(0o777)
+        for name in names:
+            child = directory_path / name
+            if child.is_symlink():
+                raise ProjectExecutionPolicyError(
+                    "Workspace snapshots reject symlinks after copying."
+                )
+            child.chmod(0o777)
+        for name in filenames:
+            child = directory_path / name
+            if child.is_symlink() or not child.is_file():
+                raise ProjectExecutionPolicyError(
+                    "Workspace snapshots reject unsafe files after copying."
+                )
+            executable_bits = child.stat().st_mode & 0o111
+            child.chmod(0o666 | executable_bits)
 
 
 def _format_float(value: float) -> str:

@@ -50,6 +50,8 @@ def _runtime(
     *,
     target: str = "check.py",
     limits: WorkerLimits | None = None,
+    image_digest: str | None = None,
+    through_outbox: bool = False,
 ):
     root = tmp_path / "project"
     root.mkdir()
@@ -115,6 +117,7 @@ def _runtime(
         command_id="command-1",
         target=target,
         input_artifacts=[artifact],
+        **({"image_digest": image_digest} if image_digest is not None else {}),
     )
     authority = {
         "command_id": "command-1",
@@ -130,33 +133,57 @@ def _runtime(
         "command_id": "command-1",
     }, authority=authority))
     run = control.get_project("project-1")
-    control.execute(_project_command(ProjectCommandType.BEGIN_COMMAND_EXECUTION, run, "command-start", payload={
+    execution_limits = limits or WorkerLimits(
+        lease_seconds=5,
+        timeout_seconds=5,
+        max_output_bytes=4096,
+    )
+    start_payload = {
         "command_id": "command-1",
-    }, authority=authority))
+        "execution_hash": spec.execution_hash,
+    }
+    if through_outbox:
+        start_payload["worker_dispatch"] = {
+            "payload": {"execution": spec.model_dump(mode="json")},
+            "limits": execution_limits.model_dump(mode="json"),
+            "priority": 0,
+        }
+    control.execute(_project_command(
+        ProjectCommandType.BEGIN_COMMAND_EXECUTION,
+        run,
+        "command-start",
+        payload=start_payload,
+        authority=authority,
+    ))
     run = control.get_project("project-1")
     attempt = control.list_attempts(run.project_run_id)[-1]
 
     queue = ProjectWorkerQueue(database)
     queue.initialize()
     service = ProjectWorkerService(control, queue)
-    request = queue.enqueue(WorkerEnqueueCommand(
-        project_run_id=run.project_run_id,
-        execution_attempt_id=attempt.execution_attempt_id,
-        attempt_type=attempt.attempt_type,
-        conversation_id=run.conversation_id,
-        workspace_id=run.workspace_id,
-        repository_root=run.repository_root,
-        repository_root_fingerprint=run.repository_root_fingerprint,
-        actor_id=run.actor_id,
-        plan_revision_id=str(run.current_plan_revision_id),
-        scope_revision_id=str(run.current_scope_revision_id),
-        manifest_hash=str(run.current_manifest_hash),
-        expected_project_state_version=run.state_version,
-        authority=attempt.authority,
-        payload={"execution": spec.model_dump(mode="json")},
-        idempotency_key="enqueue-command",
-        limits=limits or WorkerLimits(lease_seconds=5, timeout_seconds=5, max_output_bytes=4096),
-    ))
+    if through_outbox:
+        dispatch = service.dispatch_pending()
+        assert len(dispatch.dispatched_request_ids) == 1
+        request = queue.get(dispatch.dispatched_request_ids[0])
+    else:
+        request = queue.enqueue(WorkerEnqueueCommand(
+            project_run_id=run.project_run_id,
+            execution_attempt_id=attempt.execution_attempt_id,
+            attempt_type=attempt.attempt_type,
+            conversation_id=run.conversation_id,
+            workspace_id=run.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=run.repository_root_fingerprint,
+            actor_id=run.actor_id,
+            plan_revision_id=str(run.current_plan_revision_id),
+            scope_revision_id=str(run.current_scope_revision_id),
+            manifest_hash=str(run.current_manifest_hash),
+            expected_project_state_version=run.state_version,
+            authority=attempt.authority,
+            payload={"execution": spec.model_dump(mode="json")},
+            idempotency_key="enqueue-command",
+            limits=execution_limits,
+        ))
     executor = ProjectSubprocessExecutor(service, tmp_path / "evidence", poll_interval_seconds=0.02)
     return root, script, control, queue, service, request, executor
 

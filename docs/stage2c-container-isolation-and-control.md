@@ -43,22 +43,38 @@ between files.
 
 ## Runtime startup
 
+The reviewed combined Python/Node build context is
+`docker/stage2c-runtime/`. Its immutable official base is:
+
+```text
+node@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+```
+
+Build and load the exact local configuration before starting either process:
+
+```bash
+./scripts/build_stage2c_runtime.sh
+source ./.astra-stage2c-runtime.env
+```
+
+The validated build produced:
+
+```text
+astra-project-runtime:stage2c-v1
+sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c
+```
+
+The digest is build output, not a permanent alias. After an intentional image
+change, rebuild and repin with the script; never hand-edit a tracked secrets or
+environment file. `scripts/load_stage2c_runtime.sh` can also print or export the
+generated values safely.
+
 Start FastAPI in one terminal:
 
 ```bash
 export AI_SYSTEM_DB_PATH=data/app/ai_system.db
 export AI_SYSTEM_WORKSPACE_ROOT="$PWD"
 uvicorn backend.app.main:app --reload
-```
-
-The runtime image must already exist locally. Configure its observed digest,
-not a mutable tag alone:
-
-```bash
-docker image inspect astra-project-runtime:stage2c-v1 --format '{{.Id}}'
-export ASTRA_PROJECT_EXECUTION_BACKEND=docker
-export ASTRA_PROJECT_RUNTIME_IMAGE=astra-project-runtime:stage2c-v1
-export ASTRA_PROJECT_RUNTIME_IMAGE_DIGEST=sha256:<observed-image-id-or-digest>
 ```
 
 Start the separate worker in a second terminal with the same database and
@@ -93,6 +109,7 @@ cd ..
 
 docker version
 docker info
+source ./.astra-stage2c-runtime.env
 python -m pytest -m docker_integration -q
 
 git diff --check
@@ -103,19 +120,18 @@ git diff --stat
 On WSL, prefix pytest with `TMP=/tmp TEMP=/tmp` if the shell inherited Windows
 temporary-directory variables.
 
-## Current Docker integration blocker
+## Validated Docker integration
 
-At the 2026-07-20 stabilization checkpoint, Docker Desktop and the engine are
-healthy, but `astra-project-runtime:stage2c-v1` does not exist locally and the
-repository contains neither its approved Dockerfile/build context nor tests
-marked `docker_integration`. Therefore the containment suite cannot truthfully
-be reported as passing. `python -m pytest -m docker_integration -q` selects no
-tests and exits with pytest code 5.
+The real-container suite executes Python and Node smoke projects and validates
+image probing, non-root identity, network denial, read-only root operation,
+tmpfs and snapshot policy, zero capabilities, `NoNewPrivs`, resource limits,
+bounded/redacted output, timeouts, cancellation, restart convergence, orphan
+cleanup, runtime reporting, and cleanup of container-owned cache directories.
 
-To unblock the gate, add or obtain the reviewed runtime image build source,
-build it outside request processing, inspect its digest with the command above,
-configure `ASTRA_PROJECT_RUNTIME_IMAGE_DIGEST`, and add the gated containment
-cases before rerunning the marker. Do not substitute an unrelated local image.
+At this checkpoint the marker selected and passed 19 real Docker tests. The
+complete backend suite passed 946 tests after the live cleanup defect was added
+as a regression case. See `docs/stabilization-checkpoint.md` for exact commands
+and evidence.
 
 ## Known limitations
 
@@ -123,12 +139,17 @@ cases before rerunning the marker. Do not substitute an unrelated local image.
   checkpoint. Coordinator intents are durable infrastructure only.
 - Coordinator artifact-processing workers and expanded multi-file synthesis
   evidence are intentionally deferred.
-- Docker containment, isolated Python/Node smoke flows, and their startup
-  benchmarks remain blocked by the missing approved runtime image and missing
-  gated integration cases.
-- The general chat `Run the tests` compatibility action still uses the legacy
-  host command path; it is not evidence that canonical project execution used
-  Docker. Canonical project route tests remain queued and fail closed.
+- The reviewed image includes only its declared Python and Node tools. Projects
+  that need undeclared dependencies fail safely; request-time installation and
+  arbitrary images remain prohibited.
+- A connected general-chat `Run the tests` action without a canonical delivery
+  binding returns a controlled failure and never launches host pytest. Commands
+  attached to a canonical delivery use approval, outbox, queue, worker, and
+  Docker execution. Historical Stage 6 records retain their governed recovery
+  compatibility during this release.
+- Snapshot permission repair uses a second tightly constrained, non-root helper
+  container running the same pinned image and UID. Failure to restore removable
+  permissions remains a fail-closed infrastructure result.
 - Distributed/cloud execution, team collaboration, request-time dependency
   installation, arbitrary user images, and automatic approval are out of scope.
 

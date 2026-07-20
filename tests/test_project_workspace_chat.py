@@ -201,7 +201,20 @@ def test_patch_stale_wrong_conversation_and_duplicate_application_are_rejected(t
     assert target.read_text(encoding="utf-8") == "external\n"
 
 
-def test_connected_project_command_uses_separate_approval(tmp_path: Path) -> None:
+def test_connected_project_command_without_canonical_binding_never_uses_host(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from backend.app import main as main_module
+
+    def host_execution_must_not_run(*_args, **_kwargs):
+        raise AssertionError("connected project command reached host execution")
+
+    monkeypatch.setattr(
+        main_module,
+        "execute_assignment_command",
+        host_execution_must_not_run,
+    )
     project = tmp_path / "project"
     project.mkdir()
     (project / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
@@ -229,6 +242,5 @@ def test_connected_project_command_uses_separate_approval(tmp_path: Path) -> Non
                 "chat_run_id": run["run_id"], "approval_token": approved.json()["approval_token"],
             },
         )
-    assert executed.status_code == 200, executed.text
-    assert executed.json()["exit_code"] == 0
-    assert executed.json()["shell_used"] is False
+    assert executed.status_code == 503, executed.text
+    assert "No project code was executed on the host" in executed.json()["detail"]

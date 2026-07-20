@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.app.project_workers.__main__ import build_runtime, main, worker_cycle
+from backend.app.project_workers.__main__ import (
+    build_runtime,
+    clamp_idle_seconds,
+    main,
+    report_has_activity,
+    worker_cycle,
+)
 
 
 class FakeService:
@@ -101,3 +107,19 @@ def test_dispatch_only_cli_runs_one_cycle(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr().out
     assert '"worker_id": "test-worker"' in output
     assert '"executed": false' in output
+
+
+def test_idle_polling_clamps_to_one_second_and_suppresses_empty_reports() -> None:
+    assert clamp_idle_seconds(0.01) == 1.0
+    assert clamp_idle_seconds(1.5) == 1.5
+    assert clamp_idle_seconds(60) == 30.0
+    assert report_has_activity({
+        "executed": False,
+        "dispatched_request_ids": [],
+        "recovered_dispatch_ids": [],
+        "deferred_dispatch_ids": [],
+        "recovered_request_ids": [],
+        "canonical_recovery_ids": [],
+    }) is False
+    assert report_has_activity({"executed": True}) is True
+    assert report_has_activity({"dispatched_request_ids": ["request-1"]}) is True

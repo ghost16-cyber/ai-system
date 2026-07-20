@@ -79,3 +79,6 @@ models/specialists/
 
 # Generated assignment test workspaces
 assignment_tests/
+
+# Generated local Stage 2C runtime configuration
+/.astra-stage2c-runtime.env

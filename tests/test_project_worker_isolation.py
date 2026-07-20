@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from backend.app.project_workers import (
     DockerIsolationBackend,
@@ -91,7 +92,9 @@ def test_docker_launch_is_pinned_networkless_and_capability_free(tmp_path: Path)
     assert "--pids-limit 256" in joined
     assert "--memory 256m" in joined
     assert "--cpus 2" in joined
-    assert "type=bind" in joined and "dst=/workspace,rw" in joined
+    assert "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777" in command
+    assert "uid=65532,gid=65532,mode=0700" in joined
+    assert "type=bind" in joined and "dst=/workspace" in joined
     assert str(root) not in joined
     assert "DOCKER_HOST" not in joined
     assert command[-2:] == ("python3", "/workspace/check.py")
@@ -180,10 +183,18 @@ def test_workspace_snapshot_excludes_credentials_and_vcs_metadata(tmp_path: Path
     (root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
     (root / ".git").mkdir()
     (root / ".git" / "config").write_text("private\n", encoding="utf-8")
+    (root / ".npmrc").write_text("//registry/:_authToken=secret\n", encoding="utf-8")
+    (root / "credentials.json").write_text('{"token":"secret"}\n', encoding="utf-8")
+    (root / "private.pem").write_text("private\n", encoding="utf-8")
     snapshot = create_workspace_snapshot(root, tmp_path / "snapshot")
     assert (snapshot / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert not (snapshot / ".env").exists()
     assert not (snapshot / ".git").exists()
+    assert not (snapshot / ".npmrc").exists()
+    assert not (snapshot / "credentials.json").exists()
+    assert not (snapshot / "private.pem").exists()
+    assert snapshot.stat().st_mode & 0o002
+    assert (snapshot / "app.py").stat().st_mode & 0o002
 
 
 def test_workspace_snapshot_rejects_symlinks_and_size_overflow(tmp_path: Path) -> None:
@@ -205,4 +216,13 @@ def test_workspace_snapshot_rejects_symlinks_and_size_overflow(tmp_path: Path) -
             root,
             tmp_path / "bounded-snapshot",
             max_bytes=10,
+        )
+
+
+def test_malformed_configured_digest_is_rejected_before_docker_use() -> None:
+    with pytest.raises(ValidationError, match="image_digest"):
+        IsolationProfile(
+            profile_id="astra-python-node-v1",
+            image_reference="astra-project-runtime:stage2c-v1",
+            image_digest="sha256:not-a-real-digest",
         )

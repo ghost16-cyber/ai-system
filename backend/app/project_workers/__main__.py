@@ -6,6 +6,7 @@ import os
 import signal
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -119,7 +120,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Recover and dispatch durable work without executing project code.",
     )
     parser.add_argument("--worker-id", default="", help="Stable local worker identity.")
-    parser.add_argument("--idle-seconds", type=float, default=0.5)
+    parser.add_argument("--idle-seconds", type=float, default=1.0)
     parser.add_argument("--database-path", default="")
     parser.add_argument("--workspace-root", default="")
     return parser
@@ -150,8 +151,10 @@ def main(argv: list[str] | None = None) -> int:
         or os.getenv("ASTRA_PROJECT_WORKER_ID", "").strip()
         or f"local-{socket.gethostname()}-{os.getpid()}"
     )[:160]
-    idle_seconds = max(0.05, min(float(args.idle_seconds), 30.0))
+    idle_seconds = clamp_idle_seconds(args.idle_seconds)
     stopping = threading.Event()
+    last_runtime_heartbeat: float | None = None
+    printed_initial_report = False
 
     def stop(_signum=None, _frame=None) -> None:
         stopping.set()
@@ -161,13 +164,24 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while not stopping.is_set():
+            now = time.monotonic()
+            heartbeat_due = (
+                last_runtime_heartbeat is None
+                or now - last_runtime_heartbeat >= 5.0
+            )
             report = worker_cycle(
                 service,
                 worker_id=worker_id,
                 executor=executor,
-                execution_backend=execution_backend.strip().lower(),
+                execution_backend=(
+                    execution_backend.strip().lower() if heartbeat_due else None
+                ),
             )
-            print(json.dumps(report, sort_keys=True), flush=True)
+            if heartbeat_due:
+                last_runtime_heartbeat = time.monotonic()
+            if not printed_initial_report or report_has_activity(report):
+                print(json.dumps(report, sort_keys=True), flush=True)
+                printed_initial_report = True
             if args.once:
                 break
             if not report["executed"] and not report["dispatched_request_ids"]:
@@ -175,6 +189,21 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         service.mark_runtime_stopped(worker_id)
     return 0
+
+
+def clamp_idle_seconds(value: float) -> float:
+    return max(1.0, min(float(value), 30.0))
+
+
+def report_has_activity(report: dict[str, object]) -> bool:
+    return bool(
+        report.get("executed")
+        or report.get("dispatched_request_ids")
+        or report.get("recovered_dispatch_ids")
+        or report.get("deferred_dispatch_ids")
+        or report.get("recovered_request_ids")
+        or report.get("canonical_recovery_ids")
+    )
 
 
 if __name__ == "__main__":

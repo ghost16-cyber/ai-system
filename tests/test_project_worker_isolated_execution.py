@@ -58,6 +58,9 @@ class FakeIsolationBackend:
         self.cancelled_identities.append(container_identity)
         return True
 
+    def prepare_snapshot_cleanup(self, workspace_snapshot: Path) -> None:
+        return None
+
     def cleanup_orphans(self, active_container_identities=()):
         return ()
 

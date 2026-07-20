@@ -3177,6 +3177,15 @@ def create_app(
                     },
                 )
                 return queued
+        if preflight_job_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "This connected project command has no canonical isolated execution "
+                    "binding. No project code was executed on the host. Create or resume "
+                    "the canonical project delivery and retry when the Docker worker is available."
+                ),
+            )
         try:
             result = execute_assignment_command(
                 assignment_command_store, access["approved_root"], plan_id,

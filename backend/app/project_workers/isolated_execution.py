@@ -32,6 +32,7 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|passwd|token|secret|api[_-]?key|access[_-]?key)\b"
     r"(\s*[:=]\s*)([^\s,;]+)"
 )
+_OPENAI_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
 
 
 class ProjectIsolatedExecutor:
@@ -97,8 +98,11 @@ class ProjectIsolatedExecutor:
         cleanup_failure: str | None = None
         if temporary_root is not None:
             try:
+                snapshot_path = temporary_root / "workspace"
+                if snapshot_path.exists():
+                    self.backend.prepare_snapshot_cleanup(snapshot_path)
                 shutil.rmtree(temporary_root)
-            except OSError as error:
+            except (OSError, ProjectExecutionPolicyError) as error:
                 cleanup_failure = _bounded_message(str(error))
 
         if cleanup_failure is not None:
@@ -271,7 +275,8 @@ def _validate_snapshot_artifacts(
 
 
 def _redact(value: str) -> str:
-    return _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", value)
+    redacted = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", value)
+    return _OPENAI_KEY_RE.sub("<redacted-api-key>", redacted)
 
 
 def _bounded_message(value: str) -> str:

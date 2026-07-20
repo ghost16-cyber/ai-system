@@ -1,126 +1,166 @@
-# Working-tree stabilization checkpoint - 2026-07-20
+# Stage 2C Docker runtime validation checkpoint - 2026-07-20
 
 This report records verification of the uncommitted Stage 2C working tree on
 branch `feature/chat-native-approval`. Nothing was staged, committed, or pushed.
+
+## Runtime image
+
+| Item | Validated value |
+| --- | --- |
+| Build context | `docker/stage2c-runtime/` |
+| Image tag | `astra-project-runtime:stage2c-v1` |
+| Immutable official base | `node@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3` |
+| Built image ID | `sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c` |
+| Runtime user | `65532:65532` |
+| Toolchains | Python 3.11 with pytest; Node 22 with npm and `node --test` |
+
+Build and load the image outside request processing:
+
+```bash
+./scripts/build_stage2c_runtime.sh
+source ./.astra-stage2c-runtime.env
+```
+
+The generated `.astra-stage2c-runtime.env` is local, mode-restricted, and
+ignored by Git. The build script validates the exact lowercase SHA-256 image ID
+before writing it and refuses to overwrite a tracked environment file.
 
 ## Regression results
 
 | Gate | Result |
 | --- | --- |
 | Python compilation | Passed: `python -m compileall -q backend/app tests`. |
-| Complete backend | Passed: 924 passed, 0 failed, 0 skipped in 340.63 seconds. |
+| Focused isolation/dispatch/CLI/recovery slice | Passed: 46 tests in 24.29 seconds before the live cleanup regression; the added cleanup slice passed 3 unit tests in 8.36 seconds. |
+| Real Docker integration | Passed: 19 selected tests, 0 skipped after the image was configured. |
+| Complete backend | Passed: 946 tests, 0 failures in 317.44 seconds. |
 | Frontend tests | Passed: 87 passed, 0 failed, 0 skipped/cancelled/todo. |
 | Frontend lint | Passed: ESLint completed with no findings. |
-| Frontend production build | Passed: 1,589 modules; JS 289.13 kB (81.28 kB gzip), CSS 20.72 kB (4.83 kB gzip), build 1.51 seconds. |
-| Diff whitespace | Passed before documentation update; rerun in final integrity inspection. |
-| Docker integration | Blocked: Docker is healthy, but the pinned image and repository Docker integration cases are absent. |
+| Frontend production build | Passed: 1,589 modules; JS 289.13 kB (81.28 kB gzip), CSS 20.72 kB (4.83 kB gzip), build 1.63 seconds. |
+| Diff whitespace | Passed in final integrity inspection. |
 
-Docker Desktop 4.56.0 and Engine 29.1.3 were available through WSL2. The
-configured `astra-project-runtime:stage2c-v1` image was not present. The runtime
-capability endpoint returned `available=false`, `failure_code=image_unavailable`,
-and `host_execution_fallback=false`. The marker command selected 0 tests and
-exited with code 5; it is not counted as a pass.
+The full backend and 19-test Docker totals are the final post-fix gates. Earlier
+in the session the 18-test Docker suite and 944-test backend suite passed before
+the live browser flow exposed a container-owned pytest cache cleanup defect.
+That defect is now fixed and represented by the nineteenth Docker regression.
 
-## Worker CLI and recovery
+## Real containment evidence
 
-`python -m backend.app.project_workers --once --dispatch-only` initialized a
-fresh temporary database and exited 0 after exactly one cycle. Its JSON output
-contained no lease token. Docker mode exited non-zero with
-`image_unavailable` and did not fall back to host execution. A focused CLI,
-dispatch, mutation, coordinator, and API recovery slice passed 40 tests in
-19.18 seconds. A second infrastructure timing slice passed 32 tests in 13.37
-seconds.
+- `DockerIsolationBackend.probe()` returned `available=true`, no failure code,
+  and equal configured/observed image IDs.
+- Missing image, malformed or wrong digest, and unavailable Docker cases failed
+  closed without invoking a host executor.
+- Container identity was UID/GID `65532:65532`; `NoNewPrivs` was `1` and
+  effective Linux capabilities were zero.
+- Docker inspection confirmed `--network none`, read-only root, all
+  capabilities dropped, no-new-privileges, fixed non-root user, and configured
+  PID, memory, and CPU limits.
+- External TCP and DNS access failed. `/tmp`, `/home/astra`, and only the
+  disposable `/workspace` snapshot were writable.
+- The real repository was not mounted and remained unchanged by container code.
+- VCS metadata, Docker socket, credentials, private keys, proxy variables, and
+  host tokens were absent. Persisted stdout/stderr were bounded and redacted.
+- Excessive child creation was bounded by the PID limit.
+- Python pytest/script and dependency-free Node test/npm pass and fail cases
+  produced typed domain results.
 
-Crash boundaries converge as follows:
+Pytest creates cache directories owned by the fixed container UID. The live
+flow found that mode-0700 cache content could prevent host deletion even after a
+successful test. Cleanup now runs a second pinned-image helper as the same
+non-root UID with network disabled, read-only root, dropped capabilities,
+no-new-privileges, and tight PID/CPU/memory limits. It changes permissions only
+on snapshot entries owned by UID 65532; host-owned source files are not changed.
+Cleanup failure still blocks the attempt.
 
-| Boundary | Deterministic evidence | Result |
-| --- | --- | --- |
-| Before enqueue | Attempt and dispatch persist before queue delivery. | One durable attempt/outbox. |
-| After enqueue, before outbox acknowledgement | Enqueue replay reuses the same worker request. | No duplicate request. |
-| After dispatch binding | Queue restart and repeated dispatch preserve binding. | Same IDs. |
-| Worker success before canonical reconciliation | Queue-only completion recovery reconciles success. | No re-execution. |
-| Patch mutation before completion recording | Journal recovery and exact replay recognize the applied result. | At most one mutation. |
-| Rollback mutation before completion recording | Combined queued patch/rollback worker and replay recovery preserve exact preimages. | At most one restore. |
-| Coordinator lease expiry | Expired claim recovery is durable. | Intent becomes claimable once. |
-| Duplicate coordinator execution | Reconciliation is idempotent and budgeted. | One intent/result. |
-| Patch projection after completion | Delivery API reload projects succeeded mutation evidence. | Stable canonical IDs. |
-| Rollback projection after completion | Delivery API reload projects `rolled_back`. | Stable canonical IDs. |
+## Timeout, cancellation, and restart convergence
 
-## API reproduction
+The real timeout fixture returned `timed_out`, force-removed its container, and
+left no managed container. The real cancellation fixture returned `cancelled`,
+completed one lease and one terminal event, removed the container, and did not
+re-execute after queue/service restart.
 
-| Flow | Endpoint/state | Expected | Observed |
-| --- | --- | --- | --- |
-| Queued command | `POST /chat/projects/commands/{plan_id}/execute` after exact approval | HTTP 200, `queued`, pending dispatch | Passed; replay retained the same attempt and dispatch IDs. |
-| Subprocess verification | `POST /chat/projects/deliveries/{id}/verification`, then command approve/execute | Exact spec becomes queued command execution | Passed in delivery API regression. |
-| Queued patch | `POST /chat/projects/patches/{patch_id}/apply` after exact approval | Pending dispatch, no inline repository write | Passed; worker completion projected mutation evidence. |
-| Queued rollback | `POST /chat/projects/rollback/request` and `/rollback/{patch_id}/approve` | Pending rollback, exact restore once | Passed; reload projected `rolled_back`. |
-| Cancellation | `POST /chat/projects/deliveries/{id}/cancel` | Cancelled and idempotent | HTTP 200 twice, same delivery ID and `cancelled` status. |
-| Reload while queued | `GET /chat/projects/deliveries/{id}` | Same attempt/dispatch/request IDs | Passed. |
-| Reload after completion | Same delivery GET | Terminal result and evidence retained | Passed for patch and rollback. |
-| Duplicate submission | Repeated execute body/idempotency key | No second attempt/request | Passed: one attempt and one worker request. |
-| Runtime capability | `GET /chat/projects/runtime-capabilities` | Truthful worker/isolation health | HTTP 200; worker unavailable, image unavailable, no host fallback. |
-| Coordinator progress | `GET /chat/projects/deliveries/{id}` | Durable intent returned without retrigger | Passed; repeated read retained the coordinator intent ID. |
+Crash-boundary tests converge to one canonical attempt, one dispatch, one worker
+request, one terminal result, and zero remaining containers. Repeated dispatch
+does not enqueue again; success recorded in the queue before canonical
+reconciliation is recovered after restart without executing the command twice.
+Orphan cleanup removes only Astra-labelled containers outside the exact active
+identity set.
 
-The two end-to-end delivery API reproductions passed in 1.73 seconds (patch,
-verification, reload, duplicate execution) and 1.85 seconds (rollback and
-projection), excluding test setup/teardown.
+## Runtime capability result
+
+With the backend and separate worker running, the live endpoint reported:
+
+```text
+execution_backend=docker
+worker_available=true
+active_worker_count=1
+isolation_capability.available=true
+isolation_capability.failure_code=null
+configured_digest=observed_digest=sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c
+supported_toolchains=[python,node]
+host_execution_fallback=false
+```
 
 ## Manual browser reproduction
 
-The verified production bundle was served locally and connected to the real
-FastAPI process. A temporary WSL-origin CORS entry was used only for the test and
-removed afterward.
+The Vite UI, real FastAPI backend, separate worker, and Docker Desktop engine
+were run together against a disposable four-file project and temporary SQLite
+database. A temporary exact WSL-origin CORS entry was used only during the test
+and removed before final verification.
 
-- An approval card survived reload with one card and no resubmission.
-- After a terminated compatibility command, reload retained one failed card
-  with exit code -15 and did not create another process.
-- Cancelling before approval remained visible as `cancelled` and stated that no
-  command was executed.
-- Technical evidence was collapsed by default.
-- No obsolete dashboard or duplicate action card appeared.
-- At 390 x 844, the cancelled card and composer were visible and the composer
-  remained usable.
-- A complete canonical queued -> leased/running -> terminal Docker flow, patch
-  projection, and rollback projection could not be reproduced in-browser
-  because the pinned runtime image/worker was unavailable. Those projections
-  passed at the API level.
-- The general-chat `Run the tests` card launched the legacy host executor. The
-  reproduction process was terminated after about 21 seconds; this path must
-  not be confused with canonical project execution.
+- Folder authorization and read-only scan completed in chat.
+- The delivery plan required exact approval; patch preparation changed no file.
+- Exact patch approval created a pending canonical dispatch. The worker claimed
+  it once, applied the host-side mutation, and reload showed the same succeeded
+  worker identity.
+- Exact `python -m pytest -q test_app.py` approval created a second pending
+  dispatch. Docker executed it successfully and reload showed its canonical
+  worker result.
+- Reload preserved the conversation, project, delivery, and canonical IDs.
+- Delivery cancellation became a durable visible `cancelled` state.
+- A connected general-chat `Run the tests` card required approval and then
+  failed closed with the explicit message that no project code ran on the host
+  because it lacked a canonical isolated binding.
+- Process inspection immediately afterward found no host pytest process.
 
-## Bounded benchmark evidence
+The live run initially exposed the snapshot cleanup defect described above. A
+fresh worker using the fix completed the same pytest path successfully. Manual
+duplicate-token replay could not be repeated because approval tokens are
+one-time secrets and are intentionally not persisted in plaintext; duplicate
+submission convergence is instead covered by the API and real restart tests.
 
-Measurements are local single samples or focused deterministic test durations;
-they are evidence, not a performance acceptance declaration.
+## Idle worker measurement
 
-| Measurement | Result |
-| --- | --- |
-| Worker queue enqueue | 6.466 ms |
-| Worker claim | 5.654 ms |
-| Queue restart initialize plus exact request read | 0.716 ms, same request ID |
-| Multi-file exact mutation and replay unit | 0.28 s |
-| Interrupted mutation restart recovery unit | 0.15 s |
-| Queued patch plus rollback canonical reconciliation | 0.76 s combined |
-| Patch API completion flow | 1.73 s |
-| Rollback API completion flow | 1.85 s |
-| Output bound | 1,048,576-byte total policy; 523,776 bytes per stream in the tested split; excess input set `truncated=true`. |
-| Dispatch-only idle worker | 6.1% CPU average and 551,768 KiB RSS after 33 seconds; 63 half-second cycles; no work claimed. |
-| Docker startup | Blocked by missing pinned image. |
-| Python isolated verification | Blocked by missing pinned image. |
-| Node isolated verification | Blocked by missing pinned image. |
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Sample duration | 33 seconds | 40 seconds |
+| CPU | 6.1% | 5.2% |
+| RSS | 551,768 KiB | 552,204 KiB |
+| Identical idle report lines | 63 | 1 |
 
-The idle memory/CPU sample is notably high for an idle local worker and is a
-future optimization target; this checkpoint intentionally does not optimize it.
+The default poll interval is now one second and is clamped to at least one
+second. Runtime heartbeat persistence is throttled to five seconds and
+unchanged idle reports are not printed. CPU improved modestly; RSS did not and
+is reported without qualification as a remaining optimization target.
+
+## Remaining limitations
+
+- Request-time dependency installation and arbitrary images are prohibited.
+  Projects needing libraries absent from the reviewed image fail safely.
+- Only Python and Node are guaranteed initial execution profiles.
+- Automatic repair, coordinator artifact processing, provider-neutral routing,
+  expanded synthesis, cloud execution, Kubernetes, Celery, and Redis remain out
+  of this checkpoint.
+- Historical Stage 6 records retain governed compatibility for recovery, but a
+  new connected canonical project never falls back to host execution once a
+  canonical attempt exists.
+- The browser delivery projection shows the canonical terminal worker result,
+  while follow-on legacy delivery criteria still require their normal explicit
+  transition; Stage 2C does not add automatic coordinator artifact processing.
 
 ## Checkpoint assessment
 
-The code-level checkpoint gates are satisfied: compilation, the complete
-backend suite, frontend tests/lint/build, idempotent dispatch/recovery, and exact
-mutation recovery pass. Docker containment is an explicitly documented
-external/repository-fixture blocker, not a passing gate. No unrelated file was
-staged. Automatic repair remains intentionally absent.
-
-Subject to the final clean diff/status inspection, this working tree is safe to
-checkpoint as incomplete Stage 2C infrastructure. It is not yet safe to call a
-complete credible local MVP or to make Docker execution the default release
-until the pinned image and containment suite exist and pass.
+The reviewed image exists, real containment and smoke flows pass, the canonical
+queue/worker path is durable, the general-chat host escape is closed, and no
+managed container remains. Subject to the final status/diff inspection, this
+working tree is safe to checkpoint as completed Stage 2C Docker runtime and real
+containment validation. It is not yet the complete autonomous local MVP.

@@ -2,12 +2,13 @@
 
 A local-first Python coding assistant backend built in working releases.
 
-## Current Checkpoint: Stage 0 — Trustworthy Intake and Approval Integrity
+## Current Checkpoint: Stage 2C — Docker Runtime and Durable Local Control
 
 The active system is a local FastAPI backend plus a single chat-native React
-interface. Stage 0 hardens assignment intake, dataset grounding, project-plan
-approval, repository staleness, and acceptance verification. It is a security
-and integrity checkpoint, not a claim of full production readiness.
+interface. Stage 2C preserves the Stage 0 trust boundary while adding durable
+canonical dispatch, exact host-side mutations, and real Docker containment for
+approved Python and Node commands. It is a credible local execution checkpoint,
+not a claim of distributed or cloud production readiness.
 
 ### Active Capabilities
 
@@ -185,17 +186,23 @@ project root; file and project requests must stay within that root.
 
 ### Canonical project worker
 
-The runtime image must already exist locally and its configured digest must match.
-Astra never pulls, builds, or installs dependencies while processing a request.
+Build the reviewed runtime image explicitly, then load its generated local
+configuration. Astra never pulls, builds, or installs dependencies while
+processing a request.
 
 ```bash
-export ASTRA_PROJECT_EXECUTION_BACKEND=docker
-export ASTRA_PROJECT_RUNTIME_IMAGE=astra-project-runtime:stage2c-v1
-export ASTRA_PROJECT_RUNTIME_IMAGE_DIGEST=sha256:<local-image-id-or-digest>
+./scripts/build_stage2c_runtime.sh
+source ./.astra-stage2c-runtime.env
 export AI_SYSTEM_DB_PATH=data/app/ai_system.db
 export AI_SYSTEM_WORKSPACE_ROOT="$PWD"
 python -m backend.app.project_workers
 ```
+
+The currently validated local image ID is
+`sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c`.
+Rebuilds must use the reviewed context, inspect the newly built ID, and update
+the generated untracked environment file rather than copying this value
+blindly.
 
 Use `--once` for one cycle or `--dispatch-only` to enqueue without executing.
 Isolation or cleanup failure blocks safely; there is no host fallback. Runtime
@@ -211,7 +218,7 @@ shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Complete coordinator artifact processing, one-repair orchestration, Docker-gated
-integration tests, browser reproductions, and the checked-in MVP benchmark gates.
-Model or classifier output remains non-authoritative for approval and
-verification decisions.
+Complete coordinator artifact processing, one-repair orchestration, expanded
+multi-file synthesis evidence, and the checked-in MVP benchmark gates. Model or
+classifier output remains non-authoritative for approval and verification
+decisions.
