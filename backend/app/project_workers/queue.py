@@ -11,6 +11,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
+from backend.app.database.migrations import (
+    assert_schema_compatible,
+    initialize_stage3a_schema,
+)
 from backend.app.project_control.contracts import (
     EXECUTION_ATTEMPT_VERSION,
     PROJECT_RUN_VERSION,
@@ -57,7 +61,11 @@ class ProjectWorkerQueue:
         return connection
 
     def initialize(self) -> None:
+        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        if not compatibility_ddl_enabled:
+            assert_schema_compatible(self.database_path)
+            return
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -138,6 +146,7 @@ class ProjectWorkerQueue:
                     ON project_worker_runtime_instances(status, last_heartbeat_at);
                 """
             )
+        assert_schema_compatible(self.database_path)
 
     def record_runtime_heartbeat(
         self,

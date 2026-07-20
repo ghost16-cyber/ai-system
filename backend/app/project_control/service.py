@@ -9,6 +9,10 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from backend.app.database.migrations import (
+    assert_schema_compatible,
+    initialize_stage3a_schema,
+)
 from backend.app.project_control.contracts import (
     EXECUTION_DISPATCH_VERSION,
     APPROVAL_GRANT_VERSION,
@@ -52,7 +56,11 @@ class ProjectControlPlane:
         return connection
 
     def initialize(self) -> None:
+        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        if not compatibility_ddl_enabled:
+            assert_schema_compatible(self.database_path)
+            return
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -240,6 +248,7 @@ class ProjectControlPlane:
                 connection.execute(
                     "ALTER TABLE project_execution_dispatches ADD COLUMN failure_classification TEXT"
                 )
+        assert_schema_compatible(self.database_path)
 
     def execute(self, command: ProjectCommand | dict[str, Any]) -> TransitionResult:
         try:
@@ -1543,6 +1552,7 @@ class ProjectControlPlane:
                 or (active_dispatch.failure_classification if active_dispatch else None)
                 or (active_attempt.failure_classification if active_attempt else None)
             ),
+            artifact_references=run.current_artifact_ids,
             execution_evidence_references=worker_result,
             execution_timestamps={
                 "attempt_started_at": (

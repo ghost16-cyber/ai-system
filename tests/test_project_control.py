@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from backend.app.project_control import (
     ProjectCommand,
@@ -13,8 +14,11 @@ from backend.app.project_control import (
     ProjectControlErrorCode,
     ProjectControlPlane,
     ProjectLifecycle,
+    ExecutionCancellationStatus,
+    build_execution_cancellation,
 )
 from backend.app.project_control.contracts import content_hash
+from backend.app.project_control.contracts import ExecutionAttemptStatus, ProjectReadModel, ProjectRun
 
 
 def base() -> dict[str, str]:
@@ -87,6 +91,48 @@ def test_canonical_lifecycle_revisions_and_approval_are_separate(control: Projec
     approvals = control.list_approvals(run.project_run_id, active_only=True)
     assert [item.approval_type.value for item in approvals] == ["plan"]
     assert control.get_read_model(run.project_run_id).approval_fresh is True
+
+
+def test_stage_3a_additive_contract_fields_preserve_legacy_records(control: ProjectControlPlane) -> None:
+    run = control.get_project("project-1")
+    legacy_run = run.model_dump()
+    legacy_run.pop("current_artifact_ids")
+    parsed_run = ProjectRun.model_validate(legacy_run)
+    assert parsed_run.current_artifact_ids == {}
+
+    read_model = control.get_read_model(run.project_run_id)
+    legacy_read_model = read_model.model_dump()
+    legacy_read_model.pop("artifact_references")
+    parsed_read_model = ProjectReadModel.model_validate(legacy_read_model)
+    assert parsed_read_model.artifact_references == {}
+    assert ExecutionAttemptStatus("cancelling") == ExecutionAttemptStatus.CANCELLING
+
+
+def test_cancellation_contract_is_delivery_state_not_project_lifecycle(control: ProjectControlPlane) -> None:
+    before = control.get_project("project-1")
+    cancellation = build_execution_cancellation(
+        project_run_id=before.project_run_id,
+        execution_attempt_id="attempt-1",
+        worker_request_id="worker-request-1",
+        requested_by="local-user",
+        reason="User requested cancellation.",
+    )
+    assert cancellation.status == ExecutionCancellationStatus.PENDING
+    assert cancellation.request_hash
+    after = control.get_project("project-1")
+    assert after == before
+
+
+def test_project_command_payload_must_be_bounded_canonical_json() -> None:
+    values = {
+        **base(),
+        "command_type": ProjectCommandType.INITIALIZE_PROJECT,
+        "expected_state_version": 0,
+        "idempotency_key": "oversized",
+        "payload": {"value": "x" * 262_145},
+    }
+    with pytest.raises(ValidationError, match="byte limit"):
+        ProjectCommand(**values)
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from backend.app.database.migrations import (
+    assert_schema_compatible,
+    initialize_stage3a_schema,
+)
+
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
     ChatConversationDetail,
@@ -50,7 +55,11 @@ class AnalysisRepository:
         return connection
 
     def initialize(self) -> None:
+        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        if not compatibility_ddl_enabled:
+            assert_schema_compatible(self.database_path)
+            return
         with self._connect() as connection:
             connection.execute(
                 """
@@ -809,6 +818,7 @@ class AnalysisRepository:
                 """
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_engagement_audit ON client_engagement_audit_events (engagement_id, created_at ASC)")
+        assert_schema_compatible(self.database_path)
 
     def _add_column_if_missing(
         self, connection: sqlite3.Connection, table: str, column: str, definition: str

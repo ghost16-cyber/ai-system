@@ -17,6 +17,12 @@ from backend.app.project_control.contracts import (
     TransitionResult,
 )
 from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
+from backend.app.project_control.cancellation import (
+    EXECUTION_CANCELLATION_VERSION,
+    ExecutionCancellation,
+    ExecutionCancellationStatus,
+    build_execution_cancellation,
+)
 from backend.app.project_control.service import ProjectControlPlane
 
 __all__ = [
@@ -27,6 +33,9 @@ __all__ = [
     "ExecutionDispatchStatus",
     "ExecutionAttemptStatus",
     "ExecutionAttemptType",
+    "EXECUTION_CANCELLATION_VERSION",
+    "ExecutionCancellation",
+    "ExecutionCancellationStatus",
     "PlanRevision",
     "ProjectCommand",
     "ProjectCommandType",
@@ -39,4 +48,5 @@ __all__ = [
     "ProjectRun",
     "ScopeRevision",
     "TransitionResult",
+    "build_execution_cancellation",
 ]

@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from backend.app.database.migrations import (
+    assert_schema_compatible,
+    initialize_stage3a_schema,
+)
 from backend.app.project_control.contracts import ProjectLifecycle, content_hash
 from backend.app.project_coordinator.contracts import (
     CoordinatorIntent,
@@ -53,7 +57,11 @@ class ProjectCoordinatorService:
         return connection
 
     def initialize(self) -> None:
+        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        if not compatibility_ddl_enabled:
+            assert_schema_compatible(self.database_path)
+            return
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -83,6 +91,7 @@ class ProjectCoordinatorService:
                     ON project_coordinator_intents(project_run_id, created_at);
                 """
             )
+        assert_schema_compatible(self.database_path)
 
     def reconcile(self, project_run_id: str) -> CoordinatorIntent | None:
         run = self.control.get_project(project_run_id)

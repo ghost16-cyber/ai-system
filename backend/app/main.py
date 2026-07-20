@@ -100,6 +100,7 @@ from backend.app.core.path_utils import resolve_user_path
 from backend.app.chat_workflow import run_chat_workflow
 from backend.app.chat_actions import DetectedChatAction, detect_chat_action
 from backend.app.database.repository import AnalysisRepository
+from backend.app.database.migrations import LATEST_SCHEMA_VERSION, current_schema_version
 from backend.app.debugging import analyze_error_output
 from backend.app.datasets import profile_csv_dataset
 from backend.app.hardware_ai_optimizer import (
@@ -883,6 +884,7 @@ def create_app(
             if execution_backend == "docker" else None
         )
         workers = project_worker_service.list_active_runtime_instances()
+        database_schema_version = current_schema_version(configured_path)
         return {
             "schema_version": "astra.project-workers.runtime-capabilities.v1",
             "execution_backend": execution_backend,
@@ -901,6 +903,12 @@ def create_app(
             ],
             "supported_toolchains": ["python", "node"],
             "host_execution_fallback": False,
+            "database_schema_version": database_schema_version,
+            "database_migration_status": (
+                "current"
+                if database_schema_version == LATEST_SCHEMA_VERSION
+                else "upgrade_required"
+            ),
         }
     @application.get(
         "/hardware-ai/report",

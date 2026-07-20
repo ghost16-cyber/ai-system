@@ -45,6 +45,8 @@ def test_runtime_capability_endpoint_reports_separate_worker_availability(
         assert unavailable.status_code == 200
         assert unavailable.json()["worker_available"] is False
         assert unavailable.json()["host_execution_fallback"] is False
+        assert unavailable.json()["database_schema_version"] >= 1
+        assert unavailable.json()["database_migration_status"] == "current"
 
         app.state.project_worker_service.record_runtime_heartbeat(
             "worker-endpoint",

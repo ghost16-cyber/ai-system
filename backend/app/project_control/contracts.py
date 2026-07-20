@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 PROJECT_RUN_VERSION = "astra.project-control.project-run.v1"
@@ -19,6 +19,8 @@ PROJECT_EVENT_VERSION = "astra.project-control.event.v1"
 PROJECT_COMMAND_VERSION = "astra.project-control.command.v1"
 TRANSITION_RESULT_VERSION = "astra.project-control.transition-result.v1"
 PROJECT_READ_MODEL_VERSION = "astra.project-control.read-model.v1"
+MAX_PROJECT_COMMAND_PAYLOAD_BYTES = 262_144
+MAX_PROJECT_COMMAND_AUTHORITY_BYTES = 65_536
 
 
 def canonical_json(value: Any) -> str:
@@ -112,6 +114,7 @@ class ExecutionAttemptType(StrEnum):
 class ExecutionAttemptStatus(StrEnum):
     PENDING = "pending"
     ACTIVE = "active"
+    CANCELLING = "cancelling"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -270,6 +273,7 @@ class ProjectRun(StrictModel):
     manifest_complete: bool = False
     active_approval_grant_ids: tuple[str, ...] = ()
     execution_attempt_ids: tuple[str, ...] = ()
+    current_artifact_ids: dict[str, str] = Field(default_factory=dict)
     work_unit_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
     verification_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
     handoff_eligible: bool = False
@@ -301,6 +305,19 @@ class ProjectCommand(StrictModel):
     manifest_hash: str | None = None
     authority_scope: dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_bounded_json(self) -> "ProjectCommand":
+        try:
+            payload_size = len(canonical_json(self.payload).encode("utf-8"))
+            authority_size = len(canonical_json(self.authority_scope).encode("utf-8"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("project command payload and authority must be canonical JSON") from exc
+        if payload_size > MAX_PROJECT_COMMAND_PAYLOAD_BYTES:
+            raise ValueError("project command payload exceeds the configured byte limit")
+        if authority_size > MAX_PROJECT_COMMAND_AUTHORITY_BYTES:
+            raise ValueError("project command authority exceeds the configured byte limit")
+        return self
 
 
 class TransitionResult(StrictModel):
@@ -346,5 +363,6 @@ class ProjectReadModel(StrictModel):
     worker_request_status: str | None = None
     execution_failure_classification: str | None = None
     execution_evidence_references: dict[str, Any] = Field(default_factory=dict)
+    artifact_references: dict[str, str] = Field(default_factory=dict)
     execution_timestamps: dict[str, str | None] = Field(default_factory=dict)
     next_permitted_action: str | None = None
