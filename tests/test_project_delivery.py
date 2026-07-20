@@ -648,7 +648,9 @@ def test_conversation_hydration_returns_current_canonical_delivery_once(tmp_path
     assert approved.status_code == 200, approved.text
     assert detail.status_code == 200, detail.text
     hydrated = detail.json()
-    assert hydrated["hydration_version"] == "astra.chat-hydration.v1"
+    assert hydrated["hydration_version"] == "astra.chat-hydration.v2"
+    assert len(hydrated["projects"]) == 1
+    assert hydrated["projects"][0]["project_run_id"] == delivery["delivery_job_id"]
     assert [item["delivery_job_id"] for item in hydrated["project_deliveries"]] == [delivery["delivery_job_id"]]
     assert hydrated["project_deliveries"][0]["status"] == "plan_approved"
     assert hydrated["project_deliveries"][0]["plan_approval"]["plan_revision_id"]
@@ -768,6 +770,44 @@ def test_backend_issues_clean_conversation_identity_and_nonexistent_lookup_is_de
     assert created.json()["turns"] == []
     assert created.json()["requests"] == []
     assert missing.status_code == 404
+
+
+def test_canonical_and_compatibility_gets_do_not_write_or_reconcile(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    database = tmp_path / "app.db"
+    with TestClient(create_app(database, tmp_path)) as client:
+        conversation_id = _connect(client, project)
+        started = client.post("/chat/projects/deliveries", json={
+            "conversation_id": conversation_id,
+            "user_request": TASK,
+        }).json()
+        project_id = started["action"]["technical_details"]["project_delivery"]["delivery_job_id"]
+        with sqlite3.connect(database) as connection:
+            before = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("project_events", "project_artifacts", "project_delivery_records")
+            )
+            delivery_json = connection.execute(
+                "SELECT job_json FROM project_delivery_jobs WHERE delivery_job_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+
+        assert client.get(f"/chat/projects/deliveries/{project_id}").status_code == 200
+        assert client.get(f"/chat/projects/{project_id}").status_code == 200
+        assert client.get(f"/chat/projects/{project_id}/artifacts").status_code == 200
+        assert client.get(f"/chat/conversations/{conversation_id}").status_code == 200
+
+        with sqlite3.connect(database) as connection:
+            after = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("project_events", "project_artifacts", "project_delivery_records")
+            )
+            reloaded_json = connection.execute(
+                "SELECT job_json FROM project_delivery_jobs WHERE delivery_job_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+        assert after == before
+        assert reloaded_json == delivery_json
 
 
 def test_active_request_becomes_interrupted_after_backend_restart(tmp_path: Path) -> None:

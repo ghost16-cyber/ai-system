@@ -345,3 +345,70 @@ export type AstraWorkflowAction =
   | { type: "advance" }
   | { type: "reset" }
   | { type: "fail"; error: string };
+
+export interface CanonicalArtifactSummary {
+  schema_version: "astra.project-api.artifact-summary.v1";
+  artifact_id: string;
+  artifact_type: string;
+  revision_number: number | null;
+  binding_hash: string;
+  content_hash: string;
+  created_at: string;
+}
+
+export interface CanonicalProjectReadModel {
+  schema_version: "astra.project-control.read-model.v1";
+  project_run_id: string;
+  conversation_id: string;
+  lifecycle_state: string;
+  plan_revision_id: string | null;
+  scope_revision_id: string | null;
+  manifest_hash: string | null;
+  manifest_complete: boolean;
+  approval_state: string;
+  approval_fresh: boolean;
+  current_work_unit: string | null;
+  progress: Record<string, number>;
+  pending_user_action: string | null;
+  verification_summary: Record<string, number>;
+  criterion_states: Record<string, Record<string, unknown>>;
+  blocked_reason: string | null;
+  handoff_eligible: boolean;
+  state_version: number;
+  terminal: boolean;
+  artifact_references: Record<string, string>;
+  artifact_hashes: Record<string, string>;
+  next_permitted_action: string | null;
+}
+
+export interface CanonicalProjectResponse {
+  schema_version: "astra.project-api.project.v1";
+  project: CanonicalProjectReadModel;
+  artifacts: CanonicalArtifactSummary[];
+}
+
+export interface CanonicalProjectCollection {
+  schema_version: "astra.project-api.collection.v1";
+  items: CanonicalProjectResponse[];
+  count: number;
+}
+
+export interface CanonicalProjectCreateRequest {
+  schema_version: "astra.project-api.create.v1";
+  conversation_id: string;
+  workspace_id: string;
+  repository_root: string;
+  repository_root_fingerprint: string;
+  actor_id?: string;
+  idempotency_key: string;
+  folder_authority: {
+    status: "completed";
+    action_id: string;
+    conversation_id: string;
+    workspace_id: string;
+    repository_root_fingerprint: string;
+  };
+  specification: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+  plan: Record<string, unknown> | null;
+}

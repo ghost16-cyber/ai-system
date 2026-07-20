@@ -311,6 +311,9 @@ from backend.app.project_delivery import (
     run_deterministic_verifier,
 )
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode, ProjectControlPlane
+from backend.app.project_artifacts import ProjectArtifactStore
+from backend.app.project_control.project_service import CanonicalProjectService
+from backend.app.project_api import create_project_router
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
 from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
 from backend.app.project_coordinator import (
@@ -800,8 +803,16 @@ def create_app(
     assignment_report_store = configured_workspace_root / "data" / "assignment_reports"
 
     repository = AnalysisRepository(configured_path)
-    project_control = ProjectControlPlane(configured_path)
-    delivery_control = ProjectDeliveryControlAdapter(project_control)
+    project_artifact_store = ProjectArtifactStore(configured_path)
+    project_control = ProjectControlPlane(
+        configured_path, artifact_store=project_artifact_store
+    )
+    canonical_project_service = CanonicalProjectService(
+        project_control, project_artifact_store
+    )
+    delivery_control = ProjectDeliveryControlAdapter(
+        project_control, project_artifact_store
+    )
     project_worker_queue = ProjectWorkerQueue(configured_path)
     project_worker_service = ProjectWorkerService(project_control, project_worker_queue)
     project_mutation_engine = FileMutationEngine(
@@ -822,6 +833,7 @@ def create_app(
     async def lifespan(_: FastAPI):
         repository.initialize()
         project_control.initialize()
+        project_artifact_store.initialize()
         project_worker_queue.initialize()
         project_mutation_engine.initialize()
         project_coordinator.initialize()
@@ -851,6 +863,8 @@ def create_app(
 
     application.state.analysis_repository = repository
     application.state.project_control = project_control
+    application.state.project_artifact_store = project_artifact_store
+    application.state.canonical_project_service = canonical_project_service
     application.state.project_worker_queue = project_worker_queue
     application.state.project_worker_service = project_worker_service
     application.state.project_mutation_engine = project_mutation_engine
@@ -1962,11 +1976,9 @@ def create_app(
 
     @application.get("/chat/projects/deliveries/{delivery_job_id}")
     def chat_project_delivery_get(delivery_job_id: str) -> dict:
-        job, _access = _validated_project_delivery(delivery_job_id)
-        payload = public_delivery_job(job)
-        payload["canonical_project"] = project_control.get_read_model(
-            delivery_job_id
-        ).model_dump(mode="json")
+        job, _access = _read_project_delivery(delivery_job_id)
+        payload = _public_read_delivery(job)
+        payload["canonical_project"] = payload.get("project_control")
         payload["coordinator_intents"] = [
             item.model_dump(mode="json")
             for item in project_coordinator.list_for_project(delivery_job_id)
@@ -1977,15 +1989,13 @@ def create_app(
     def chat_project_deliveries_list(conversation_id: str) -> dict:
         jobs = repository.list_project_delivery_jobs_for_conversation(conversation_id)
         canonical = [
-            _validated_project_delivery(str(job["delivery_job_id"]), conversation_id=conversation_id)[0]
+            _read_project_delivery(str(job["delivery_job_id"]), conversation_id=conversation_id)[0]
             for job in jobs
         ]
         items: list[dict] = []
         for job in canonical:
-            payload = public_delivery_job(job)
-            payload["canonical_project"] = project_control.get_read_model(
-                str(job["delivery_job_id"])
-            ).model_dump(mode="json")
+            payload = _public_read_delivery(job)
+            payload["canonical_project"] = payload.get("project_control")
             payload["coordinator_intents"] = [
                 item.model_dump(mode="json")
                 for item in project_coordinator.list_for_project(str(job["delivery_job_id"]))
@@ -1995,12 +2005,12 @@ def create_app(
 
     @application.get("/chat/projects/deliveries/{delivery_job_id}/specification")
     def chat_project_delivery_specification(delivery_job_id: str) -> dict:
-        job, _access = _validated_project_delivery(delivery_job_id)
+        job, _access = _read_project_delivery(delivery_job_id)
         return {"specification": job["specification"], "revisions": job.get("specification_revisions", [])}
 
     @application.get("/chat/projects/deliveries/{delivery_job_id}/plan")
     def chat_project_delivery_plan(delivery_job_id: str) -> dict:
-        job, _access = _validated_project_delivery(delivery_job_id)
+        job, _access = _read_project_delivery(delivery_job_id)
         return {"plan": job.get("plan"), "approval": job.get("plan_approval"), "revisions": job.get("plan_revisions", [])}
 
     @application.post("/chat/projects/deliveries/{delivery_job_id}/clarify", response_model=ChatRunResponse)
@@ -2859,6 +2869,11 @@ def create_app(
     @application.post("/chat/projects/rollback/request", response_model=ChatRunResponse)
     def chat_project_rollback_request(request: ProjectRollbackRequest) -> ChatRunResponse:
         access = _completed_project_access(request.conversation_id)
+        active_delivery = repository.latest_active_project_delivery_job(
+            request.conversation_id
+        )
+        if active_delivery is not None:
+            _reconcile_completed_delivery_mutation(active_delivery, access)
         try:
             proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id)
         except LookupError as error:
@@ -4490,11 +4505,34 @@ def create_app(
         persist_run: bool,
     ) -> ChatRunResponse:
         action_run_id = uuid4().hex
+        delivery_job_id = uuid4().hex
+        folder_authority = {
+            "status": "completed",
+            "action_id": str(access["action_id"]),
+            "conversation_id": conversation_id,
+            "workspace_id": str(access["action_id"]),
+            "repository_root_fingerprint": str(access["root_fingerprint"]),
+            "repository_root": str(access["approved_root"]),
+        }
+        try:
+            canonical_project_service.initialize_project(
+                project_run_id=delivery_job_id,
+                conversation_id=conversation_id,
+                workspace_id=str(access["action_id"]),
+                repository_root=str(access["approved_root"]),
+                repository_root_fingerprint=str(access["root_fingerprint"]),
+                actor_id="local-user",
+                idempotency_key=f"delivery-create:{action_run_id}",
+                folder_authority=folder_authority,
+            )
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
         try:
             delivery = create_delivery_job(
                 root=access["approved_root"], conversation_id=conversation_id,
                 folder_access_id=access["action_id"], user_request=message,
                 action_run_id=action_run_id, model_gateway=synthesis_gateway,
+                delivery_job_id=delivery_job_id,
             )
             shadow = create_project_job(
                 root=access["approved_root"], conversation_id=conversation_id,
@@ -4512,6 +4550,29 @@ def create_app(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         delivery["project_job_id"] = shadow["job_id"]
+        specification = dict(delivery["specification"])
+        plan = dict(delivery["plan"]) if delivery.get("plan") else None
+        if plan is not None:
+            plan["acceptance_criteria"] = list(
+                specification.get("acceptance_criteria") or []
+            )
+            plan["configured_limits"] = dict(delivery.get("limits") or {})
+        try:
+            canonical_project_service.create_project(
+                project_run_id=delivery_job_id,
+                conversation_id=conversation_id,
+                workspace_id=str(access["action_id"]),
+                repository_root=str(access["approved_root"]),
+                repository_root_fingerprint=str(access["root_fingerprint"]),
+                actor_id="local-user",
+                idempotency_key=f"delivery-create:{action_run_id}",
+                folder_authority=folder_authority,
+                specification=specification,
+                manifest=dict(delivery["project_state_manifest"]),
+                plan=plan,
+            )
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
         repository.store_project_job(shadow)
         repository.store_project_analysis(shadow["analysis_index"])
         repository.store_project_delivery_job(delivery)
@@ -4538,6 +4599,74 @@ def create_app(
         if persist_run:
             repository.store_chat_run(run)
         return run
+
+    def _read_project_delivery(
+        delivery_job_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> tuple[dict, dict]:
+        """Read and authorize a compatibility projection without migration or writes."""
+        try:
+            job = repository.get_project_delivery_job(delivery_job_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail={"code": "not_found", "message": "Project delivery job not found."}) from error
+        if conversation_id is not None and job.get("conversation_id") != conversation_id:
+            raise HTTPException(status_code=409, detail={"code": "ownership_mismatch", "message": "The delivery job belongs to a different conversation."})
+        access = _completed_project_access(str(job.get("conversation_id") or ""))
+        if job.get("folder_access_id") != access.get("action_id"):
+            raise HTTPException(status_code=409, detail={"code": "workspace_mismatch", "message": "The delivery job belongs to a different folder authorization."})
+        if job.get("root_fingerprint") != access.get("root_fingerprint"):
+            raise HTTPException(status_code=409, detail={"code": "stale_workspace", "message": "The authorized project identity changed."})
+        return job, access
+
+    def _public_read_delivery(job: dict) -> dict:
+        projected = job
+        try:
+            attempts = project_control.list_attempts(str(job["delivery_job_id"]))
+        except ProjectControlError as error:
+            if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
+                raise _control_http_error(error) from error
+            attempts = []
+        completed_rollback = next((
+            attempt for attempt in reversed(attempts)
+            if attempt.attempt_type == ExecutionAttemptType.ROLLBACK
+            and attempt.status.value == "completed"
+            and attempt.resulting_manifest_hash
+        ), None)
+        if completed_rollback is not None:
+            patch_id = str(completed_rollback.authority.get("rollback_id") or "").removeprefix("rollback:")
+            reference = next((item for item in job.get("patch_references") or [] if item.get("patch_id") == patch_id), None)
+            if reference is not None and reference.get("status") == "applied":
+                projected = record_delivery_rollback(
+                    job,
+                    patch_id=patch_id,
+                    restored_state_hash=str(completed_rollback.resulting_manifest_hash),
+                )
+        else:
+            completed_patch = next((
+                attempt for attempt in reversed(attempts)
+                if attempt.attempt_type == ExecutionAttemptType.PATCH
+                and attempt.status.value == "completed"
+                and attempt.resulting_manifest_hash
+            ), None)
+            if completed_patch is not None:
+                patch_id = str(completed_patch.authority.get("patch_id") or "")
+                reference = next((item for item in job.get("patch_references") or [] if item.get("patch_id") == patch_id), None)
+                if reference is not None and reference.get("status") != "applied":
+                    projected = record_delivery_patch_applied(
+                        job,
+                        patch_id=patch_id,
+                        current_state_hash=str(completed_patch.resulting_manifest_hash),
+                    )
+        payload = public_delivery_job(projected)
+        try:
+            payload["project_control"] = canonical_project_service.get_project(
+                str(job["delivery_job_id"])
+            ).model_dump(mode="json")
+        except ProjectControlError as error:
+            if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
+                raise _control_http_error(error) from error
+        return payload
 
     def _validated_project_delivery(
         delivery_job_id: str,
@@ -6449,14 +6578,19 @@ def create_app(
             for job in repository.list_project_jobs_for_conversation(conversation_id)
         ]
         deliveries = [
-            public_delivery_job(_validated_project_delivery(
+            _public_read_delivery(_read_project_delivery(
                 str(job["delivery_job_id"]), conversation_id=conversation_id,
             )[0])
             for job in repository.list_project_delivery_jobs_for_conversation(conversation_id)
         ]
+        projects = [
+            item.model_dump(mode="json")
+            for item in canonical_project_service.list_projects(conversation_id)
+        ]
         return detail.model_copy(update={
             "project_jobs": jobs,
             "project_deliveries": deliveries,
+            "projects": projects,
         })
 
     @application.delete(
@@ -6930,6 +7064,23 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    def _canonical_folder_authority(conversation_id: str) -> dict[str, str]:
+        access = _completed_project_access(conversation_id)
+        return {
+            "status": "completed",
+            "action_id": str(access["action_id"]),
+            "conversation_id": conversation_id,
+            "workspace_id": str(access["action_id"]),
+            "repository_root_fingerprint": str(access["root_fingerprint"]),
+            "repository_root": str(access["approved_root"]),
+        }
+
+    application.include_router(
+        create_project_router(
+            canonical_project_service,
+            folder_authority_resolver=_canonical_folder_authority,
+        )
+    )
     return application
 
 

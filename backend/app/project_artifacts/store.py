@@ -71,11 +71,28 @@ class ProjectArtifactStore:
                     stored = self._parse_row(same_content)
                     connection.commit()
                     return stored
+                if candidate.revision_number is not None:
+                    same_revision = connection.execute(
+                        """SELECT * FROM project_artifacts
+                           WHERE project_run_id = ? AND artifact_type = ?
+                             AND binding_hash = ? AND revision_number = ?""",
+                        (
+                            candidate.binding.project_run_id,
+                            candidate.artifact_type.value,
+                            candidate.binding_hash,
+                            candidate.revision_number,
+                        ),
+                    ).fetchone()
+                    if same_revision is not None:
+                        raise ProjectArtifactStoreError(
+                            "artifact revision is already bound to different content"
+                        )
                 connection.execute(
                     """INSERT INTO project_artifacts (
                            artifact_id, project_run_id, artifact_type, binding_hash,
-                           content_hash, schema_version, artifact_json, created_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           content_hash, schema_version, artifact_json, created_at,
+                           revision_number
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         candidate.artifact_id,
                         candidate.binding.project_run_id,
@@ -85,6 +102,7 @@ class ProjectArtifactStore:
                         candidate.schema_version,
                         candidate.model_dump_json(),
                         candidate.created_at.isoformat(),
+                        candidate.revision_number,
                     ),
                 )
                 connection.commit()
@@ -176,5 +194,13 @@ class ProjectArtifactStore:
         if any(actual != expected for actual, expected in normalized):
             raise ProjectArtifactStoreError(
                 "stored project artifact normalized fields failed integrity validation"
+            )
+        normalized_revision = row["revision_number"]
+        if (
+            (int(normalized_revision) if normalized_revision is not None else None)
+            != artifact.revision_number
+        ):
+            raise ProjectArtifactStoreError(
+                "stored project artifact revision failed integrity validation"
             )
         return artifact

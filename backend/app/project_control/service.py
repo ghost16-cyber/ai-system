@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -41,12 +41,22 @@ from backend.app.project_control.contracts import (
 from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
 from backend.app.project_control.transitions import validate_command_source, validate_transition
 
+if TYPE_CHECKING:
+    from backend.app.project_artifacts.contracts import ProjectArtifact
+    from backend.app.project_artifacts.store import ProjectArtifactStore
+
 
 class ProjectControlPlane:
     """The sole durable lifecycle writer for project delivery operations."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(
+        self,
+        database_path: str | Path,
+        *,
+        artifact_store: ProjectArtifactStore | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
+        self.artifact_store = artifact_store
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
@@ -234,6 +244,7 @@ class ProjectControlPlane:
                     legacy_id TEXT NOT NULL,
                     project_run_id TEXT NOT NULL UNIQUE,
                     legacy_hash TEXT NOT NULL,
+                    canonical_generation TEXT NOT NULL DEFAULT 'legacy',
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(legacy_type, legacy_id),
                     FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
@@ -584,6 +595,14 @@ class ProjectControlPlane:
         if command.expected_state_version != 0:
             raise ProjectControlError(ProjectControlErrorCode.STALE_STATE_VERSION, "Project initialization requires state version zero.")
         now = self._now()
+        canonical_generation = str(
+            command.payload.get("canonical_generation") or "legacy"
+        )
+        if canonical_generation not in {"legacy", "canonical"}:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Project generation must be either legacy or canonical.",
+            )
         run = ProjectRun(
             project_run_id=command.project_run_id,
             conversation_id=command.conversation_id,
@@ -598,6 +617,7 @@ class ProjectControlPlane:
             updated_at=now,
             migrated_from=_text(command.payload.get("migrated_from")),
             requires_reapproval=bool(command.payload.get("migrated_from")),
+            canonical_generation=canonical_generation,
         )
         connection.execute(
             "INSERT INTO project_runs (project_run_id, conversation_id, workspace_id, repository_root_fingerprint, lifecycle_status, state_version, schema_version, run_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -641,30 +661,31 @@ class ProjectControlPlane:
         kind = command.command_type
         payload = command.payload
         created: list[str] = []
+        artifact = self._verified_transition_artifact(run, command)
         if kind == ProjectCommandType.ATTACH_SPECIFICATION:
             specification_hash = self._hash(payload, "specification_hash")
             scope = self._create_scope(connection, run, command, specification_hash)
             created.append(scope.scope_revision_id)
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "task_specification_id": _required(payload, "task_specification_id"),
                 "specification_hash": specification_hash,
                 "current_scope_revision_id": scope.scope_revision_id,
                 "lifecycle_status": ProjectLifecycle.MANIFEST_REQUIRED,
                 "pending_user_action": "register_manifest",
                 "blocked_reason": None,
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.REGISTER_MANIFEST:
             manifest_hash = self._hash(payload, "manifest_hash")
             complete = bool(payload.get("complete"))
             status = ProjectLifecycle.PLANNING if complete else ProjectLifecycle.BLOCKED
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "current_manifest_hash": manifest_hash,
                 "manifest_complete": complete,
                 "lifecycle_status": status,
                 "pending_user_action": "propose_plan_revision" if complete else "rescan_manifest",
                 "blocked_reason": None if complete else "Project manifest is incomplete.",
                 "handoff_eligible": False,
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.PROPOSE_PLAN_REVISION:
             self._require_manifest(run)
             plan = self._create_plan(connection, run, command)
@@ -674,7 +695,7 @@ class ProjectControlPlane:
                 str(unit.get("work_unit_id") or unit.get("id")): {"status": "pending", "attempts": 0}
                 for unit in plan.work_units if str(unit.get("work_unit_id") or unit.get("id"))
             }
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "current_plan_revision_id": plan.plan_revision_id,
                 "active_approval_grant_ids": (),
                 "work_unit_state": work_state,
@@ -683,7 +704,7 @@ class ProjectControlPlane:
                 "lifecycle_status": ProjectLifecycle.AWAITING_PLAN_APPROVAL,
                 "pending_user_action": "approve_plan",
                 "requires_reapproval": True,
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.APPROVE_PLAN:
             self._require_manifest(run)
             grant = self._create_approval(connection, run, command, ApprovalType.PLAN)
@@ -708,10 +729,10 @@ class ProjectControlPlane:
             }), tuple(created)
         if kind == ProjectCommandType.RECORD_PATCH_PREVIEW:
             patch_id = _required(payload, "patch_id")
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.AWAITING_PATCH_APPROVAL,
                 "pending_user_action": f"approve_patch:{patch_id}",
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.APPROVE_PATCH:
             grant = self._create_approval(connection, run, command, ApprovalType.PATCH)
             created.append(grant.approval_grant_id)
@@ -741,10 +762,10 @@ class ProjectControlPlane:
             }), tuple(created)
         if kind == ProjectCommandType.RECORD_COMMAND_PREVIEW:
             _required(payload, "command_id")
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.AWAITING_COMMAND_APPROVAL,
                 "pending_user_action": f"approve_command:{payload['command_id']}",
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.APPROVE_COMMAND:
             approval_type = ApprovalType(str(payload.get("approval_type") or ApprovalType.COMMAND.value))
             grant = self._create_approval(connection, run, command, approval_type)
@@ -808,12 +829,12 @@ class ProjectControlPlane:
             succeeded = outcome == "passed"
             attempt = self._finish_or_create_attempt(connection, run, command, ExecutionAttemptType.VERIFICATION, succeeded=succeeded)
             created.append(attempt.execution_attempt_id)
-            return self._with_attempt(run, attempt).model_copy(update={
+            return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "verification_state": verification,
                 "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING if succeeded or outcome == "manual_required" else ProjectLifecycle.REPAIR_REQUIRED,
                 "pending_user_action": "complete_work_unit" if succeeded else ("approve_manual_verification" if outcome == "manual_required" else "initiate_repair"),
                 "handoff_eligible": False,
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.REQUEST_CLARIFICATION:
             return run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.CLARIFICATION_REQUIRED,
@@ -834,7 +855,7 @@ class ProjectControlPlane:
             scope = self._create_scope(connection, run, command, specification_hash)
             created.append(scope.scope_revision_id)
             self._invalidate_approvals(connection, run.project_run_id, "scope_revision_superseded")
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "specification_hash": specification_hash,
                 "current_scope_revision_id": scope.scope_revision_id,
                 "current_plan_revision_id": None,
@@ -843,7 +864,7 @@ class ProjectControlPlane:
                 "lifecycle_status": ProjectLifecycle.PLANNING,
                 "pending_user_action": "propose_plan_revision",
                 "requires_reapproval": True,
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.INITIATE_REPAIR:
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.REPAIR)
             created.append(attempt.execution_attempt_id)
@@ -937,11 +958,11 @@ class ProjectControlPlane:
             self._validate_handoff(connection, run, payload)
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.HANDOFF, terminal=True, succeeded=True)
             created.append(attempt.execution_attempt_id)
-            return self._with_attempt(run, attempt).model_copy(update={
+            return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "handoff_eligible": True,
                 "lifecycle_status": ProjectLifecycle.HANDOFF_READY,
                 "pending_user_action": "finalize_project",
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.FINALIZE_PROJECT:
             if run.lifecycle_status == ProjectLifecycle.HANDOFF_READY:
                 return run.model_copy(update={
@@ -1445,6 +1466,99 @@ class ProjectControlPlane:
                     or evidence.get("criterion_hash") != content_hash(criterion)):
                 raise ProjectControlError(ProjectControlErrorCode.STALE_VERIFICATION, "A required verifier result is stale.")
 
+    def _verified_transition_artifact(
+        self,
+        run: ProjectRun,
+        command: ProjectCommand,
+    ) -> ProjectArtifact | None:
+        from backend.app.project_artifacts.contracts import ProjectArtifactType
+        from backend.app.project_artifacts.store import ProjectArtifactStoreError
+
+        expected: dict[ProjectCommandType, frozenset[ProjectArtifactType]] = {
+            ProjectCommandType.ATTACH_SPECIFICATION: frozenset({ProjectArtifactType.SPECIFICATION}),
+            ProjectCommandType.REVISE_SCOPE: frozenset({ProjectArtifactType.SPECIFICATION}),
+            ProjectCommandType.REGISTER_MANIFEST: frozenset({ProjectArtifactType.MANIFEST}),
+            ProjectCommandType.PROPOSE_PLAN_REVISION: frozenset({ProjectArtifactType.PLAN}),
+            ProjectCommandType.RECORD_PATCH_PREVIEW: frozenset({
+                ProjectArtifactType.PATCH_PREVIEW,
+                ProjectArtifactType.REPAIR_PREVIEW,
+            }),
+            ProjectCommandType.RECORD_COMMAND_PREVIEW: frozenset({ProjectArtifactType.COMMAND_PREVIEW}),
+            ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({ProjectArtifactType.VERIFIER_RESULT}),
+            ProjectCommandType.REQUEST_HANDOFF: frozenset({ProjectArtifactType.HANDOFF}),
+        }
+        allowed = expected.get(command.command_type)
+        supplied = command.artifact_id is not None
+        required = run.canonical_generation == "canonical" and allowed is not None
+        if not supplied:
+            if required:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "Canonical project transitions require an immutable artifact reference.",
+                )
+            return None
+        if not (
+            command.artifact_type
+            and command.artifact_hash
+            and command.artifact_binding_hash
+        ):
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Artifact references require the exact type, content hash, and binding hash.",
+            )
+        if allowed is None or self.artifact_store is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "This project transition does not accept an artifact reference.",
+            )
+        try:
+            artifact = self.artifact_store.verify(
+                command.artifact_id or "",
+                expected_binding_hash=command.artifact_binding_hash,
+                expected_content_hash=command.artifact_hash,
+            )
+        except ProjectArtifactStoreError as exc:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The referenced project artifact is missing, stale, or corrupted.",
+            ) from exc
+        if artifact.artifact_type not in allowed or command.artifact_type != artifact.artifact_type.value:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "The referenced artifact type is not valid for this transition.",
+            )
+        binding = artifact.binding
+        if binding.project_run_id != run.project_run_id:
+            raise ProjectControlError(
+                ProjectControlErrorCode.REPOSITORY_ROOT_MISMATCH,
+                "The project artifact belongs to a different project.",
+            )
+        expected_manifest = run.current_manifest_hash
+        if command.command_type == ProjectCommandType.REGISTER_MANIFEST:
+            expected_manifest = _text(command.payload.get("manifest_hash"))
+        exact_bindings = (
+            (binding.plan_revision_id, run.current_plan_revision_id, ProjectControlErrorCode.PLAN_REVISION_MISMATCH),
+            (binding.scope_revision_id, run.current_scope_revision_id, ProjectControlErrorCode.SCOPE_REVISION_MISMATCH),
+            (binding.manifest_hash, expected_manifest, ProjectControlErrorCode.MANIFEST_MISMATCH),
+        )
+        for actual, current, code in exact_bindings:
+            if actual is not None and actual != current:
+                raise ProjectControlError(code, "The project artifact is bound to stale project state.")
+        return artifact
+
+    @staticmethod
+    def _with_artifact(run: ProjectRun, artifact: ProjectArtifact | None) -> ProjectRun:
+        if artifact is None:
+            return run
+        key = artifact.artifact_type.value
+        ids = dict(run.current_artifact_ids)
+        hashes = dict(run.current_artifact_hashes)
+        ids[key] = artifact.artifact_id
+        hashes[key] = artifact.content_hash
+        return run.model_copy(
+            update={"current_artifact_ids": ids, "current_artifact_hashes": hashes}
+        )
+
     def _read_model(self, connection: sqlite3.Connection, run: ProjectRun) -> ProjectReadModel:
         approval_fresh = False
         if run.current_plan_revision_id and run.current_scope_revision_id and run.current_manifest_hash:
@@ -1553,6 +1667,23 @@ class ProjectControlPlane:
                 or (active_attempt.failure_classification if active_attempt else None)
             ),
             artifact_references=run.current_artifact_ids,
+            artifact_hashes=run.current_artifact_hashes,
+            current_specification_artifact_id=run.current_artifact_ids.get("specification"),
+            current_specification_artifact_hash=run.current_artifact_hashes.get("specification"),
+            current_manifest_artifact_id=run.current_artifact_ids.get("manifest"),
+            current_manifest_artifact_hash=run.current_artifact_hashes.get("manifest"),
+            current_plan_artifact_id=run.current_artifact_ids.get("plan"),
+            current_plan_artifact_hash=run.current_artifact_hashes.get("plan"),
+            current_patch_preview_artifact_id=run.current_artifact_ids.get("patch_preview"),
+            current_patch_preview_artifact_hash=run.current_artifact_hashes.get("patch_preview"),
+            current_command_preview_artifact_id=run.current_artifact_ids.get("command_preview"),
+            current_command_preview_artifact_hash=run.current_artifact_hashes.get("command_preview"),
+            current_verifier_result_artifact_id=run.current_artifact_ids.get("verifier_result"),
+            current_verifier_result_artifact_hash=run.current_artifact_hashes.get("verifier_result"),
+            current_repair_preview_artifact_id=run.current_artifact_ids.get("repair_preview"),
+            current_repair_preview_artifact_hash=run.current_artifact_hashes.get("repair_preview"),
+            current_handoff_artifact_id=run.current_artifact_ids.get("handoff"),
+            current_handoff_artifact_hash=run.current_artifact_hashes.get("handoff"),
             execution_evidence_references=worker_result,
             execution_timestamps={
                 "attempt_started_at": (

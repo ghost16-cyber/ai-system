@@ -79,9 +79,13 @@ def create_delivery_job(
     action_run_id: str,
     model_gateway: SynthesisGateway | None = None,
     limits: DeliveryLimits = STAGE9_LIMITS,
+    delivery_job_id: str | None = None,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
+    """Build a compatibility delivery projection without persistence or lifecycle writes."""
     approved = Path(root).resolve()
-    delivery_job_id = uuid4().hex
+    delivery_job_id = delivery_job_id or uuid4().hex
+    builder_timestamp = created_at or _now()
     manifest = build_project_state_manifest(approved, workspace_id=folder_access_id)
     index = build_project_index(
         approved,
@@ -128,11 +132,18 @@ def create_delivery_job(
         revision=1,
     )
     clarification_questions = list(specification.clarification_questions)
-    plan = None if clarification_questions else build_execution_plan(specification, index, analysis, limits=limits)
+    plan = None if clarification_questions else build_execution_plan(
+        specification,
+        index,
+        analysis,
+        limits=limits,
+        created_at=builder_timestamp,
+    )
     status = DeliveryStatus.CLARIFICATION if clarification_questions else DeliveryStatus.AWAITING_PLAN_APPROVAL
-    now = _now()
+    now = builder_timestamp
     job = {
         "delivery_job_id": delivery_job_id,
+        "canonical_generation": "canonical",
         "action_run_id": action_run_id,
         "conversation_id": conversation_id,
         "folder_access_id": folder_access_id,
@@ -191,7 +202,9 @@ def build_execution_plan(
     *,
     limits: DeliveryLimits = STAGE9_LIMITS,
     revision: int = 1,
+    created_at: str | None = None,
 ) -> ExecutionPlan:
+    """Build an immutable plan without persistence or lifecycle side effects."""
     if specification.clarification_questions:
         raise ProjectDeliveryError("The task specification still requires clarification.", code="clarification_required")
     paths = _planned_paths(specification, index, analysis)
@@ -248,7 +261,7 @@ def build_execution_plan(
         "plan_source": specification.specification_source,
         "confidence": 0.92 if specification.specification_source == "deterministic" else 0.72,
         "confidence_reasons": ["Stage 6 structural evidence identifies the bounded file set and verification configuration."],
-        "created_at": _now(),
+        "created_at": created_at or _now(),
     }
     data["plan_hash"] = immutable_hash(_immutable_plan_payload(data))
     return ExecutionPlan.model_validate(data)
@@ -645,7 +658,14 @@ def record_rollback(job: dict[str, Any], *, patch_id: str, restored_state_hash: 
     return updated
 
 
-def generate_handoff(job: dict[str, Any], *, root: str | Path | None = None) -> dict[str, Any]:
+def generate_handoff(
+    job: dict[str, Any],
+    *,
+    root: str | Path | None = None,
+    handoff_id: str | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a handoff projection without persistence or lifecycle side effects."""
     if root is not None:
         current_manifest = build_project_state_manifest(
             root, workspace_id=str(job.get("folder_access_id") or "")
@@ -673,8 +693,9 @@ def generate_handoff(job: dict[str, Any], *, root: str | Path | None = None) -> 
     refs = [item for item in job.get("patch_references") or [] if item.get("status") == "applied"]
     changed = sorted({path for item in refs for path in item.get("file_set", [])})[:50]
     commands = [item for item in job.get("command_references") or []]
+    builder_timestamp = completed_at or _now()
     data = {
-        "handoff_id": uuid4().hex, "delivery_job_id": job["delivery_job_id"],
+        "handoff_id": handoff_id or uuid4().hex, "delivery_job_id": job["delivery_job_id"],
         "original_objective": specification.normalized_objective,
         "final_specification_hash": specification.specification_hash,
         "implemented_requirements": specification.in_scope_requirements if completion == "completed" else [],
@@ -695,7 +716,7 @@ def generate_handoff(job: dict[str, Any], *, root: str | Path | None = None) -> 
             "project_state": str(job.get("project_state_hash") or ""),
         },
         "verifier_result_ids": [str(item["verifier_result_id"]) for item in fresh_records if item.get("verifier_result_id")][:30],
-        "completion_status": completion, "completed_at": _now(),
+        "completion_status": completion, "completed_at": builder_timestamp,
     }
     data["handoff_hash"] = "0" * 64
     normalized = HandoffReport.model_validate(data).model_dump(mode="json")
@@ -710,8 +731,8 @@ def generate_handoff(job: dict[str, Any], *, root: str | Path | None = None) -> 
         "blocked": DeliveryStatus.BLOCKED.value,
         "awaiting_manual_verification": DeliveryStatus.AWAITING_MANUAL.value,
     }[completion]
-    updated["completed_at"] = _now() if completion == "completed" else None
-    updated["updated_at"] = _now()
+    updated["completed_at"] = builder_timestamp if completion == "completed" else None
+    updated["updated_at"] = builder_timestamp
     return updated
 
 

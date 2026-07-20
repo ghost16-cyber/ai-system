@@ -530,6 +530,7 @@ class AnalysisRepository:
                     folder_access_id TEXT NOT NULL,
                     root_fingerprint TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    canonical_generation TEXT NOT NULL DEFAULT 'legacy',
                     state_version INTEGER NOT NULL DEFAULT 1,
                     job_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -1449,7 +1450,12 @@ class AnalysisRepository:
             for row in rows
         ]
 
-    def get_chat_conversation(self, conversation_id: str) -> ChatConversationDetail:
+    def get_chat_conversation(
+        self,
+        conversation_id: str,
+        *,
+        projects: list[dict[str, Any]] | None = None,
+    ) -> ChatConversationDetail:
         turns = self.list_chat_runs_for_conversation(conversation_id)
         requests = self.list_chat_requests_for_conversation(conversation_id)
         if not turns and not requests and not self.chat_conversation_exists(conversation_id):
@@ -1465,6 +1471,7 @@ class AnalysisRepository:
             memory_summary=latest_summary,
             turns=turns,
             requests=requests,
+            projects=projects or [],
         )
 
     def delete_chat_conversation(self, conversation_id: str) -> int:
@@ -1524,12 +1531,14 @@ class AnalysisRepository:
                 """
                 INSERT INTO project_delivery_jobs (
                     delivery_job_id, action_run_id, conversation_id, folder_access_id,
-                    root_fingerprint, status, state_version, job_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    root_fingerprint, status, canonical_generation, state_version,
+                    job_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     stored["delivery_job_id"], stored["action_run_id"], stored["conversation_id"],
                     stored["folder_access_id"], stored["root_fingerprint"], stored["status"],
+                    str(stored.get("canonical_generation") or "legacy"),
                     int(stored["state_version"]), json.dumps(stored, sort_keys=True),
                     stored["created_at"], stored["updated_at"],
                 ),

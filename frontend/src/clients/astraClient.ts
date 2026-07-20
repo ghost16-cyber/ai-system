@@ -1,5 +1,9 @@
 import type {
   CompactTraceResponse,
+  CanonicalArtifactSummary,
+  CanonicalProjectCollection,
+  CanonicalProjectCreateRequest,
+  CanonicalProjectResponse,
   ExecutionProfile,
   RuntimeContext,
   RuntimePlanValidation,
@@ -221,7 +225,7 @@ export interface ChatRunResponse {
 }
 
 export interface ChatConversationDetail {
-  hydration_version: "astra.chat-hydration.v1";
+  hydration_version: "astra.chat-hydration.v2";
   conversation_id: string;
   title: string;
   memory_summary: string | null;
@@ -229,6 +233,7 @@ export interface ChatConversationDetail {
   requests: ChatRequestRecord[];
   project_jobs: Array<Record<string, unknown>>;
   project_deliveries: Array<Record<string, unknown>>;
+  projects: CanonicalProjectResponse["project"][];
 }
 
 export class AstraHttpError extends Error {
@@ -1165,6 +1170,28 @@ export class HttpAstraClient implements AstraClient {
   async getProjectDelivery(deliveryJobId: string) {
     return this.getJson<Record<string, unknown>>(
       `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}`,
+    );
+  }
+
+  async createCanonicalProject(request: CanonicalProjectCreateRequest) {
+    return this.postJson<CanonicalProjectResponse>("/chat/projects", request);
+  }
+
+  async getCanonicalProject(projectRunId: string) {
+    return this.getJson<CanonicalProjectResponse>(
+      `/chat/projects/${encodeURIComponent(projectRunId)}`,
+    );
+  }
+
+  async listCanonicalProjects(conversationId: string) {
+    return this.getJson<CanonicalProjectCollection>(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/projects`,
+    );
+  }
+
+  async listCanonicalProjectArtifacts(projectRunId: string) {
+    return this.getJson<CanonicalArtifactSummary[]>(
+      `/chat/projects/${encodeURIComponent(projectRunId)}/artifacts`,
     );
   }
 

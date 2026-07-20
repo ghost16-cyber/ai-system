@@ -49,6 +49,7 @@ class ProjectArtifact(StrictModel):
     artifact_type: ProjectArtifactType
     binding: ProjectArtifactBinding
     binding_hash: str = Field(min_length=64, max_length=64)
+    revision_number: int | None = Field(default=None, ge=1)
     payload: dict[str, Any]
     evidence_references: tuple[dict[str, Any], ...] = ()
     content_hash: str = Field(min_length=64, max_length=64)
@@ -72,7 +73,11 @@ class ProjectArtifact(StrictModel):
                 "artifact evidence references exceed the configured byte limit"
             )
         expected_content = artifact_content_hash(
-            self.artifact_type, self.binding, self.payload, self.evidence_references
+            self.artifact_type,
+            self.binding,
+            self.payload,
+            self.evidence_references,
+            revision_number=self.revision_number,
         )
         if self.content_hash != expected_content:
             raise ValueError(
@@ -86,15 +91,19 @@ def artifact_content_hash(
     binding: ProjectArtifactBinding,
     payload: dict[str, Any],
     evidence_references: tuple[dict[str, Any], ...] = (),
+    *,
+    revision_number: int | None = None,
 ) -> str:
-    return content_hash(
-        {
-            "artifact_type": ProjectArtifactType(artifact_type).value,
-            "binding": binding.model_dump(mode="json"),
-            "payload": payload,
-            "evidence_references": evidence_references,
-        }
-    )
+    material: dict[str, Any] = {
+        "artifact_type": ProjectArtifactType(artifact_type).value,
+        "binding": binding.model_dump(mode="json"),
+        "payload": payload,
+        "evidence_references": evidence_references,
+    }
+    # Keep v1 artifacts readable: Stage 3A hashes did not contain this key.
+    if revision_number is not None:
+        material["revision_number"] = revision_number
+    return content_hash(material)
 
 
 def build_project_artifact(
@@ -103,17 +112,25 @@ def build_project_artifact(
     binding: ProjectArtifactBinding,
     payload: dict[str, Any],
     evidence_references: tuple[dict[str, Any], ...] = (),
+    revision_number: int | None = None,
     created_at: datetime | None = None,
 ) -> ProjectArtifact:
     kind = ProjectArtifactType(artifact_type)
     binding_digest = content_hash(binding.model_dump(mode="json"))
-    artifact_digest = artifact_content_hash(kind, binding, payload, evidence_references)
+    artifact_digest = artifact_content_hash(
+        kind,
+        binding,
+        payload,
+        evidence_references,
+        revision_number=revision_number,
+    )
     artifact_id = f"artifact-{content_hash([binding.project_run_id, kind.value, binding_digest, artifact_digest])[:24]}"
     return ProjectArtifact(
         artifact_id=artifact_id,
         artifact_type=kind,
         binding=binding,
         binding_hash=binding_digest,
+        revision_number=revision_number,
         payload=payload,
         evidence_references=evidence_references,
         content_hash=artifact_digest,

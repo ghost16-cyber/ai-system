@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import type {
+  CanonicalProjectCollection,
+  CanonicalProjectResponse,
+} from "../src/types/contracts.ts";
 
 import {
   exactPlanApprovalRequest,
@@ -198,4 +202,36 @@ test("canonical queue and coordinator identities survive delivery reload parsing
   assert.equal(action.execution?.workerStatus, "running");
   assert.equal(action.coordinatorIntent?.id, "intent-1");
   assert.equal(action.coordinatorIntent?.status, "claimed");
+});
+
+test("Stage 3B canonical project API fixtures preserve exact artifact identities", () => {
+  const response = {
+    schema_version: "astra.project-api.project.v1",
+    project: {
+      schema_version: "astra.project-control.read-model.v1",
+      project_run_id: "project-1", conversation_id: "conversation-1",
+      lifecycle_state: "awaiting_plan_approval",
+      plan_revision_id: "plan-1", scope_revision_id: "scope-1",
+      manifest_hash: "a".repeat(64), manifest_complete: true,
+      approval_state: "not_approved", approval_fresh: false,
+      current_work_unit: null, progress: { completed_work_units: 0, total_work_units: 1 },
+      pending_user_action: "approve_plan", verification_summary: {}, criterion_states: {},
+      blocked_reason: null, handoff_eligible: false, state_version: 4, terminal: false,
+      artifact_references: { plan: "artifact-plan-1" },
+      artifact_hashes: { plan: "b".repeat(64) }, next_permitted_action: "approve_plan",
+    },
+    artifacts: [{
+      schema_version: "astra.project-api.artifact-summary.v1",
+      artifact_id: "artifact-plan-1", artifact_type: "plan", revision_number: 1,
+      binding_hash: "c".repeat(64), content_hash: "b".repeat(64),
+      created_at: "2026-07-20T00:00:00+00:00",
+    }],
+  } satisfies CanonicalProjectResponse;
+  const collection = {
+    schema_version: "astra.project-api.collection.v1",
+    items: [response], count: 1,
+  } satisfies CanonicalProjectCollection;
+
+  assert.equal(collection.items[0].project.artifact_references.plan, "artifact-plan-1");
+  assert.equal(collection.items[0].artifacts[0].content_hash, "b".repeat(64));
 });

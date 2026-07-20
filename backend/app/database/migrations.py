@@ -179,6 +179,51 @@ def _baseline_step() -> SchemaMigrationStep:
     )
 
 
+def _stage3b_canonical_artifact_step() -> SchemaMigrationStep:
+    checksum_material = """stage3b-canonical-artifacts:v1
+add project_artifacts.revision_number INTEGER
+unique project_artifacts(project_run_id, artifact_type, binding_hash, revision_number) where revision_number is not null
+add project_delivery_jobs.canonical_generation TEXT NOT NULL DEFAULT 'legacy' when table exists
+add project_legacy_reconciliations.canonical_generation TEXT NOT NULL DEFAULT 'legacy' when table exists
+"""
+
+    def apply(connection: sqlite3.Connection) -> None:
+        artifact_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(project_artifacts)")
+        }
+        if "revision_number" not in artifact_columns:
+            connection.execute(
+                "ALTER TABLE project_artifacts ADD COLUMN revision_number INTEGER"
+            )
+        connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_project_artifacts_revision
+               ON project_artifacts(
+                   project_run_id, artifact_type, binding_hash, revision_number
+               ) WHERE revision_number IS NOT NULL"""
+        )
+        for table in ("project_delivery_jobs", "project_legacy_reconciliations"):
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if exists is None:
+                continue
+            columns = {
+                str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            if "canonical_generation" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN canonical_generation "
+                    "TEXT NOT NULL DEFAULT 'legacy'"
+                )
+
+    return SchemaMigrationStep(
+        "bind_canonical_artifact_revisions",
+        checksum_material,
+        apply,
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -220,6 +265,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
                 _sql_step("create_projection_checkpoints", _PROJECTION_TABLE_SQL),
                 _sql_step("index_projection_checkpoints_status", _PROJECTION_STATUS_INDEX_SQL),
             ),
+        ),
+        SchemaMigration(
+            5,
+            "canonical_projects_and_artifact_revisions",
+            "astra-schema-migration:canonical-projects-and-artifact-revisions:v1",
+            (_stage3b_canonical_artifact_step(),),
         ),
     )
 

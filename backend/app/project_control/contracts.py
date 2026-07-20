@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -274,6 +274,7 @@ class ProjectRun(StrictModel):
     active_approval_grant_ids: tuple[str, ...] = ()
     execution_attempt_ids: tuple[str, ...] = ()
     current_artifact_ids: dict[str, str] = Field(default_factory=dict)
+    current_artifact_hashes: dict[str, str] = Field(default_factory=dict)
     work_unit_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
     verification_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
     handoff_eligible: bool = False
@@ -287,6 +288,7 @@ class ProjectRun(StrictModel):
     terminal_reason: str | None = None
     migrated_from: str | None = None
     requires_reapproval: bool = False
+    canonical_generation: Literal["legacy", "canonical"] = "legacy"
 
 
 class ProjectCommand(StrictModel):
@@ -303,6 +305,10 @@ class ProjectCommand(StrictModel):
     plan_revision_id: str | None = None
     scope_revision_id: str | None = None
     manifest_hash: str | None = None
+    artifact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    artifact_type: str | None = Field(default=None, min_length=1, max_length=80)
+    artifact_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_binding_hash: str | None = Field(default=None, min_length=64, max_length=64)
     authority_scope: dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -364,5 +370,22 @@ class ProjectReadModel(StrictModel):
     execution_failure_classification: str | None = None
     execution_evidence_references: dict[str, Any] = Field(default_factory=dict)
     artifact_references: dict[str, str] = Field(default_factory=dict)
+    artifact_hashes: dict[str, str] = Field(default_factory=dict)
+    current_specification_artifact_id: str | None = None
+    current_specification_artifact_hash: str | None = None
+    current_manifest_artifact_id: str | None = None
+    current_manifest_artifact_hash: str | None = None
+    current_plan_artifact_id: str | None = None
+    current_plan_artifact_hash: str | None = None
+    current_patch_preview_artifact_id: str | None = None
+    current_patch_preview_artifact_hash: str | None = None
+    current_command_preview_artifact_id: str | None = None
+    current_command_preview_artifact_hash: str | None = None
+    current_verifier_result_artifact_id: str | None = None
+    current_verifier_result_artifact_hash: str | None = None
+    current_repair_preview_artifact_id: str | None = None
+    current_repair_preview_artifact_hash: str | None = None
+    current_handoff_artifact_id: str | None = None
+    current_handoff_artifact_hash: str | None = None
     execution_timestamps: dict[str, str | None] = Field(default_factory=dict)
     next_permitted_action: str | None = None

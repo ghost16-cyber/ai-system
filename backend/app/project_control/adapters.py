@@ -13,13 +13,24 @@ from backend.app.project_control.contracts import (
 )
 from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
 from backend.app.project_control.service import ProjectControlPlane
+from backend.app.project_artifacts.contracts import (
+    ProjectArtifactBinding,
+    ProjectArtifactType,
+    build_project_artifact,
+)
+from backend.app.project_artifacts.store import ProjectArtifactStore
 
 
 class ProjectDeliveryControlAdapter:
     """Compatibility boundary: legacy evidence in, canonical commands out."""
 
-    def __init__(self, control: ProjectControlPlane) -> None:
+    def __init__(
+        self,
+        control: ProjectControlPlane,
+        artifact_store: ProjectArtifactStore | None = None,
+    ) -> None:
         self.control = control
+        self.artifact_store = artifact_store
 
     def ensure(self, job: dict[str, Any], root: str | Path, *, migrated: bool) -> ProjectReadModel:
         return self.control.reconcile_legacy_delivery(
@@ -52,7 +63,15 @@ class ProjectDeliveryControlAdapter:
             if run.lifecycle_status == ProjectLifecycle.READY_FOR_WORK:
                 self._execute(run, ProjectCommandType.BEGIN_WORK_UNIT, f"{prefix}:begin", payload={"work_unit_id": work_unit_id}, authority={"work_unit_id": work_unit_id})
                 run = self.control.get_project(run.project_run_id)
-            self._execute(run, ProjectCommandType.RECORD_PATCH_PREVIEW, f"{prefix}:preview", payload={"patch_id": str(metadata.get("patch_id") or "")})
+            previews = [item for item in updated.get("patch_references") or [] if isinstance(item, dict)]
+            self._execute(run, ProjectCommandType.RECORD_PATCH_PREVIEW, f"{prefix}:preview", payload={
+                "patch_id": str(metadata.get("patch_id") or ""),
+                "preview": previews[-1] if previews else {},
+            }, artifact_type=(
+                ProjectArtifactType.REPAIR_PREVIEW
+                if operation == "stage8_repair_preview"
+                else ProjectArtifactType.PATCH_PREVIEW
+            ))
         elif operation == "patch_application":
             patch_id = str(metadata.get("patch_id") or "")
             self._execute(run, ProjectCommandType.RECORD_PATCH_RESULT, prefix, payload={
@@ -61,8 +80,10 @@ class ProjectDeliveryControlAdapter:
                 "result_reference": {"patch_id": patch_id},
             }, authority={"patch_id": patch_id})
         elif operation == "command_plan":
+            previews = [item for item in updated.get("command_references") or [] if isinstance(item, dict)]
             self._execute(run, ProjectCommandType.RECORD_COMMAND_PREVIEW, prefix, payload={
                 "command_id": str(metadata.get("plan_id") or ""),
+                "preview": previews[-1] if previews else {},
             })
         elif operation == "verifier_completion":
             self._record_verification(run, updated, prefix, metadata)
@@ -75,7 +96,10 @@ class ProjectDeliveryControlAdapter:
             })
         elif operation == "handoff_generation":
             final_hash = str(updated.get("project_state_hash") or (updated.get("project_state_manifest") or {}).get("manifest_hash") or "")
-            self._execute(run, ProjectCommandType.REQUEST_HANDOFF, f"{prefix}:request", payload={"final_manifest_hash": final_hash})
+            self._execute(run, ProjectCommandType.REQUEST_HANDOFF, f"{prefix}:request", payload={
+                "final_manifest_hash": final_hash,
+                "handoff": dict(updated.get("handoff") or {}),
+            })
             run = self.control.get_project(run.project_run_id)
             self._execute(run, ProjectCommandType.FINALIZE_PROJECT, f"{prefix}:handoff")
             run = self.control.get_project(run.project_run_id)
@@ -313,6 +337,7 @@ class ProjectDeliveryControlAdapter:
             "included_paths": included, "excluded_paths": list(specification.get("explicit_exclusions") or []),
             "allowed_operations": ["read", "patch_preview", "approved_patch", "approved_command", "verification"],
             "reason": reason,
+            "specification": specification,
         })
         run = self.control.get_project(run.project_run_id)
         self._propose_plan(run, updated, f"{prefix}:plan")
@@ -324,9 +349,63 @@ class ProjectDeliveryControlAdapter:
             "acceptance_criteria": list(specification.get("acceptance_criteria") or []),
             "work_units": list(plan.get("work_units") or []),
             "configured_limits": dict(updated.get("limits") or {}),
+            "plan": plan,
         })
 
-    def _execute(self, run, kind: ProjectCommandType, key: str, *, payload=None, authority=None):
+    def _execute(
+        self,
+        run,
+        kind: ProjectCommandType,
+        key: str,
+        *,
+        payload=None,
+        authority=None,
+        artifact_type: ProjectArtifactType | None = None,
+    ):
+        command_payload = payload or {}
+        artifact_fields: dict[str, Any] = {}
+        artifact_types = {
+            ProjectCommandType.RECORD_PATCH_PREVIEW: ProjectArtifactType.PATCH_PREVIEW,
+            ProjectCommandType.RECORD_COMMAND_PREVIEW: ProjectArtifactType.COMMAND_PREVIEW,
+            ProjectCommandType.RECORD_VERIFIER_RESULT: ProjectArtifactType.VERIFIER_RESULT,
+            ProjectCommandType.REQUEST_HANDOFF: ProjectArtifactType.HANDOFF,
+            ProjectCommandType.REVISE_SCOPE: ProjectArtifactType.SPECIFICATION,
+            ProjectCommandType.PROPOSE_PLAN_REVISION: ProjectArtifactType.PLAN,
+        }
+        artifact_type = artifact_type or artifact_types.get(kind)
+        if artifact_type is not None and run.canonical_generation == "canonical":
+            if self.artifact_store is None:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                    "Canonical compatibility actions require the immutable artifact store.",
+                )
+            existing = self.artifact_store.list_for_project(
+                run.project_run_id, artifact_type=artifact_type
+            )
+            if self.control.has_idempotency_key(run.project_run_id, key):
+                if not any(item.payload == command_payload for item in existing):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.IDEMPOTENCY_CONFLICT,
+                        "The compatibility action key is bound to different artifact content.",
+                    )
+                return None
+            artifact = self.artifact_store.put(build_project_artifact(
+                artifact_type=artifact_type,
+                binding=ProjectArtifactBinding(
+                    project_run_id=run.project_run_id,
+                    plan_revision_id=run.current_plan_revision_id,
+                    scope_revision_id=run.current_scope_revision_id,
+                    manifest_hash=run.current_manifest_hash,
+                ),
+                payload=command_payload,
+                revision_number=len(existing) + 1,
+            ))
+            artifact_fields = {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type.value,
+                "artifact_hash": artifact.content_hash,
+                "artifact_binding_hash": artifact.binding_hash,
+            }
         return self.control.execute(ProjectCommand(
             command_type=kind, project_run_id=run.project_run_id,
             conversation_id=run.conversation_id, workspace_id=run.workspace_id,
@@ -336,7 +415,8 @@ class ProjectDeliveryControlAdapter:
             idempotency_key=key, plan_revision_id=run.current_plan_revision_id,
             scope_revision_id=run.current_scope_revision_id,
             manifest_hash=run.current_manifest_hash,
-            authority_scope=authority or {}, payload=payload or {},
+            authority_scope=authority or {}, payload=command_payload,
+            **artifact_fields,
         ))
 
 

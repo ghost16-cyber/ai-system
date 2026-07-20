@@ -163,7 +163,7 @@ class ChatConversationsResponse(BaseModel):
 
 
 class ChatConversationDetail(BaseModel):
-    hydration_version: Literal["astra.chat-hydration.v1"] = "astra.chat-hydration.v1"
+    hydration_version: Literal["astra.chat-hydration.v2"] = "astra.chat-hydration.v2"
     conversation_id: str
     title: str
     memory_summary: str | None = None
@@ -171,6 +171,7 @@ class ChatConversationDetail(BaseModel):
     requests: list[ChatRequestRecord] = Field(default_factory=list)
     project_jobs: list[dict[str, Any]] = Field(default_factory=list)
     project_deliveries: list[dict[str, Any]] = Field(default_factory=list)
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatConversationDeleteResponse(BaseModel):

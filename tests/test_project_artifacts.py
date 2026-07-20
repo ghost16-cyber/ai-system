@@ -185,6 +185,26 @@ def test_artifact_identity_cannot_be_rebound(store: ProjectArtifactStore) -> Non
         store.put(rebound)
 
 
+def test_artifact_revision_cannot_be_rebound(store: ProjectArtifactStore) -> None:
+    binding = ProjectArtifactBinding(project_run_id="project-1")
+    first = build_project_artifact(
+        artifact_type=ProjectArtifactType.PLAN,
+        binding=binding,
+        payload={"work_units": ["first"]},
+        revision_number=1,
+    )
+    conflicting = build_project_artifact(
+        artifact_type=ProjectArtifactType.PLAN,
+        binding=binding,
+        payload={"work_units": ["different"]},
+        revision_number=1,
+    )
+    store.put(first)
+
+    with pytest.raises(ProjectArtifactStoreError, match="revision"):
+        store.put(conflicting)
+
+
 def test_artifact_hash_is_deterministic() -> None:
     first = _artifact()
     second = _artifact()
