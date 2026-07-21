@@ -96,59 +96,9 @@ class FileMutationEngine:
         return connection
 
     def initialize(self) -> None:
-        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
+        initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.journal_root.mkdir(parents=True, exist_ok=True)
-        if not compatibility_ddl_enabled:
-            assert_schema_compatible(self.database_path)
-            return
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS project_file_mutation_specs (
-                    file_mutation_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    execution_attempt_id TEXT NOT NULL,
-                    mutation_kind TEXT NOT NULL,
-                    authority_id TEXT NOT NULL,
-                    spec_hash TEXT NOT NULL UNIQUE,
-                    schema_version TEXT NOT NULL,
-                    spec_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_file_mutation_project
-                    ON project_file_mutation_specs(project_run_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS project_file_mutation_journals (
-                    file_mutation_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    applied_operations INTEGER NOT NULL DEFAULT 0,
-                    journal_json TEXT NOT NULL,
-                    result_json TEXT,
-                    failure_classification TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(file_mutation_id)
-                        REFERENCES project_file_mutation_specs(file_mutation_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_file_mutation_journal_status
-                    ON project_file_mutation_journals(status, updated_at);
-
-                CREATE TABLE IF NOT EXISTS project_file_mutation_snapshots (
-                    file_mutation_id TEXT NOT NULL,
-                    operation_index INTEGER NOT NULL,
-                    relative_path TEXT NOT NULL,
-                    existed_before INTEGER NOT NULL,
-                    preimage_sha256 TEXT,
-                    snapshot_path TEXT,
-                    original_mode INTEGER,
-                    staged_path TEXT,
-                    PRIMARY KEY(file_mutation_id, operation_index),
-                    FOREIGN KEY(file_mutation_id)
-                        REFERENCES project_file_mutation_specs(file_mutation_id)
-                );
-                """
-            )
         assert_schema_compatible(self.database_path)
 
     def apply(

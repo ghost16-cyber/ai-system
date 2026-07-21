@@ -55,11 +55,11 @@ class AnalysisRepository:
         return connection
 
     def initialize(self) -> None:
-        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
+        # Legacy non-project tables are still maintained here until their
+        # separate retirement migration. Canonical project tables are owned by
+        # migration 9 and are never repaired by this repository.
+        initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        if not compatibility_ddl_enabled:
-            assert_schema_compatible(self.database_path)
-            return
         with self._connect() as connection:
             connection.execute(
                 """

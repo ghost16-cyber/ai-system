@@ -319,9 +319,15 @@ from backend.app.project_control import (
 )
 from backend.app.project_artifacts import ProjectArtifactStore
 from backend.app.project_control.project_service import CanonicalProjectService
-from backend.app.project_api import build_canonical_project_response, create_project_router
+from backend.app.project_api import (
+    CanonicalProjectResponse,
+    build_canonical_project_response,
+    create_project_router,
+)
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
 from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
+from backend.app.local_ai.service import LocalAIService
+from backend.app.local_ai.routes import create_local_ai_router
 from backend.app.project_coordinator import (
     CoordinatorIntentError,
     ProjectCoordinatorService,
@@ -542,11 +548,30 @@ class ProjectCommandProposalRequest(BaseModel):
 
 class ProjectJobActionRequest(BaseModel):
     conversation_id: str = Field(..., min_length=1, max_length=128)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=160)
+    actor_id: str | None = Field(default=None, min_length=1, max_length=256)
+    repository_root_fingerprint: str | None = Field(default=None, min_length=1, max_length=256)
     project_run_id: str | None = Field(default=None, min_length=1, max_length=160)
     plan_revision_id: str | None = Field(default=None, min_length=1, max_length=160)
     scope_revision_id: str | None = Field(default=None, min_length=1, max_length=160)
+    manifest_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    artifact_type: str | None = Field(default=None, min_length=1, max_length=80)
+    artifact_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_binding_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    coordinator_intent_id: str | None = Field(default=None, min_length=1, max_length=200)
     expected_state_version: int | None = Field(default=None, ge=1)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class HistoricalProjectImportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    conversation_id: str = Field(..., min_length=1, max_length=128)
+    workspace_id: str = Field(..., min_length=1, max_length=160)
+    actor_id: str = Field(..., min_length=1, max_length=256)
+    repository_root_fingerprint: str = Field(..., min_length=1, max_length=256)
+    historical_source_id: str = Field(..., min_length=1, max_length=160)
+    idempotency_key: str = Field(..., min_length=1, max_length=200)
 
 
 class ProjectJobClarificationRequest(ProjectJobActionRequest):
@@ -819,6 +844,7 @@ def create_app(
     canonical_project_service = CanonicalProjectService(
         project_control, project_artifact_store
     )
+    local_ai_service = LocalAIService(configured_path)
     delivery_control = ProjectDeliveryControlAdapter(
         project_control, project_artifact_store
     )
@@ -867,6 +893,7 @@ def create_app(
         project_worker_queue.initialize()
         project_mutation_engine.initialize()
         project_coordinator.initialize()
+        local_ai_service.initialize()
         project_coordinator.recover_expired_leases()
         job_queue.initialize()
         yield
@@ -894,6 +921,7 @@ def create_app(
     application.state.project_control = project_control
     application.state.project_artifact_store = project_artifact_store
     application.state.canonical_project_service = canonical_project_service
+    application.state.local_ai_service = local_ai_service
     application.state.project_worker_queue = project_worker_queue
     application.state.project_worker_service = project_worker_service
     application.state.project_mutation_engine = project_mutation_engine
@@ -904,6 +932,7 @@ def create_app(
     application.state.workspace_root = configured_workspace_root
     application.include_router(specialists_router)
     application.include_router(project_validation_router)
+    application.include_router(create_local_ai_router(local_ai_service))
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -2061,21 +2090,30 @@ def create_app(
     @application.post("/chat/projects/deliveries/{delivery_job_id}/plan/approve", response_model=ChatRunResponse)
     def chat_project_delivery_plan_approve(delivery_job_id: str, request: ProjectDeliveryHashRequest) -> ChatRunResponse:
         current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
-        canonical_preapplied = False
-        if request.idempotency_key:
-            try:
-                delivery_control.approve_plan_bound(
-                    current, access["approved_root"], plan_hash=request.immutable_hash,
-                    idempotency_key=request.idempotency_key,
-                    expected_state_version=request.expected_state_version,
-                    plan_revision_id=request.plan_revision_id,
-                    scope_revision_id=request.scope_revision_id,
-                )
-                canonical_preapplied = True
-            except ProjectControlError as error:
-                raise _control_http_error(error) from error
-        else:
+        # A completed exact retry must reach the canonical idempotency record
+        # before live-state validation. The adapter/control plane still verify
+        # the full normalized command hash and reject any changed binding.
+        if not project_control.has_idempotency_key(
+            delivery_job_id, str(request.idempotency_key)
+        ):
             _validate_delivery_action_binding(current, request)
+        canonical_preapplied = False
+        try:
+            delivery_control.approve_plan_bound(
+                current, access["approved_root"], plan_hash=request.immutable_hash,
+                idempotency_key=str(request.idempotency_key),
+                expected_state_version=request.expected_state_version,
+                plan_revision_id=request.plan_revision_id,
+                scope_revision_id=request.scope_revision_id,
+                manifest_hash=request.manifest_hash,
+                artifact_id=request.artifact_id,
+                artifact_type=request.artifact_type,
+                artifact_hash=request.artifact_hash,
+                artifact_binding_hash=request.artifact_binding_hash,
+            )
+            canonical_preapplied = True
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
         try:
             updated = approve_delivery_plan(current, plan_hash=request.immutable_hash, root=access["approved_root"])
         except ProjectDeliveryError as error:
@@ -2093,10 +2131,76 @@ def create_app(
         _sync_delivery_action(stored)
         return run
 
+    @application.post(
+        "/chat/projects/deliveries/{delivery_job_id}/import-historical",
+        response_model=CanonicalProjectResponse,
+    )
+    def chat_project_delivery_import_historical(
+        delivery_job_id: str, request: HistoricalProjectImportRequest
+    ) -> CanonicalProjectResponse:
+        if not delivery_control.classification.is_historical_read_only(delivery_job_id):
+            raise HTTPException(status_code=409, detail={
+                "code": "not_historical",
+                "message": "Only historical read-only records can be explicitly imported and reapproved.",
+            })
+        if request.historical_source_id != delivery_job_id:
+            raise HTTPException(status_code=409, detail={
+                "code": "historical_source_mismatch",
+                "message": "The import request is bound to a different historical record.",
+            })
+        job, access = _read_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
+        if (
+            request.workspace_id != str(access["action_id"])
+            or request.repository_root_fingerprint != str(access["root_fingerprint"])
+            or request.actor_id != "local-user"
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "workspace_mismatch",
+                "message": "The historical import identity does not match the approved workspace.",
+            })
+        folder_authority = {
+            "status": "completed",
+            "action_id": access["action_id"],
+            "conversation_id": str(job.get("conversation_id") or ""),
+            "workspace_id": access["action_id"],
+            "repository_root_fingerprint": access["root_fingerprint"],
+        }
+        try:
+            imported = canonical_project_service.import_historical_record(
+                historical_job=job,
+                conversation_id=str(job.get("conversation_id") or ""),
+                workspace_id=str(access["action_id"]),
+                repository_root=access["approved_root"],
+                repository_root_fingerprint=str(access["root_fingerprint"]),
+                folder_authority=folder_authority,
+                idempotency_key=request.idempotency_key,
+                actor_id=request.actor_id,
+            )
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
+        return build_canonical_project_response(
+            canonical_project_service, imported.project_run_id, coordinator=project_coordinator
+        )
+
     @application.post("/chat/projects/deliveries/{delivery_job_id}/prepare", response_model=ChatRunResponse)
     def chat_project_delivery_prepare(delivery_job_id: str, request: ProjectJobActionRequest) -> ChatRunResponse:
         current, access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
         _validate_delivery_action_binding(current, request)
+        active_prepare_intents = [
+            item for item in project_coordinator.list_for_project(delivery_job_id)
+            if item.intent_type.value == "prepare_work_unit"
+            and item.status.value in {"pending", "claimed"}
+        ]
+        if (
+            not active_prepare_intents
+            or request.coordinator_intent_id
+            != active_prepare_intents[-1].coordinator_intent_id
+        ):
+            raise HTTPException(status_code=409, detail={
+                "schema_version": "astra.project-control.error.v1",
+                "code": "stale_binding",
+                "message": "The preparation action is not bound to the current coordinator intent.",
+            })
         try:
             with delivery_lock:
                 current = repository.get_project_delivery_job(delivery_job_id)
@@ -2110,7 +2214,7 @@ def create_app(
                     "analysis": activated["analysis"],
                 }
                 bundle = prepare_job_patch_bundle(
-                    access["approved_root"], shadow_for_work, model_gateway=synthesis_gateway,
+                    access["approved_root"], shadow_for_work, model_gateway=None,
                 )
                 proposal = create_patch_proposal(
                     root=access["approved_root"], conversation_id=current["conversation_id"],
@@ -2135,7 +2239,7 @@ def create_app(
                 }
                 if not repository.transition_project_job(shadow_updated, expected_statuses={str(shadow["status"])}):
                     raise ProjectDeliveryError("The execution bridge changed concurrently.", code="conflict")
-                stored = _save_delivery_transition(current, linked, "patch_preview", "awaiting_approval", {"patch_id": proposal["patch_id"], "work_unit_id": unit["work_unit_id"], "idempotency_key": request.idempotency_key})
+                stored = _save_delivery_transition(current, linked, "patch_preview", "awaiting_approval", {"patch_id": proposal["patch_id"], "work_unit_id": unit["work_unit_id"], "idempotency_key": request.idempotency_key, "coordinator_intent_id": request.coordinator_intent_id})
         except (ProjectDeliveryError, ProjectJobError, ProjectAnalysisError, ProjectPatchError, ProjectSafetyError, FileNotFoundError, OSError) as error:
             if isinstance(error, ProjectDeliveryError):
                 raise _delivery_http_error(error) from error
@@ -2240,7 +2344,7 @@ def create_app(
         }]
         updated["status"] = DeliveryStatus.AWAITING_COMMAND.value
         updated["updated_at"] = datetime.now(timezone.utc).isoformat()
-        stored = _save_delivery_transition(current, updated, "command_plan", "awaiting_approval", {"plan_id": plan_id, "criterion_id": request.criterion_id, "idempotency_key": request.idempotency_key})
+        stored = _save_delivery_transition(current, updated, "command_plan", "awaiting_approval", {"plan_id": plan_id, "criterion_id": request.criterion_id, "idempotency_key": request.idempotency_key, "coordinator_intent_id": request.coordinator_intent_id})
         repository.store_chat_run(run)
         _sync_delivery_action(stored)
         return run
@@ -4642,7 +4746,7 @@ def create_app(
             delivery = create_delivery_job(
                 root=access["approved_root"], conversation_id=conversation_id,
                 folder_access_id=access["action_id"], user_request=message,
-                action_run_id=action_run_id, model_gateway=synthesis_gateway,
+                action_run_id=action_run_id, model_gateway=None,
                 delivery_job_id=delivery_job_id,
             )
             shadow = create_project_job(
@@ -4733,9 +4837,20 @@ def create_app(
     def _public_read_delivery(job: dict) -> dict:
         payload = public_delivery_job(job)
         try:
-            payload["project_control"] = canonical_project_service.get_project(
-                str(job["delivery_job_id"])
-            ).model_dump(mode="json")
+            # Hydration is read-only, but action authority must come from the
+            # same current canonical projection as the displayed lifecycle.
+            # ``decorate`` performs no reconciliation or persistence.
+            payload = delivery_control.decorate(payload, "", migrated=False)
+            active_intents = [
+                item for item in project_coordinator.list_for_project(
+                    str(job["delivery_job_id"])
+                )
+                if item.status.value in {"pending", "claimed"}
+            ]
+            if active_intents:
+                payload.setdefault("compatibility_action_binding", {})[
+                    "coordinator_intent_id"
+                ] = active_intents[-1].coordinator_intent_id
         except ProjectControlError as error:
             if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
                 raise _control_http_error(error) from error
@@ -4746,6 +4861,11 @@ def create_app(
         *,
         conversation_id: str | None = None,
     ) -> tuple[dict, dict]:
+        if delivery_control.classification.is_historical_read_only(delivery_job_id):
+            raise _control_http_error(ProjectControlError(
+                ProjectControlErrorCode.HISTORICAL_RECORD_READ_ONLY,
+                "Historical project delivery records are read-only; explicitly import and reapprove them before mutation.",
+            ))
         try:
             job = repository.get_project_delivery_job(delivery_job_id)
         except LookupError as error:
@@ -4807,17 +4927,33 @@ def create_app(
         control = dict(job.get("project_control") or {})
         checks = (
             (request.project_run_id, job.get("delivery_job_id"), "project_run_id"),
+            (request.workspace_id, control.get("workspace_id"), "workspace_id"),
+            (request.actor_id, control.get("actor_id"), "actor_id"),
+            (request.repository_root_fingerprint, control.get("repository_root_fingerprint"), "repository_root_fingerprint"),
             (request.plan_revision_id, control.get("plan_revision_id"), "plan_revision_id"),
             (request.scope_revision_id, control.get("scope_revision_id"), "scope_revision_id"),
+            (request.manifest_hash, control.get("manifest_hash"), "manifest_hash"),
         )
         for supplied, current, field in checks:
-            if supplied is not None and supplied != current:
+            if supplied is None:
+                raise HTTPException(status_code=422, detail={
+                    "schema_version": "astra.project-control.error.v1",
+                    "code": "invalid_command",
+                    "message": f"Compatibility mutations require the exact {field.replace('_', ' ')}.",
+                })
+            if supplied != current:
                 raise HTTPException(status_code=409, detail={
                     "schema_version": "astra.project-control.error.v1",
                     "code": f"{field.replace('_id', '')}_mismatch",
                     "message": f"The action targets a stale {field.replace('_', ' ')}.",
                 })
-        if request.expected_state_version is not None and request.expected_state_version != control.get("state_version"):
+        if request.expected_state_version is None or request.idempotency_key is None:
+            raise HTTPException(status_code=422, detail={
+                "schema_version": "astra.project-control.error.v1",
+                "code": "invalid_command",
+                "message": "Compatibility mutations require exact state-version and idempotency bindings.",
+            })
+        if request.expected_state_version != control.get("state_version"):
             raise HTTPException(status_code=409, detail={
                 "schema_version": "astra.project-control.error.v1",
                 "code": "stale_state_version",
@@ -5260,7 +5396,10 @@ def create_app(
                 repository.store_project_synthesis_attempt(value)
             try:
                 bundle = prepare_job_patch_bundle(
-                    access["approved_root"], repair_job, model_gateway=synthesis_gateway,
+                    access["approved_root"], repair_job,
+                    model_gateway=(
+                        None if current.get("delivery_job_id") else synthesis_gateway
+                    ),
                     model_attempt_sink=persist_synthesis_started,
                 )
                 chain_context = {

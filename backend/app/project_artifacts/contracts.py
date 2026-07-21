@@ -23,7 +23,9 @@ class ProjectArtifactType(StrEnum):
     PLAN = "plan"
     PATCH_PREVIEW = "patch_preview"
     COMMAND_PREVIEW = "command_preview"
+    ROLLBACK_PREVIEW = "rollback_preview"
     VERIFIER_RESULT = "verifier_result"
+    MANUAL_EVIDENCE = "manual_evidence"
     FAILURE_EVIDENCE = "failure_evidence"
     DIAGNOSIS = "diagnosis"
     REPAIR_PREVIEW = "repair_preview"
@@ -39,6 +41,9 @@ class ProjectArtifactBinding(StrictModel):
     manifest_hash: str | None = Field(default=None, min_length=64, max_length=64)
     execution_attempt_id: str | None = Field(default=None, max_length=200)
     coordinator_intent_id: str | None = Field(default=None, max_length=200)
+    work_unit_id: str | None = Field(default=None, max_length=200)
+    criterion_id: str | None = Field(default=None, max_length=200)
+    criterion_hash: str | None = Field(default=None, min_length=64, max_length=64)
     authority_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 

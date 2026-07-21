@@ -11,8 +11,10 @@ from backend.app.project_repair import CanonicalRepairService, RepairCycleStatus
 from tests.test_project_coordinator_execution import _command, _runtime
 
 
-def _record_initial_domain_failure(tmp_path):
-    control, artifacts, coordinator, executor, project_id = _runtime(tmp_path)
+def _record_initial_domain_failure(tmp_path, *, include_repair_operations=True):
+    control, artifacts, coordinator, executor, project_id = _runtime(
+        tmp_path, include_repair_operations=include_repair_operations
+    )
     executor.run_once("coordinator-worker")
     run = control.get_project(project_id)
     patch_id = str(run.pending_user_action).split(":", 1)[1]
@@ -20,8 +22,9 @@ def _record_initial_domain_failure(tmp_path):
         run,
         ProjectCommandType.APPROVE_PATCH,
         "approve-initial-patch",
-        payload={"patch_id": patch_id},
-        authority={"patch_id": patch_id, "operation": "apply_exact_patch"},
+        payload={"patch_id": patch_id, "work_unit_id": "work-1"},
+        authority={"patch_id": patch_id, "work_unit_id": "work-1", "operation": "apply_exact_patch"},
+        artifact=artifacts.get(run.current_artifact_ids["patch_preview"]),
     ))
     run = control.get_project(project_id)
     control.execute(_command(
@@ -124,8 +127,9 @@ def test_failed_repair_verification_stops_without_second_cycle(tmp_path) -> None
         run,
         ProjectCommandType.APPROVE_PATCH,
         "approve-repair-patch",
-        payload={"patch_id": repair_patch_id},
-        authority={"patch_id": repair_patch_id, "operation": "apply_exact_patch"},
+        payload={"patch_id": repair_patch_id, "work_unit_id": "work-1"},
+        authority={"patch_id": repair_patch_id, "work_unit_id": "work-1", "operation": "apply_exact_patch"},
+        artifact=artifacts.get(run.current_artifact_ids["repair_preview"]),
     ))
     run = control.get_project(project_id)
     control.execute(_command(

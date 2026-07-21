@@ -4,7 +4,7 @@ import ast
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from backend.app.project_artifacts import (
     ProjectArtifact,
@@ -35,6 +35,12 @@ from backend.app.project_coordinator.service import (
     CoordinatorIntentError,
     ProjectCoordinatorService,
 )
+
+if TYPE_CHECKING:
+    from backend.app.project_analysis.model_synthesis.orchestrator import (
+        CanonicalProviderProfile,
+        CanonicalSynthesisOrchestrator,
+    )
 from backend.app.project_repair import (
     CanonicalRepairService,
     CanonicalRepairServiceError,
@@ -66,9 +72,60 @@ class _BoundHandler:
         self,
         control: ProjectControlPlane,
         artifacts: ProjectArtifactStore,
+        *,
+        orchestrator: CanonicalSynthesisOrchestrator | None = None,
+        provider_profile: CanonicalProviderProfile | None = None,
     ) -> None:
         self.control = control
         self.artifacts = artifacts
+        self.orchestrator = orchestrator
+        self.provider_profile = provider_profile
+
+    def _synthesized_preview(
+        self,
+        intent: CoordinatorIntent,
+        evidence: dict[str, Any],
+        purpose: str,
+    ) -> ProjectArtifact | None:
+        """Durable, exactly-once model synthesis; None when not configured.
+
+        The provider is invoked only from the claimed durable intent, and only
+        ever produces a bounded preview artifact that still requires exact user
+        approval.
+        """
+        if self.orchestrator is None or self.provider_profile is None:
+            return None
+        from backend.app.project_analysis.model_synthesis.orchestrator import (
+            CanonicalSynthesisBlocked,
+        )
+        evidence_artifact = self.artifacts.put(build_project_artifact(
+            artifact_type=ProjectArtifactType.COORDINATOR_DECISION,
+            binding=self._binding(intent, authority={"purpose": f"{purpose}_synthesis_evidence"}),
+            payload={"evidence": evidence},
+        ))
+        try:
+            if purpose == "repair":
+                outcome = self.orchestrator.prepare_repair(
+                    intent, evidence_artifact, self.provider_profile
+                )
+            else:
+                outcome = self.orchestrator.prepare_patch(
+                    intent, evidence_artifact, self.provider_profile
+                )
+        except CanonicalSynthesisBlocked as exc:
+            raise CoordinatorPolicyBlock(
+                f"Bounded {purpose} synthesis was blocked ({exc.code})."
+            ) from exc
+        if outcome.status != "prepared" or not outcome.artifact_id:
+            raise CoordinatorPolicyBlock(
+                f"Bounded {purpose} synthesis produced no approvable preview ({outcome.status})."
+            )
+        preview = self.artifacts.get(outcome.artifact_id)
+        if preview is None or preview.content_hash != outcome.artifact_hash:
+            raise CoordinatorPolicyBlock(
+                "The synthesized preview artifact is missing or does not match its durable result."
+            )
+        return preview
 
     def _binding(
         self,
@@ -160,7 +217,20 @@ class PrepareWorkUnitHandler(_BoundHandler):
         try:
             operations = validate_patch_operations(raw_operations)
         except CoordinatorEvidenceError as exc:
-            raise CoordinatorPolicyBlock(str(exc)) from exc
+            preview = self._synthesized_preview(intent, evidence, "patch")
+            if preview is None:
+                raise CoordinatorPolicyBlock(str(exc)) from exc
+            authority = {"work_unit_id": work_unit_id}
+            patch_id = f"patch-{content_hash([intent.coordinator_intent_id, work_unit_id, preview.artifact_id])[:24]}"
+            command = self._command(
+                intent,
+                run,
+                preview,
+                ProjectCommandType.BEGIN_WORK_UNIT,
+                payload={"work_unit_id": work_unit_id, "patch_id": patch_id},
+                authority={**authority, "patch_id": patch_id},
+            )
+            return CoordinatorHandlerResult(preview, command)
         authority = {"work_unit_id": work_unit_id}
         patch_id = f"patch-{content_hash([intent.coordinator_intent_id, work_unit_id, operations])[:24]}"
         artifact = self.artifacts.put(build_project_artifact(
@@ -408,8 +478,16 @@ class PrepareRepairHandler(_BoundHandler):
         control: ProjectControlPlane,
         artifacts: ProjectArtifactStore,
         repair: CanonicalRepairService,
+        *,
+        orchestrator: CanonicalSynthesisOrchestrator | None = None,
+        provider_profile: CanonicalProviderProfile | None = None,
     ) -> None:
-        super().__init__(control, artifacts)
+        super().__init__(
+            control,
+            artifacts,
+            orchestrator=orchestrator,
+            provider_profile=provider_profile,
+        )
         self.repair = repair
 
     def prepare(self, intent: CoordinatorIntent, run) -> CoordinatorHandlerResult:
@@ -462,12 +540,29 @@ class PrepareRepairHandler(_BoundHandler):
             raw_work_unit.get("repair_operations")
             or failure.payload.get("suggested_repair_operations")
         )
+        evidence = build_work_unit_evidence(
+            intent=intent,
+            run=run,
+            plan=plan,
+            work_unit={
+                **raw_work_unit,
+                "failure_evidence": failure.payload,
+                "failure_artifact_id": failure_artifact_id,
+            },
+        )
+        diagnosis_strategy = "deterministic"
+        diagnosis_confidence = "high"
         try:
             operations = validate_patch_operations(raw_operations)
         except CoordinatorEvidenceError as exc:
-            raise CoordinatorPolicyBlock(
-                "No deterministic bounded repair is available; model assistance was not invoked."
-            ) from exc
+            synthesized = self._synthesized_preview(intent, evidence, "repair")
+            if synthesized is None:
+                raise CoordinatorPolicyBlock(
+                    "No deterministic bounded repair is available and synthesis is not configured."
+                ) from exc
+            operations = validate_patch_operations(synthesized.payload.get("operations"))
+            diagnosis_strategy = "model_assisted"
+            diagnosis_confidence = "bounded"
         repair_scope = tuple(dict.fromkeys(
             str(item.get("path") or "") for item in operations if item.get("path")
         ))
@@ -480,8 +575,8 @@ class PrepareRepairHandler(_BoundHandler):
                 "evidence_artifact_id": failure_artifact_id,
             },),
             repair_scope=repair_scope,
-            strategy="deterministic",
-            confidence="high",
+            strategy=diagnosis_strategy,
+            confidence=diagnosis_confidence,
         )
         patch_id = f"repair-patch-{content_hash([cycle.repair_cycle_id, operations])[:24]}"
         preview = self.repair.record_preview(
@@ -522,19 +617,30 @@ class ProjectCoordinatorExecutor:
         *,
         handlers: dict[CoordinatorIntentType, CoordinatorIntentHandler] | None = None,
         projector=None,
+        orchestrator: CanonicalSynthesisOrchestrator | None = None,
+        provider_profile: CanonicalProviderProfile | None = None,
     ) -> None:
         self.service = service
         self.control = control
         self.artifacts = artifacts
         self.projector = projector
+        self.orchestrator = orchestrator
+        self.provider_profile = provider_profile
         repair = CanonicalRepairService(service.database_path, control, artifacts)
         repair.initialize()
         self.repair = repair
         self.handlers = handlers or {
-            CoordinatorIntentType.PREPARE_WORK_UNIT: PrepareWorkUnitHandler(control, artifacts),
+            CoordinatorIntentType.PREPARE_WORK_UNIT: PrepareWorkUnitHandler(
+                control, artifacts,
+                orchestrator=orchestrator, provider_profile=provider_profile,
+            ),
             CoordinatorIntentType.RUN_DETERMINISTIC_VERIFICATION: DeterministicVerificationHandler(control, artifacts),
             CoordinatorIntentType.PREPARE_REPAIR: PrepareRepairHandler(
-                control, artifacts, repair
+                control,
+                artifacts,
+                repair,
+                orchestrator=orchestrator,
+                provider_profile=provider_profile,
             ),
             CoordinatorIntentType.PREPARE_HANDOFF: PrepareHandoffHandler(control, artifacts),
         }

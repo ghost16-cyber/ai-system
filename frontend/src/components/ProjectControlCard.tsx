@@ -1,4 +1,5 @@
 import { Activity, CheckCircle2, ChevronDown, CircleAlert, FileText, ShieldCheck, X } from "lucide-react";
+import { useState } from "react";
 import type { CanonicalProjectActionDescriptor } from "../types/contracts";
 import type { CanonicalProjectAction } from "../state/projectControlState";
 
@@ -6,10 +7,12 @@ export function ProjectControlCard({
   project,
   busy = false,
   onAction,
+  onManualEvidence,
 }: {
   project: CanonicalProjectAction;
   busy?: boolean;
   onAction: (action: CanonicalProjectActionDescriptor) => void;
+  onManualEvidence?: (criterionId: string, notes: string, decision: "passed" | "failed") => void;
 }) {
   const completed = project.progress.completed_work_units ?? 0;
   const total = project.progress.total_work_units ?? 0;
@@ -19,6 +22,9 @@ export function ProjectControlCard({
     ?? project.execution.workerStatus
     ?? project.execution.dispatchStatus
     ?? project.execution.attemptStatus;
+  const manualCriteria = Object.entries(project.criterionStates).filter(([, state]) =>
+    ["manual_required", "manual_evidence_required"].includes(String(state.outcome ?? "")),
+  );
   return <div className="action-card project-delivery-card" data-project-run-id={project.projectRunId}>
     <div className="card-heading"><div><span className="eyebrow">Canonical project</span><h2>Bounded project task</h2></div><span className={`status status-${project.lifecycleState}`}>{project.lifecycleState.replace(/_/g, " ")}</span></div>
     <div className="delivery-progress" aria-label="Canonical project progress">
@@ -33,6 +39,7 @@ export function ProjectControlCard({
       <span><strong>Artifacts</strong>{project.artifacts.length}</span>
     </div></section>
     {project.coordinator && <div className="progress-line"><Activity className={project.coordinator.status === "claimed" ? "spin" : ""} size={16} /><span>Coordinator: {project.coordinator.intent_type.replace(/_/g, " ")} · {project.coordinator.status}</span></div>}
+    {manualCriteria.map(([criterionId, state]) => <ManualEvidenceCard key={criterionId} criterionId={criterionId} state={state} busy={busy} onSubmit={onManualEvidence} />)}
     {(project.execution.attemptId || project.execution.dispatchId || project.execution.workerRequestId || project.execution.cancellationId) && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts">
       <span><strong>Attempt</strong>{project.execution.attemptType?.replace(/_/g, " ") ?? "pending"}</span>
       <span><strong>Status</strong>{executionStatus?.replace(/_/g, " ") ?? "pending"}</span>
@@ -56,5 +63,27 @@ export function ProjectControlCard({
       <span>Project: {project.projectRunId}</span><span>Pending: {project.pendingUserAction ?? "none"}</span>
       <pre>{JSON.stringify(project.response, null, 2)}</pre>
     </div></details>
+  </div>;
+}
+
+function ManualEvidenceCard({ criterionId, state, busy, onSubmit }: {
+  criterionId: string;
+  state: Record<string, unknown>;
+  busy: boolean;
+  onSubmit?: (criterionId: string, notes: string, decision: "passed" | "failed") => void;
+}) {
+  const [notes, setNotes] = useState("");
+  return <div className="result pending" data-manual-criterion-id={criterionId}>
+    <CircleAlert size={17} /><div><strong>Manual evidence required</strong>
+      <p>Criterion {criterionId} could not be decided automatically. Handoff remains blocked until bounded evidence is submitted and reviewed.</p>
+      {Boolean(state.evidence_id) && <p>Evidence: {String(state.evidence_id)} · {String(state.manual_status ?? state.outcome)}</p>}
+      {onSubmit && <div className="manual-evidence-form">
+        <textarea aria-label={`Evidence for ${criterionId}`} maxLength={4000} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Describe the observation or checklist result" />
+        <div className="button-row">
+          <button className="primary-button" disabled={busy || !notes.trim()} onClick={() => onSubmit(criterionId, notes.trim(), "passed")}>Submit as passed</button>
+          <button className="secondary-button" disabled={busy || !notes.trim()} onClick={() => onSubmit(criterionId, notes.trim(), "failed")}>Submit as failed</button>
+        </div>
+      </div>}
+    </div>
   </div>;
 }

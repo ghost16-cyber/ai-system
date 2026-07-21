@@ -42,6 +42,7 @@ def _runtime(tmp_path, gateway):
         },
     )
     run = control.get_project(project.project_run_id)
+    plan_artifact = artifacts.get(run.current_artifact_ids["plan"])
     control.execute(ProjectCommand(
         command_type=ProjectCommandType.APPROVE_PLAN, project_run_id=run.project_run_id,
         conversation_id=run.conversation_id, workspace_id=run.workspace_id,
@@ -49,6 +50,8 @@ def _runtime(tmp_path, gateway):
         actor_id=run.actor_id, expected_state_version=run.state_version, idempotency_key="approve-plan",
         plan_revision_id=run.current_plan_revision_id, scope_revision_id=run.current_scope_revision_id,
         manifest_hash=run.current_manifest_hash, authority_scope={"operation": "prepare_work_units"},
+        artifact_id=plan_artifact.artifact_id, artifact_type=plan_artifact.artifact_type.value,
+        artifact_hash=plan_artifact.content_hash, artifact_binding_hash=plan_artifact.binding_hash,
     ))
     coordinator = ProjectCoordinatorService(database, control)
     coordinator.initialize()

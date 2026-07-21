@@ -18,6 +18,7 @@ CANONICAL_PROJECT_ACTION_VERSION = "astra.project-api.action.v1"
 CANONICAL_PROJECT_ACTION_DESCRIPTOR_VERSION = "astra.project-api.action-descriptor.v1"
 CANONICAL_COORDINATOR_SUMMARY_VERSION = "astra.project-api.coordinator-summary.v1"
 CANONICAL_ARTIFACT_SUMMARY_VERSION = "astra.project-api.artifact-summary.v1"
+MANUAL_EVIDENCE_REQUEST_VERSION = "astra.project-api.manual-evidence.v1"
 MAX_CANONICAL_CREATE_BYTES = 524_288
 
 
@@ -70,6 +71,40 @@ class CanonicalProjectActionRequest(StrictModel):
     artifact_hash: str | None = Field(default=None, min_length=64, max_length=64)
     artifact_binding_hash: str | None = Field(default=None, min_length=64, max_length=64)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManualEvidenceSubmissionRequest(StrictModel):
+    schema_version: Literal["astra.project-api.manual-evidence.v1"] = MANUAL_EVIDENCE_REQUEST_VERSION
+    conversation_id: str = Field(min_length=1, max_length=200)
+    workspace_id: str = Field(min_length=1, max_length=200)
+    actor_id: str = Field(min_length=1, max_length=200)
+    repository_root_fingerprint: str = Field(min_length=1, max_length=256)
+    expected_state_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    plan_revision_id: str = Field(min_length=1, max_length=200)
+    scope_revision_id: str = Field(min_length=1, max_length=200)
+    manifest_hash: str = Field(min_length=64, max_length=64)
+    work_unit_id: str = Field(min_length=1, max_length=200)
+    execution_attempt_id: str = Field(min_length=1, max_length=200)
+    criterion_id: str = Field(min_length=1, max_length=200)
+    criterion_hash: str = Field(min_length=64, max_length=64)
+    verification_artifact_id: str = Field(min_length=1, max_length=200)
+    verification_artifact_hash: str = Field(min_length=64, max_length=64)
+    authority_binding: dict[str, Any]
+    decision: Literal["passed", "failed"]
+    evidence_kind: Literal[
+        "user_confirmation", "observation_notes", "screenshot_reference",
+        "external_url_reference", "uploaded_artifact_reference",
+        "checklist_result", "structured_response",
+    ]
+    evidence: dict[str, Any]
+    comments: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_evidence_size(self) -> "ManualEvidenceSubmissionRequest":
+        if len(canonical_json(self.evidence).encode("utf-8")) > 65_536:
+            raise ValueError("manual evidence exceeds its bounded payload limit")
+        return self
 
 
 class CanonicalProjectActionDescriptor(StrictModel):

@@ -98,6 +98,7 @@ COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
         ProjectLifecycle.WORK_IN_PROGRESS,
         ProjectLifecycle.VERIFICATION_PENDING,
     }),
+    ProjectCommandType.SUBMIT_MANUAL_EVIDENCE: frozenset({ProjectLifecycle.VERIFICATION_PENDING}),
     ProjectCommandType.REQUEST_CLARIFICATION: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES)),
     ProjectCommandType.MARK_BLOCKED: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES) - {ProjectLifecycle.HANDED_OFF}),
     ProjectCommandType.REVISE_SCOPE: frozenset({

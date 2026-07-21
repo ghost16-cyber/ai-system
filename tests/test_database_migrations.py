@@ -491,8 +491,8 @@ def test_stage2c_project_records_remain_readable_without_emitting_work(
         assert connection.execute("SELECT COUNT(*) FROM project_artifacts").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM project_execution_cancellations").fetchone()[0] == 0
         assert connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_worker_requests'"
-        ).fetchone() is None
+            "SELECT COUNT(*) FROM project_worker_requests"
+        ).fetchone()[0] == 0
 
 
 def _initializer(
@@ -532,3 +532,44 @@ def _migration_ledger(database: Path) -> tuple[tuple[object, ...], ...]:
                 "SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version"
             )
         )
+
+
+def _fully_initialized(tmp_path):
+    database = tmp_path / "shape.db"
+    ProjectControlPlane(database).initialize()
+    return database
+
+
+def test_shape_validation_fails_closed_on_missing_migration_table(tmp_path: Path) -> None:
+    database = _fully_initialized(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE project_coordinator_intents")
+        connection.commit()
+    with pytest.raises(MigrationError) as error:
+        assert_schema_compatible(database)
+    assert "project_coordinator_intents" in str(error.value)
+
+
+def test_dropped_required_column_fails_closed_instead_of_silent_repair(tmp_path: Path) -> None:
+    database = _fully_initialized(tmp_path)
+    # Simulate schema drift: an existing schema-8 table missing a required column.
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("ALTER TABLE project_execution_dispatches RENAME TO _drift_dispatches")
+        connection.execute(
+            "CREATE TABLE project_execution_dispatches ("
+            "execution_dispatch_id TEXT PRIMARY KEY, project_run_id TEXT)"
+        )
+        connection.commit()
+    with pytest.raises(MigrationError) as error:
+        assert_schema_compatible(database)
+    assert "failure_classification" in str(error.value)
+    # Re-running the service initializer must not silently repair the column.
+    with pytest.raises(MigrationError):
+        ProjectControlPlane(database).initialize()
+
+
+def test_valid_current_schema_passes_shape_validation(tmp_path: Path) -> None:
+    database = _fully_initialized(tmp_path)
+    assert assert_schema_compatible(database) == LATEST_SCHEMA_VERSION

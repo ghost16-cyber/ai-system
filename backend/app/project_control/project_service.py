@@ -18,6 +18,7 @@ from backend.app.project_control.contracts import (
     content_hash,
 )
 from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
+from backend.app.project_control.compatibility import CompatibilityClassificationService
 from backend.app.project_control.service import ProjectControlPlane
 
 
@@ -105,6 +106,71 @@ class CanonicalProjectService:
                 )
             )
         return self.control.get_read_model(run_id)
+
+    def import_historical_record(
+        self,
+        *,
+        historical_job: dict[str, Any],
+        conversation_id: str,
+        workspace_id: str,
+        repository_root: str | Path,
+        repository_root_fingerprint: str,
+        folder_authority: dict[str, Any],
+        idempotency_key: str,
+        actor_id: str = "local-user",
+    ) -> ProjectReadModel:
+        """Explicitly re-import a historical record as a fresh canonical run.
+
+        This is the only supported path from a read-only historical record to a
+        mutable canonical run. It never happens implicitly from a legacy approval
+        route. The new run is awaiting its normal approvals; the historical
+        record and its identity are left untouched.
+        """
+        legacy_id = str(historical_job.get("delivery_job_id") or "")
+        if not legacy_id:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The historical record has no durable identity to import.",
+            )
+        if not CompatibilityClassificationService(
+            self.control.database_path
+        ).is_historical_read_only(legacy_id):
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Only a ledger-classified historical record can be explicitly imported.",
+            )
+        specification = dict(historical_job.get("specification") or {})
+        manifest = dict(historical_job.get("project_state_manifest") or {})
+        plan = dict(
+            historical_job.get("plan_revision") or historical_job.get("plan") or {}
+        )
+        spec_hash = str(
+            specification.get("specification_hash")
+            or content_hash({"import_specification": legacy_id})
+        )
+        specification = {**specification, "specification_hash": spec_hash}
+        manifest_hash = str(
+            manifest.get("manifest_hash")
+            or historical_job.get("project_state_hash")
+            or content_hash({"import_manifest": legacy_id})
+        )
+        manifest = {
+            **manifest,
+            "manifest_hash": manifest_hash,
+            "complete": bool(manifest.get("complete")),
+        }
+        return self.create_project(
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            repository_root=repository_root,
+            repository_root_fingerprint=repository_root_fingerprint,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            folder_authority=folder_authority,
+            specification=specification,
+            manifest=manifest,
+            plan=plan or None,
+        )
 
     def initialize_project(
         self,
@@ -372,11 +438,93 @@ class CanonicalProjectService:
         command_type = command_types.get(action)
         if command_type is None:
             raise ProjectControlError(ProjectControlErrorCode.INVALID_COMMAND, "This canonical action is not supported.")
+        replay_payload = dict(request.payload)
+        replay_authority: dict[str, Any] = {"action": action}
+        if action != "cancel_project":
+            replay_authority.update({
+                "artifact_id": request.artifact_id,
+                "artifact_type": request.artifact_type,
+                "artifact_hash": request.artifact_hash,
+                "artifact_binding_hash": request.artifact_binding_hash,
+            })
+        object_key = {
+            "approve_patch": "patch_id",
+            "approve_command": "command_id",
+            "approve_rollback": "rollback_id",
+        }.get(action)
+        if object_key and replay_payload.get(object_key):
+            replay_authority[object_key] = replay_payload[object_key]
+        if action == "approve_plan":
+            replay_authority.update({
+                "operation": "prepare_work_units",
+                "plan_artifact_id": request.artifact_id,
+                "plan_artifact_hash": request.artifact_hash,
+            })
+        elif action == "approve_patch":
+            replay_authority["operation"] = "apply_exact_patch"
+        elif action == "approve_command":
+            replay_authority["operation"] = "execute_exact_command"
+            if replay_payload.get("execution_hash"):
+                replay_authority["execution_hash"] = replay_payload["execution_hash"]
+        elif action == "approve_rollback":
+            replay_authority["operation"] = "apply_exact_rollback"
+        elif action == "approve_manual_verification":
+            replay_payload["approval_type"] = "manual_verification"
+            replay_authority["operation"] = "accept_manual_verification"
+        else:
+            replay_payload.setdefault("reason", "Cancelled through the canonical project API.")
+        # Do NOT gate the replay lookup on live current-artifact state here: an
+        # already-completed action's artifact may have been legitimately
+        # superseded by later work since it committed (e.g. a scope revision).
+        # `replay_completed` must return the durable stored result for an exact
+        # resend without evaluating live state; only a genuinely new command
+        # (replay is None, below) is checked against the current artifact.
+        replay = self.control.replay_completed(ProjectCommand(
+            command_type=command_type,
+            project_run_id=run.project_run_id,
+            conversation_id=request.conversation_id,
+            workspace_id=request.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=request.repository_root_fingerprint,
+            actor_id=request.actor_id,
+            expected_state_version=request.expected_state_version,
+            idempotency_key=request.idempotency_key,
+            plan_revision_id=request.plan_revision_id,
+            scope_revision_id=request.scope_revision_id,
+            manifest_hash=request.manifest_hash,
+            artifact_id=request.artifact_id if action != "cancel_project" else None,
+            artifact_type=request.artifact_type if action != "cancel_project" else None,
+            artifact_hash=request.artifact_hash if action != "cancel_project" else None,
+            artifact_binding_hash=request.artifact_binding_hash if action != "cancel_project" else None,
+            authority_scope=replay_authority,
+            payload=replay_payload,
+        ))
+        if replay is not None:
+            return ProjectReadModel.model_validate(replay.read_model)
         if action != "cancel_project" and pending.split(":", 1)[0] != action:
             raise ProjectControlError(ProjectControlErrorCode.ILLEGAL_TRANSITION, "This action is not currently permitted.")
         if action == "cancel_project" and run.lifecycle_status.value in {"cancelled", "completed"}:
             raise ProjectControlError(ProjectControlErrorCode.TERMINAL_PROJECT, "A terminal project cannot be cancelled again.")
+        required_artifact_types = {
+            "approve_plan": ("plan",),
+            "approve_patch": ("patch_preview", "repair_preview"),
+            "approve_command": ("command_preview",),
+            "approve_rollback": ("rollback_preview",),
+            "approve_manual_verification": ("verifier_result",),
+        }
         if action != "cancel_project":
+            allowed_types = required_artifact_types.get(action, ())
+            if request.artifact_type not in allowed_types:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "The approved artifact type is not valid for this action.",
+                )
+            current_artifact_id = run.current_artifact_ids.get(str(request.artifact_type))
+            if current_artifact_id is None or current_artifact_id != request.artifact_id:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.NON_CURRENT_ARTIFACT,
+                    "The approved artifact is not the current artifact for this action.",
+                )
             artifact = next((
                 item for item in self.artifact_store.list_for_project(project_run_id)
                 if item.artifact_id == request.artifact_id
@@ -443,6 +591,10 @@ class CanonicalProjectService:
             plan_revision_id=request.plan_revision_id,
             scope_revision_id=request.scope_revision_id,
             manifest_hash=request.manifest_hash,
+            artifact_id=request.artifact_id if action != "cancel_project" else None,
+            artifact_type=request.artifact_type if action != "cancel_project" else None,
+            artifact_hash=request.artifact_hash if action != "cancel_project" else None,
+            artifact_binding_hash=request.artifact_binding_hash if action != "cancel_project" else None,
             authority_scope=authority,
             payload=payload,
         ))
@@ -450,6 +602,191 @@ class CanonicalProjectService:
 
     def list_projects(self, conversation_id: str) -> list[ProjectReadModel]:
         return self.control.list_projects_for_conversation(conversation_id)
+
+    def submit_manual_evidence(self, project_run_id: str, request: Any) -> ProjectReadModel:
+        run = self.control.get_project(project_run_id)
+        read_model = self.control.get_read_model(project_run_id)
+        active_attempt_id = read_model.active_execution_attempt_id
+        active_work_unit_id = read_model.current_work_unit
+        expected_authority_binding = {
+            "operation": "submit_manual_evidence",
+            "project_run_id": project_run_id,
+            "criterion_id": request.criterion_id,
+            "work_unit_id": request.work_unit_id,
+            "execution_attempt_id": request.execution_attempt_id,
+        }
+        if request.authority_binding != expected_authority_binding:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Manual evidence authority binding is incomplete or forged.",
+            )
+        replay_authority = {
+            "operation": "submit_manual_evidence", "criterion_id": request.criterion_id,
+            "criterion_hash": request.criterion_hash, "work_unit_id": request.work_unit_id,
+            "execution_attempt_id": request.execution_attempt_id,
+            "verification_artifact_id": request.verification_artifact_id,
+            "verification_artifact_hash": request.verification_artifact_hash,
+            "authority_binding": request.authority_binding,
+        }
+        replay_evidence = {
+            "evidence_kind": request.evidence_kind, "evidence": request.evidence,
+            "comments": request.comments, "reviewer_id": request.actor_id,
+        }
+        replay_evidence_hash = content_hash(replay_evidence)
+        replay_evidence_id = f"manual-{content_hash([project_run_id, request.idempotency_key, replay_evidence_hash])[:24]}"
+        replay_artifact = self.artifact_store.put(build_project_artifact(
+            artifact_type=ProjectArtifactType.MANUAL_EVIDENCE,
+            binding=ProjectArtifactBinding(
+                project_run_id=project_run_id, plan_revision_id=request.plan_revision_id,
+                scope_revision_id=request.scope_revision_id, manifest_hash=request.manifest_hash,
+                execution_attempt_id=request.execution_attempt_id,
+                work_unit_id=request.work_unit_id, criterion_id=request.criterion_id,
+                criterion_hash=request.criterion_hash,
+                authority_hash=content_hash(replay_authority),
+            ),
+            payload={"evidence_id": replay_evidence_id, "evidence_hash": replay_evidence_hash, **replay_evidence},
+        ))
+        replay_payload = {
+            "criterion_id": request.criterion_id, "criterion_hash": request.criterion_hash,
+            "work_unit_id": request.work_unit_id, "execution_attempt_id": request.execution_attempt_id,
+            "verification_artifact_id": request.verification_artifact_id,
+            "plan_revision_id": request.plan_revision_id, "scope_revision_id": request.scope_revision_id,
+            "manifest_hash": request.manifest_hash, "evidence_id": replay_evidence_id,
+            "evidence_hash": replay_evidence_hash, "decision": request.decision,
+            "evidence": replay_evidence,
+        }
+        replay_command = ProjectCommand(
+            command_type=ProjectCommandType.SUBMIT_MANUAL_EVIDENCE,
+            project_run_id=project_run_id, conversation_id=request.conversation_id,
+            workspace_id=request.workspace_id, repository_root=run.repository_root,
+            repository_root_fingerprint=request.repository_root_fingerprint,
+            actor_id=request.actor_id, expected_state_version=request.expected_state_version,
+            idempotency_key=request.idempotency_key, plan_revision_id=request.plan_revision_id,
+            scope_revision_id=request.scope_revision_id, manifest_hash=request.manifest_hash,
+            artifact_id=replay_artifact.artifact_id,
+            artifact_type=replay_artifact.artifact_type.value,
+            artifact_hash=replay_artifact.content_hash,
+            artifact_binding_hash=replay_artifact.binding_hash,
+            authority_scope=replay_authority, payload=replay_payload,
+        )
+        replay = self.control.replay_completed(replay_command)
+        if replay is not None:
+            return ProjectReadModel.model_validate(replay.read_model)
+        exact = {
+            "conversation_id": run.conversation_id,
+            "workspace_id": run.workspace_id,
+            "actor_id": run.actor_id,
+            "repository_root_fingerprint": run.repository_root_fingerprint,
+            "plan_revision_id": run.current_plan_revision_id,
+            "scope_revision_id": run.current_scope_revision_id,
+            "manifest_hash": run.current_manifest_hash,
+            "work_unit_id": active_work_unit_id,
+            "execution_attempt_id": active_attempt_id,
+        }
+        for field, expected in exact.items():
+            if getattr(request, field) != expected:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.STALE_VERIFICATION,
+                    f"Manual evidence has a stale {field.replace('_', ' ')} binding.",
+                )
+        criterion = dict(run.verification_state.get(request.criterion_id) or {})
+        if (
+            criterion.get("outcome") != "manual_evidence_required"
+            or criterion.get("criterion_hash") != request.criterion_hash
+            or criterion.get("verification_artifact_id") != request.verification_artifact_id
+        ):
+            raise ProjectControlError(
+                ProjectControlErrorCode.STALE_VERIFICATION,
+                "Manual evidence does not target the exact pending criterion and verifier artifact.",
+            )
+        verifier = self.artifact_store.get(request.verification_artifact_id)
+        if verifier is None or verifier.content_hash != request.verification_artifact_hash:
+            raise ProjectControlError(
+                ProjectControlErrorCode.STALE_VERIFICATION,
+                "The verifier artifact hash is stale.",
+            )
+        authority = {
+            "operation": "submit_manual_evidence",
+            "criterion_id": request.criterion_id,
+            "criterion_hash": request.criterion_hash,
+            "work_unit_id": request.work_unit_id,
+            "execution_attempt_id": request.execution_attempt_id,
+            "verification_artifact_id": request.verification_artifact_id,
+            "verification_artifact_hash": request.verification_artifact_hash,
+            "authority_binding": request.authority_binding,
+        }
+        evidence_payload = {
+            "evidence_kind": request.evidence_kind,
+            "evidence": request.evidence,
+            "comments": request.comments,
+            "reviewer_id": request.actor_id,
+        }
+        evidence_hash = content_hash(evidence_payload)
+        evidence_id = f"manual-{content_hash([project_run_id, request.idempotency_key, evidence_hash])[:24]}"
+        artifact = self.artifact_store.put(build_project_artifact(
+            artifact_type=ProjectArtifactType.MANUAL_EVIDENCE,
+            binding=ProjectArtifactBinding(
+                project_run_id=project_run_id,
+                plan_revision_id=run.current_plan_revision_id,
+                scope_revision_id=run.current_scope_revision_id,
+                manifest_hash=run.current_manifest_hash,
+                execution_attempt_id=active_attempt_id,
+                work_unit_id=active_work_unit_id,
+                criterion_id=request.criterion_id,
+                criterion_hash=request.criterion_hash,
+                authority_hash=content_hash(authority),
+            ),
+            payload={"evidence_id": evidence_id, "evidence_hash": evidence_hash, **evidence_payload},
+        ))
+        self.control.execute(ProjectCommand(
+            command_type=ProjectCommandType.SUBMIT_MANUAL_EVIDENCE,
+            project_run_id=project_run_id,
+            conversation_id=request.conversation_id,
+            workspace_id=request.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=request.repository_root_fingerprint,
+            actor_id=request.actor_id,
+            expected_state_version=request.expected_state_version,
+            idempotency_key=request.idempotency_key,
+            plan_revision_id=request.plan_revision_id,
+            scope_revision_id=request.scope_revision_id,
+            manifest_hash=request.manifest_hash,
+            artifact_id=artifact.artifact_id,
+            artifact_type=artifact.artifact_type.value,
+            artifact_hash=artifact.content_hash,
+            artifact_binding_hash=artifact.binding_hash,
+            authority_scope=authority,
+            payload={
+                "criterion_id": request.criterion_id,
+                "criterion_hash": request.criterion_hash,
+                "work_unit_id": request.work_unit_id,
+                "execution_attempt_id": request.execution_attempt_id,
+                "verification_artifact_id": request.verification_artifact_id,
+                "plan_revision_id": request.plan_revision_id,
+                "scope_revision_id": request.scope_revision_id,
+                "manifest_hash": request.manifest_hash,
+                "evidence_id": evidence_id,
+                "evidence_hash": evidence_hash,
+                "decision": request.decision,
+                "evidence": evidence_payload,
+            },
+        ))
+        return self.control.get_read_model(project_run_id)
+
+    def manual_evidence(self, project_run_id: str) -> list[dict[str, Any]]:
+        self.control.get_project(project_run_id)
+        import json
+        import sqlite3
+        connection = sqlite3.connect(self.control.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT evidence_json FROM project_manual_evidence WHERE project_run_id = ? ORDER BY created_at, evidence_id",
+                (project_run_id,),
+            ).fetchall()
+            return [json.loads(row["evidence_json"]) for row in rows]
+        finally:
+            connection.close()
 
     def list_artifacts(self, project_run_id: str, *, limit: int = 100) -> list[ProjectArtifact]:
         # Loading the project first prevents cross-kind artifact enumeration.

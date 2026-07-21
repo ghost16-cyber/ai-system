@@ -22,7 +22,7 @@ export interface DeliveryCriterion {
   verificationMode: string;
   state: string;
   blockedReason?: string;
-  verifierOutcome?: "passed" | "failed" | "inconclusive" | "manual_required" | "stale";
+  verifierOutcome?: "passed" | "failed" | "inconclusive" | "manual_required" | "manual_evidence_required" | "verification_passed" | "verification_failed" | "verification_stale" | "verification_invalidated" | "stale";
 }
 
 export interface DeliveryWorkUnit {
@@ -41,6 +41,11 @@ export interface ProjectDeliveryAction {
   status: ProjectDeliveryStatus;
   lifecycleState: ProjectLifecycleState;
   scopeRevisionId?: string;
+  workspaceId?: string;
+  actorId?: string;
+  repositoryRootFingerprint?: string;
+  manifestHash?: string;
+  compatibilityActionBinding?: Record<string, unknown>;
   stateVersion: number;
   pendingUserAction?: string;
   handoffEligible: boolean;
@@ -127,6 +132,7 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
   const details = object(action.technical_details);
   const delivery = object(details.project_delivery);
   const control = object(delivery.project_control);
+  const compatibilityActionBinding = object(delivery.compatibility_action_binding);
   const hasControl = Object.keys(control).length > 0;
   const deliveryJobId = string(delivery.delivery_job_id);
   const status = string(delivery.status) as ProjectDeliveryStatus;
@@ -156,7 +162,7 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     if (!id) continue;
     const fresh = string(result.input_manifest_hash) === currentManifestHash && string(result.plan_revision_id) === currentRevisionId;
     const outcome = fresh ? string(result.outcome) : "stale";
-    if (["passed", "failed", "inconclusive", "manual_required", "stale"].includes(outcome)) {
+    if (["passed", "failed", "inconclusive", "manual_required", "manual_evidence_required", "verification_passed", "verification_failed", "verification_stale", "verification_invalidated", "stale"].includes(outcome)) {
       verifierOutcomes.set(id, outcome as DeliveryCriterion["verifierOutcome"]);
     }
   }
@@ -168,7 +174,7 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     if (hasControl) {
       const canonical = object(canonicalCriteria[criterion.id]);
       const outcome = string(canonical.outcome, "pending");
-      criterion.verifierOutcome = ["passed", "failed", "inconclusive", "manual_required", "stale"].includes(outcome)
+      criterion.verifierOutcome = ["passed", "failed", "inconclusive", "manual_required", "manual_evidence_required", "verification_passed", "verification_failed", "verification_stale", "verification_invalidated", "stale"].includes(outcome)
         ? outcome as DeliveryCriterion["verifierOutcome"] : undefined;
       criterion.state = outcome === "passed" ? "satisfied" : outcome;
     } else {
@@ -201,6 +207,12 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
     status,
     lifecycleState: string(control.lifecycle_state, legacyLifecycle(status)) as ProjectLifecycleState,
     scopeRevisionId: string(control.scope_revision_id) || undefined,
+    workspaceId: string(control.workspace_id) || undefined,
+    actorId: string(control.actor_id) || undefined,
+    repositoryRootFingerprint: string(control.repository_root_fingerprint) || undefined,
+    manifestHash: string(control.manifest_hash) || undefined,
+    compatibilityActionBinding: Object.keys(compatibilityActionBinding).length
+      ? compatibilityActionBinding : undefined,
     stateVersion: number(control.state_version, number(delivery.state_version, 1)),
     pendingUserAction: string(control.pending_user_action) || undefined,
     handoffEligible: control.handoff_eligible === true,

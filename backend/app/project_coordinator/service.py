@@ -57,43 +57,8 @@ class ProjectCoordinatorService:
         return connection
 
     def initialize(self) -> None:
-        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
+        initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        if not compatibility_ddl_enabled:
-            assert_schema_compatible(self.database_path)
-            return
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS project_coordinator_intents (
-                    coordinator_intent_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    intent_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    trigger_event_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    plan_revision_id TEXT NOT NULL,
-                    scope_revision_id TEXT NOT NULL,
-                    manifest_hash TEXT NOT NULL,
-                    expected_project_state_version INTEGER NOT NULL,
-                    payload_hash TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    intent_json TEXT NOT NULL,
-                    lease_expires_at TEXT,
-                    heartbeat_at TEXT,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    last_failure_classification TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    completed_at TEXT,
-                    UNIQUE(project_run_id, idempotency_key)
-                );
-                CREATE INDEX IF NOT EXISTS idx_coordinator_pending
-                    ON project_coordinator_intents(status, created_at);
-                CREATE INDEX IF NOT EXISTS idx_coordinator_project
-                    ON project_coordinator_intents(project_run_id, created_at);
-                """
-            )
         assert_schema_compatible(self.database_path)
 
     def reconcile(self, project_run_id: str) -> CoordinatorIntent | None:

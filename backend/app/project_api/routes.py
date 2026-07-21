@@ -13,6 +13,7 @@ from backend.app.project_api.contracts import (
     CanonicalProjectActionRequest,
     CanonicalProjectActionDescriptor,
     CanonicalCoordinatorSummary,
+    ManualEvidenceSubmissionRequest,
 )
 from backend.app.project_artifacts import ProjectArtifact
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode
@@ -111,6 +112,45 @@ def create_project_router(
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
+    @router.get("/chat/projects/{project_run_id}/verification/criteria")
+    def verification_criteria(project_run_id: str) -> dict[str, Any]:
+        try:
+            project = service.get_project(project_run_id)
+            return {
+                "schema_version": "astra.project-api.verification-criteria.v1",
+                "project_run_id": project_run_id,
+                "state_version": project.state_version,
+                "handoff_eligible": project.handoff_eligible,
+                "criteria": project.criterion_states,
+            }
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+
+    @router.post(
+        "/chat/projects/{project_run_id}/verification/manual-evidence",
+        response_model=CanonicalProjectResponse,
+    )
+    def submit_manual_evidence(
+        project_run_id: str,
+        request: ManualEvidenceSubmissionRequest,
+    ) -> CanonicalProjectResponse:
+        try:
+            service.submit_manual_evidence(project_run_id, request)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+
+    @router.get("/chat/projects/{project_run_id}/verification/manual-evidence")
+    def manual_evidence(project_run_id: str) -> dict[str, Any]:
+        try:
+            return {
+                "schema_version": "astra.project-api.manual-evidence-collection.v1",
+                "project_run_id": project_run_id,
+                "items": service.manual_evidence(project_run_id),
+            }
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+
     return router
 
 
@@ -121,7 +161,8 @@ def build_canonical_project_response(
     coordinator: ProjectCoordinatorService | None = None,
 ) -> CanonicalProjectResponse:
     project = service.get_project(project_run_id)
-    artifacts = tuple(_summary(item) for item in service.list_artifacts(project_run_id))
+    raw_artifacts = tuple(service.list_artifacts(project_run_id))
+    artifacts = tuple(_summary(item) for item in raw_artifacts)
     coordinator_summary = None
     if coordinator is not None:
         intents = coordinator.list_for_project(project_run_id)
@@ -139,7 +180,7 @@ def build_canonical_project_response(
         project=project,
         artifacts=artifacts,
         coordinator=coordinator_summary,
-        next_permitted_actions=_next_actions(project, artifacts),
+        next_permitted_actions=_next_actions(project, raw_artifacts),
     )
 
 
@@ -156,15 +197,31 @@ def _next_actions(project, artifacts) -> tuple[CanonicalProjectActionDescriptor,
         "approve_manual_verification": "Approve manual verification",
     }
     artifact_types = {
-        "approve_plan": "plan",
-        "approve_patch": "patch_preview",
-        "approve_command": "command_preview",
-        "approve_rollback": "rollback_preview",
-        "approve_manual_verification": "verifier_result",
+        "approve_plan": ("plan",),
+        "approve_patch": ("patch_preview", "repair_preview"),
+        "approve_command": ("command_preview",),
+        "approve_rollback": ("rollback_preview",),
+        "approve_manual_verification": ("verifier_result",),
     }
     values: list[CanonicalProjectActionDescriptor] = []
     if base in labels:
-        artifact = next((item for item in reversed(artifacts) if item.artifact_type == artifact_types[base]), None)
+        artifact = next((
+            item for item in reversed(artifacts)
+            if item.artifact_type in artifact_types[base]
+            and project.artifact_references.get(item.artifact_type) == item.artifact_id
+        ), None)
+        object_key = {
+            "approve_patch": "patch_id",
+            "approve_command": "command_id",
+            "approve_rollback": "rollback_id",
+        }.get(base)
+        payload = {} if base == "approve_plan" else {
+            object_key or "pending_id": pending.split(":", 1)[1] if ":" in pending else base
+        }
+        if artifact is not None:
+            for field in ("work_unit_id", "criterion_id", "execution_attempt_id"):
+                if artifact.payload.get(field) is not None:
+                    payload[field] = artifact.payload[field]
         values.append(CanonicalProjectActionDescriptor(
             action=base,
             label=labels[base],
@@ -176,10 +233,7 @@ def _next_actions(project, artifacts) -> tuple[CanonicalProjectActionDescriptor,
             artifact_type=artifact.artifact_type if artifact else None,
             artifact_hash=artifact.content_hash if artifact else None,
             artifact_binding_hash=artifact.binding_hash if artifact else None,
-            payload={
-                ({"approve_patch": "patch_id", "approve_command": "command_id", "approve_rollback": "rollback_id"}.get(base) or "pending_id"):
-                pending.split(":", 1)[1] if ":" in pending else base
-            } if base != "approve_plan" else {},
+            payload=payload,
         ))
     if project.next_permitted_action != "cancelling":
         values.append(CanonicalProjectActionDescriptor(

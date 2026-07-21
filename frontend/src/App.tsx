@@ -24,6 +24,7 @@ import {
   type ChatConversationDetail,
   type ChatRunResponse,
   type HealthData,
+  type ManualEvidenceSubmission,
 } from "./clients/astraClient";
 import {
   actionFromPayload,
@@ -527,9 +528,34 @@ export default function App() {
       return true;
     }
     if (["show system status", "system status"].includes(normalized)) {
-      const [currentHealth, model, rag] = await Promise.all([client.getHealth(), client.getSelectedSlm(), client.getRagStatus()]);
+      const [currentHealth, model, rag, localAI, future, providers, models, scheduler] = await Promise.all([
+        client.getHealth(), client.getSelectedSlm(), client.getRagStatus(),
+        client.getLocalAICapabilities(), client.getLocalAIFutureStatus(),
+        client.getLocalAIProviders(), client.getLocalAIModels(), client.getLocalAIScheduler(),
+      ]);
       setHealth(currentHealth);
-      addInfo({ icon: "server", title: "System status", summary: `${currentHealth.service} is ${currentHealth.status}.`, rows: [{ label: "Backend", value: currentHealth.status }, { label: "Database", value: currentHealth.database }, { label: "Model", value: model.selected_profile_id }, { label: "RAG", value: rag.status }], technical: { health: currentHealth, model, rag } });
+      const capability = (id: string) => localAI.capabilities.find((item) => item.capability_id === id)?.status ?? "unknown";
+      const ollama = providers.items.find((item) => item.provider_id === "ollama-local");
+      const productionModel = models.items.find((item) => item.enabled && item.provider_id !== "fake-deterministic");
+      const qwen3 = models.items.find((item) => item.model_profile_id === "qwen3-4b-q4-k-m");
+      const setupCommand = typeof qwen3?.source_metadata.install_command === "string"
+        ? qwen3.source_metadata.install_command : "Not supplied";
+      const activeJobs = scheduler.items.filter((item) => ["queued", "claimed", "running"].includes(item.status));
+      addInfo({ icon: "server", title: "System status", summary: `${currentHealth.service} is ${currentHealth.status}.`, rows: [
+        { label: "Backend", value: currentHealth.status },
+        { label: "Database", value: currentHealth.database },
+        { label: "Legacy chat model", value: model.selected_profile_id },
+        { label: "Local AI profile", value: productionModel?.display_name ?? "No production profile enabled" },
+        { label: "Provider / backend", value: `${ollama?.health_status ?? "unavailable"} / ${ollama?.execution_backend ?? "none"}` },
+        { label: "CPU", value: capability("cpu") },
+        { label: "GPU / CUDA", value: `${capability("gpu")} / ${capability("cuda")}` },
+        { label: "VRAM", value: capability("vram") },
+        { label: "Accelerator queue", value: activeJobs.length ? `${activeJobs.length} active or queued` : "Idle" },
+        { label: "Qwen3", value: qwen3?.local_available ? "Available locally" : "Not installed or unverified" },
+        { label: "Manual Qwen3 command", value: setupCommand },
+        { label: "Project RAG", value: future.project_rag.status },
+        { label: "Training", value: future.training.status },
+      ], technical: { health: currentHealth, model, rag, localAI, future, providers, models, scheduler } });
       return true;
     }
     if (["show my history", "show recent chats", "show my recent chats", "show history"].includes(normalized)) {
@@ -822,6 +848,40 @@ export default function App() {
     } finally {
       locks.current.delete(lockId);
     }
+  }
+
+  async function submitCanonicalManualEvidence(project: CanonicalProjectAction, criterionId: string, notes: string, decision: "passed" | "failed") {
+    const state = project.criterionStates[criterionId];
+    const canonical = project.response.project;
+    if (!state || !canonical.plan_revision_id || !canonical.scope_revision_id || !canonical.manifest_hash
+        || !project.execution.attemptId || !canonical.current_work_unit
+        || typeof state.criterion_hash !== "string" || typeof state.verification_artifact_id !== "string"
+        || typeof state.verification_artifact_hash !== "string") return;
+    const lockId = `manual-evidence:${project.projectRunId}:${criterionId}:${project.stateVersion}`;
+    if (!tryLockCommandAction(locks.current, lockId)) return;
+    const request: ManualEvidenceSubmission = {
+      schema_version: "astra.project-api.manual-evidence.v1",
+      conversation_id: project.conversationId, workspace_id: project.workspaceId,
+      actor_id: project.actorId, repository_root_fingerprint: project.repositoryRootFingerprint,
+      expected_state_version: project.stateVersion, idempotency_key: newId("manual-evidence"),
+      plan_revision_id: canonical.plan_revision_id, scope_revision_id: canonical.scope_revision_id,
+      manifest_hash: canonical.manifest_hash, work_unit_id: canonical.current_work_unit,
+      execution_attempt_id: project.execution.attemptId, criterion_id: criterionId,
+      criterion_hash: state.criterion_hash, verification_artifact_id: state.verification_artifact_id,
+      verification_artifact_hash: state.verification_artifact_hash,
+      authority_binding: { operation: "submit_manual_evidence", project_run_id: project.projectRunId,
+        criterion_id: criterionId, work_unit_id: canonical.current_work_unit,
+        execution_attempt_id: project.execution.attemptId },
+      decision, evidence_kind: "observation_notes", evidence: { notes },
+    };
+    try {
+      const parsed = canonicalProjectActionFromResponse(await client.submitManualEvidence(project.projectRunId, request));
+      if (!parsed) throw new AstraHttpError(409, "The manual evidence response was invalid.");
+      setMessages((current) => current.map((item) => item.canonicalProject?.projectRunId === project.projectRunId ? { ...item, canonicalProject: parsed } : item));
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshCanonicalProject(project.projectRunId).catch(() => undefined);
+    } finally { locks.current.delete(lockId); }
   }
 
   async function refreshClientEngagement(engagementId: string) {
@@ -1334,7 +1394,7 @@ export default function App() {
         <section ref={conversationRef} className="conversation" aria-label="Conversation" aria-busy={hydrationStatus === "loading"}>
           {hydrationStatus === "loading" && <div className="startup-loading"><Activity className="spin" size={18} /><span>Restoring conversation…</span></div>}
           {hydrationStatus === "ready" && messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {hydrationStatus === "ready" && messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onCanonicalProjectAction={performCanonicalProjectAction} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {hydrationStatus === "ready" && messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onCanonicalProjectAction={performCanonicalProjectAction} onCanonicalManualEvidence={submitCanonicalManualEvidence} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {hydrationStatus === "ready" && loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
           <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
         </section>
@@ -1372,6 +1432,7 @@ function ChatMessage({
   onGenerateDeliveryHandoff,
   onCancelDelivery,
   onCanonicalProjectAction,
+  onCanonicalManualEvidence,
   onAnswerEngagement,
   onApproveEngagement,
   onRejectEngagement,
@@ -1401,6 +1462,7 @@ function ChatMessage({
   onGenerateDeliveryHandoff: (action: ProjectDeliveryAction) => Promise<void>;
   onCancelDelivery: (action: ProjectDeliveryAction) => Promise<void>;
   onCanonicalProjectAction: (project: CanonicalProjectAction, action: CanonicalProjectActionDescriptor) => Promise<void>;
+  onCanonicalManualEvidence: (project: CanonicalProjectAction, criterionId: string, notes: string, decision: "passed" | "failed") => Promise<void>;
   onAnswerEngagement: (action: ClientEngagementAction, answers: Record<string, string>, useAssumptions?: boolean) => Promise<void>;
   onApproveEngagement: (action: ClientEngagementAction) => Promise<void>;
   onRejectEngagement: (action: ClientEngagementAction) => Promise<void>;
@@ -1420,7 +1482,7 @@ function ChatMessage({
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
-    {message.canonicalProject && <ProjectControlCard project={message.canonicalProject} onAction={(action) => void onCanonicalProjectAction(message.canonicalProject!, action)} />}
+    {message.canonicalProject && <ProjectControlCard project={message.canonicalProject} onAction={(action) => void onCanonicalProjectAction(message.canonicalProject!, action)} onManualEvidence={(criterionId, notes, decision) => void onCanonicalManualEvidence(message.canonicalProject!, criterionId, notes, decision)} />}
     {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} onStartValidation={() => onStartValidation(message.engagementAction!)} />}
     {message.validationAction && <ProjectValidationCard action={message.validationAction} onOperation={(operation) => onValidationOperation(message.validationAction!, operation)} onReview={(reviewAction, notes) => onValidationReview(message.validationAction!, reviewAction, notes)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
@@ -1928,11 +1990,20 @@ function projectDeliveryIdFromAction(action: ChatAction): string | undefined {
   return undefined;
 }
 function projectDeliveryMutationRequest(action: ProjectDeliveryAction, conversationId: string, idempotencyKey: string) {
+  const binding = action.compatibilityActionBinding ?? {};
   return {
     conversation_id: conversationId,
     project_run_id: action.projectRunId,
+    workspace_id: action.workspaceId,
+    actor_id: action.actorId,
+    repository_root_fingerprint: action.repositoryRootFingerprint,
     plan_revision_id: action.plan?.revisionId ?? null,
     scope_revision_id: action.scopeRevisionId ?? null,
+    manifest_hash: action.manifestHash,
+    artifact_id: binding.artifact_id,
+    artifact_type: binding.artifact_type,
+    artifact_hash: binding.artifact_hash,
+    artifact_binding_hash: binding.artifact_binding_hash,
     expected_state_version: action.stateVersion,
     idempotency_key: idempotencyKey,
   };

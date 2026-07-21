@@ -169,7 +169,9 @@ def test_exact_idempotent_replay_returns_original_without_new_event(control: Pro
     request = command(ProjectCommandType.APPROVE_PLAN, run, "same-approval", authority={"operation": "prepare"})
     first = control.execute(request)
     second = control.execute(request)
-    assert second == first
+    assert first.replayed is False
+    assert second.replayed is True
+    assert second.model_dump(exclude={"replayed"}) == first.model_dump(exclude={"replayed"})
     assert len([event for event in control.list_events(run.project_run_id) if event.request_id == "same-approval"]) == 1
     assert len(control.list_approvals(run.project_run_id)) == 1
 

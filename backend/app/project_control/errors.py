@@ -30,6 +30,7 @@ class ProjectControlErrorCode(StrEnum):
     UNSUPPORTED_STORED_STATE = "unsupported_stored_state"
     INVALID_COMMAND = "invalid_command"
     HISTORICAL_RECORD_READ_ONLY = "historical_record_read_only"
+    NON_CURRENT_ARTIFACT = "non_current_artifact"
 
 
 class ProjectControlError(RuntimeError):

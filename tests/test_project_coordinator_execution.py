@@ -39,7 +39,12 @@ def _command(run, kind, key, *, payload=None, authority=None, artifact=None):
     )
 
 
-def _runtime(tmp_path, *, include_patch_operations: bool = True):
+def _runtime(
+    tmp_path,
+    *,
+    include_patch_operations: bool = True,
+    include_repair_operations: bool = True,
+):
     database = tmp_path / "astra.db"
     root = tmp_path / "workspace"
     (root / "src").mkdir(parents=True)
@@ -93,12 +98,12 @@ def _runtime(tmp_path, *, include_patch_operations: bool = True):
                     "expected_sha256": "3" * 64,
                     "content": "VALUE = 2\n",
                 }] if include_patch_operations else []),
-                "repair_operations": [{
+                "repair_operations": ([{
                     "operation": "replace",
                     "path": "src/app.py",
                     "expected_sha256": "4" * 64,
                     "content": "VALUE = 3\n",
-                }],
+                }] if include_repair_operations else []),
             }],
             "configured_limits": {"max_work_units": 2, "max_verifications": 2},
         },
@@ -109,6 +114,7 @@ def _runtime(tmp_path, *, include_patch_operations: bool = True):
         ProjectCommandType.APPROVE_PLAN,
         "approve-plan",
         authority={"operation": "prepare_work_units", "work_unit_ids": ["work-1"]},
+        artifact=artifacts.get(run.current_artifact_ids["plan"]),
     ))
     coordinator = ProjectCoordinatorService(database, control)
     coordinator.initialize()
@@ -144,8 +150,9 @@ def test_canonical_happy_path_advances_to_exact_handoff(tmp_path) -> None:
         run,
         ProjectCommandType.APPROVE_PATCH,
         "approve-patch",
-        payload={"patch_id": patch_id},
-        authority={"patch_id": patch_id, "operation": "apply_exact_patch"},
+        payload={"patch_id": patch_id, "work_unit_id": "work-1"},
+        authority={"patch_id": patch_id, "work_unit_id": "work-1", "operation": "apply_exact_patch"},
+        artifact=artifacts.get(run.current_artifact_ids["patch_preview"]),
     ))
     run = control.get_project(project_id)
     control.execute(_command(

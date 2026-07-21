@@ -16,6 +16,14 @@ from backend.app.project_coordinator import (
     ProjectCoordinatorExecutor,
     ProjectCoordinatorService,
 )
+from backend.app.project_analysis.model_synthesis.gateway import (
+    build_synthesis_gateway_from_environment,
+)
+from backend.app.project_analysis.model_synthesis.orchestrator import (
+    CanonicalProviderProfile,
+    CanonicalSynthesisOrchestrator,
+)
+from backend.app.project_models import ProjectModelInvocationStore
 from backend.app.project_projection import ProjectProjectionService
 from backend.app.project_workers.cancellation import CancellationDispatcher
 from backend.app.project_workers.isolated_execution import ProjectIsolatedExecutor
@@ -160,11 +168,26 @@ def build_runtime(
         )
         service.projector = projector
         service.coordinator = coordinator
+        synthesis_gateway = build_synthesis_gateway_from_environment()
+        model_invocations = ProjectModelInvocationStore(database_path)
+        model_invocations.initialize()
+        synthesis_orchestrator = CanonicalSynthesisOrchestrator(
+            invocations=model_invocations,
+            artifacts=artifact_store,
+            gateway=synthesis_gateway,
+        )
+        provider_profile = CanonicalProviderProfile(
+            provider=synthesis_gateway.provider,
+            model_profile=synthesis_gateway.model,
+            enabled=True,
+        )
         service.coordinator_executor = ProjectCoordinatorExecutor(
             coordinator,
             control,
             artifact_store,
             projector=projector,
+            orchestrator=synthesis_orchestrator,
+            provider_profile=provider_profile,
         )
 
     backend = execution_backend.strip().lower()

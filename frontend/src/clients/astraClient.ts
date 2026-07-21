@@ -733,10 +733,100 @@ export interface IntelligenceDashboardResponse {
   auditability: Record<string, unknown>;
 }
 
+export interface LocalAICapabilityReport {
+  schema_version: "astra.local-ai.host-report.v1";
+  report_id: string;
+  os_name: string;
+  architecture: string;
+  python_version: string;
+  wsl: boolean;
+  capabilities: Array<{
+    capability_id: string;
+    status: string;
+    reason?: string | null;
+    details: Record<string, unknown>;
+    [key: string]: unknown;
+  }>;
+  disk: Record<string, unknown>;
+  warnings: string[];
+  generated_at: string;
+}
+
+export interface LocalAIFutureStatus {
+  schema_version: "astra.local-ai.future-status.v1";
+  project_rag: { enabled: false; status: string; sources: Record<string, string> };
+  evaluation: { enabled: false; status: string };
+  training: { enabled: false; status: string };
+}
+
+export interface LocalAIProviderCollection {
+  schema_version: "astra.local-ai.providers.v1";
+  items: Array<{
+    provider_id: string;
+    provider_type: string;
+    health_status: string;
+    execution_backend: string;
+    enabled: boolean;
+  }>;
+}
+
+export interface LocalAIModelCollection {
+  schema_version: "astra.local-ai.models.v1";
+  items: Array<{
+    model_profile_id: string;
+    display_name: string;
+    provider_id: string;
+    local_available: boolean;
+    enabled: boolean;
+    policy_status: string;
+    source_metadata: Record<string, unknown>;
+  }>;
+}
+
+export interface LocalAISchedulerCollection {
+  schema_version: "astra.local-ai.scheduler.v1";
+  items: Array<{
+    job_id: string;
+    workload_class: string;
+    status: string;
+    admission: { outcome: string; reason: string; backend?: string | null };
+  }>;
+}
+
+export interface ManualEvidenceSubmission {
+  schema_version: "astra.project-api.manual-evidence.v1";
+  conversation_id: string;
+  workspace_id: string;
+  actor_id: string;
+  repository_root_fingerprint: string;
+  expected_state_version: number;
+  idempotency_key: string;
+  plan_revision_id: string;
+  scope_revision_id: string;
+  manifest_hash: string;
+  work_unit_id: string;
+  execution_attempt_id: string;
+  criterion_id: string;
+  criterion_hash: string;
+  verification_artifact_id: string;
+  verification_artifact_hash: string;
+  authority_binding: Record<string, unknown>;
+  decision: "passed" | "failed";
+  evidence_kind: "user_confirmation" | "observation_notes" | "screenshot_reference" | "external_url_reference" | "uploaded_artifact_reference" | "checklist_result" | "structured_response";
+  evidence: Record<string, unknown>;
+  comments?: string;
+}
+
 type JsonObject = Record<string, unknown>;
 
 export interface AstraClient {
   getHealth(): Promise<HealthData>;
+  getLocalAICapabilities(): Promise<LocalAICapabilityReport>;
+  getLocalAIFutureStatus(): Promise<LocalAIFutureStatus>;
+  getLocalAIProviders(): Promise<LocalAIProviderCollection>;
+  getLocalAIModels(): Promise<LocalAIModelCollection>;
+  getLocalAIScheduler(): Promise<LocalAISchedulerCollection>;
+  submitManualEvidence(projectRunId: string, request: ManualEvidenceSubmission): Promise<CanonicalProjectResponse>;
   getTools(): Promise<RawTool[]>;
   getJobs(limit?: number): Promise<RawJob[]>;
   getHistory(limit?: number): Promise<RawHistoryItem[]>;
@@ -799,6 +889,7 @@ export interface AstraClient {
   proposeProjectJobValidation(jobId: string, conversationId: string): Promise<ChatRunResponse>;
   cancelProjectJob(jobId: string, conversationId: string): Promise<Record<string, unknown>>;
   getProjectDelivery(deliveryJobId: string): Promise<Record<string, unknown>>;
+  importHistoricalDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<CanonicalProjectResponse>;
   approveProjectDeliveryPlan(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   clarifyProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
   prepareProjectDelivery(deliveryJobId: string, request: Record<string, unknown>): Promise<ChatRunResponse>;
@@ -849,6 +940,33 @@ export class HttpAstraClient implements AstraClient {
 
   async getHealth() {
     return this.getJson<HealthData>("/health");
+  }
+
+  async getLocalAICapabilities() {
+    return this.getJson<LocalAICapabilityReport>("/runtime/local-ai/capabilities");
+  }
+
+  async getLocalAIFutureStatus() {
+    return this.getJson<LocalAIFutureStatus>("/runtime/local-ai/future-status");
+  }
+
+  async getLocalAIProviders() {
+    return this.getJson<LocalAIProviderCollection>("/runtime/local-ai/providers");
+  }
+
+  async getLocalAIModels() {
+    return this.getJson<LocalAIModelCollection>("/runtime/local-ai/models");
+  }
+
+  async getLocalAIScheduler() {
+    return this.getJson<LocalAISchedulerCollection>("/runtime/local-ai/scheduler");
+  }
+
+  async submitManualEvidence(projectRunId: string, request: ManualEvidenceSubmission) {
+    return this.postJson<CanonicalProjectResponse>(
+      `/chat/projects/${encodeURIComponent(projectRunId)}/verification/manual-evidence`,
+      request,
+    );
   }
 
   async getTools() {
@@ -1204,6 +1322,13 @@ export class HttpAstraClient implements AstraClient {
   ) {
     return this.postJson<CanonicalProjectResponse>(
       `/chat/projects/${encodeURIComponent(projectRunId)}/actions/${encodeURIComponent(action)}`,
+      request,
+    );
+  }
+
+  async importHistoricalDelivery(deliveryJobId: string, request: Record<string, unknown>) {
+    return this.postJson<CanonicalProjectResponse>(
+      `/chat/projects/deliveries/${encodeURIComponent(deliveryJobId)}/import-historical`,
       request,
     );
   }

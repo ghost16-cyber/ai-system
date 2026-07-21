@@ -79,6 +79,7 @@ class ProjectCommandType(StrEnum):
     RECORD_COMMAND_RESULT = "record_command_result"
     REQUEST_VERIFICATION = "request_verification"
     RECORD_VERIFIER_RESULT = "record_verifier_result"
+    SUBMIT_MANUAL_EVIDENCE = "submit_manual_evidence"
     REQUEST_CLARIFICATION = "request_clarification"
     MARK_BLOCKED = "mark_blocked"
     REVISE_SCOPE = "revise_scope"
@@ -100,6 +101,16 @@ class ApprovalType(StrEnum):
     COMMAND = "command"
     MANUAL_VERIFICATION = "manual_verification"
     HANDOFF = "handoff"
+
+
+class VerificationCriterionStatus(StrEnum):
+    PENDING = "verification_pending"
+    MANUAL_EVIDENCE_REQUIRED = "manual_evidence_required"
+    MANUAL_EVIDENCE_SUBMITTED = "manual_evidence_submitted"
+    PASSED = "verification_passed"
+    FAILED = "verification_failed"
+    STALE = "verification_stale"
+    INVALIDATED = "verification_invalidated"
 
 
 class ExecutionAttemptType(StrEnum):
@@ -181,6 +192,10 @@ class ApprovalGrant(StrictModel):
     expected_state_version: int = Field(ge=1)
     authority: dict[str, Any]
     authority_hash: str = Field(min_length=64, max_length=64)
+    artifact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    artifact_type: str | None = Field(default=None, min_length=1, max_length=80)
+    artifact_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_binding_hash: str | None = Field(default=None, min_length=64, max_length=64)
     created_at: datetime
     invalidated_at: datetime | None = None
     invalidation_reason: str | None = None
@@ -392,6 +407,8 @@ class ProjectReadModel(StrictModel):
     current_patch_preview_artifact_hash: str | None = None
     current_command_preview_artifact_id: str | None = None
     current_command_preview_artifact_hash: str | None = None
+    current_rollback_preview_artifact_id: str | None = None
+    current_rollback_preview_artifact_hash: str | None = None
     current_verifier_result_artifact_id: str | None = None
     current_verifier_result_artifact_hash: str | None = None
     current_repair_preview_artifact_id: str | None = None

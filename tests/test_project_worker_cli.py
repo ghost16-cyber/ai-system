@@ -91,6 +91,22 @@ def test_legacy_host_backend_is_retired_even_if_old_opt_in_is_set(tmp_path: Path
         )
 
 
+def test_runtime_always_wires_durable_provider_neutral_synthesis(tmp_path: Path) -> None:
+    service, executor = build_runtime(
+        database_path=tmp_path / "control.db",
+        workspace_root=tmp_path,
+        execution_backend="disabled",
+    )
+
+    assert executor is None
+    coordinator_executor = service.coordinator_executor
+    assert coordinator_executor is not None
+    assert coordinator_executor.orchestrator is not None
+    assert coordinator_executor.provider_profile is not None
+    assert coordinator_executor.provider_profile.provider == "unavailable"
+    assert coordinator_executor.provider_profile.model_profile == "none"
+
+
 def test_dispatch_only_cli_runs_one_cycle(tmp_path: Path, capsys) -> None:
     result = main([
         "--once",

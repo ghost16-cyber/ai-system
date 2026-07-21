@@ -71,199 +71,8 @@ class ProjectControlPlane:
         return connection
 
     def initialize(self) -> None:
-        compatibility_ddl_enabled = initialize_stage3a_schema(self.database_path)
+        initialize_stage3a_schema(self.database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        if not compatibility_ddl_enabled:
-            assert_schema_compatible(self.database_path)
-            return
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS project_runs (
-                    project_run_id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    workspace_id TEXT NOT NULL,
-                    repository_root_fingerprint TEXT NOT NULL,
-                    lifecycle_status TEXT NOT NULL,
-                    state_version INTEGER NOT NULL CHECK(state_version >= 1),
-                    schema_version TEXT NOT NULL,
-                    run_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_runs_conversation
-                    ON project_runs(conversation_id, created_at, project_run_id);
-                CREATE INDEX IF NOT EXISTS idx_project_runs_status
-                    ON project_runs(lifecycle_status, updated_at);
-                CREATE INDEX IF NOT EXISTS idx_project_runs_workspace
-                    ON project_runs(workspace_id, updated_at);
-
-                CREATE TABLE IF NOT EXISTS project_scope_revisions (
-                    scope_revision_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    revision_number INTEGER NOT NULL CHECK(revision_number >= 1),
-                    content_hash TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    revision_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(project_run_id, revision_number),
-                    UNIQUE(project_run_id, content_hash),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_scope_project
-                    ON project_scope_revisions(project_run_id, revision_number);
-
-                CREATE TABLE IF NOT EXISTS project_plan_revisions_v3 (
-                    plan_revision_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    scope_revision_id TEXT NOT NULL,
-                    revision_number INTEGER NOT NULL CHECK(revision_number >= 1),
-                    content_hash TEXT NOT NULL,
-                    required_manifest_hash TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    revision_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(project_run_id, revision_number),
-                    UNIQUE(project_run_id, content_hash),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
-                    FOREIGN KEY(scope_revision_id) REFERENCES project_scope_revisions(scope_revision_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_plan_project
-                    ON project_plan_revisions_v3(project_run_id, revision_number);
-                CREATE INDEX IF NOT EXISTS idx_project_plan_scope
-                    ON project_plan_revisions_v3(scope_revision_id);
-
-                CREATE TABLE IF NOT EXISTS project_approval_grants (
-                    approval_grant_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    approval_type TEXT NOT NULL,
-                    plan_revision_id TEXT NOT NULL,
-                    scope_revision_id TEXT NOT NULL,
-                    manifest_hash TEXT NOT NULL,
-                    authority_hash TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    grant_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(project_run_id, approval_type, authority_hash),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
-                    FOREIGN KEY(plan_revision_id) REFERENCES project_plan_revisions_v3(plan_revision_id),
-                    FOREIGN KEY(scope_revision_id) REFERENCES project_scope_revisions(scope_revision_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_approval_binding
-                    ON project_approval_grants(project_run_id, plan_revision_id, scope_revision_id, manifest_hash);
-
-                CREATE TABLE IF NOT EXISTS project_approval_invalidations (
-                    invalidation_id TEXT PRIMARY KEY,
-                    approval_grant_id TEXT NOT NULL UNIQUE,
-                    project_run_id TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    superseded_by_id TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(approval_grant_id) REFERENCES project_approval_grants(approval_grant_id),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS project_execution_attempts (
-                    execution_attempt_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    attempt_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    plan_revision_id TEXT NOT NULL,
-                    scope_revision_id TEXT NOT NULL,
-                    attempt_number INTEGER NOT NULL CHECK(attempt_number >= 1),
-                    schema_version TEXT NOT NULL,
-                    attempt_json TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT,
-                    UNIQUE(project_run_id, attempt_type, idempotency_key),
-                    UNIQUE(project_run_id, attempt_type, attempt_number),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
-                    FOREIGN KEY(plan_revision_id) REFERENCES project_plan_revisions_v3(plan_revision_id),
-                    FOREIGN KEY(scope_revision_id) REFERENCES project_scope_revisions(scope_revision_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_attempt_status
-                    ON project_execution_attempts(project_run_id, status, started_at);
-                CREATE TABLE IF NOT EXISTS project_execution_dispatches (
-                    execution_dispatch_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    execution_attempt_id TEXT NOT NULL UNIQUE,
-                    attempt_type TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    expected_project_state_version INTEGER NOT NULL CHECK(expected_project_state_version >= 1),
-                    priority INTEGER NOT NULL,
-                    enqueue_idempotency_key TEXT NOT NULL,
-                    available_at TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    dispatch_json TEXT NOT NULL,
-                    worker_request_id TEXT,
-                    created_at TEXT NOT NULL,
-                    dispatched_at TEXT,
-                    cancelled_at TEXT,
-                    failure_classification TEXT,
-                    UNIQUE(project_run_id, enqueue_idempotency_key),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
-                    FOREIGN KEY(execution_attempt_id) REFERENCES project_execution_attempts(execution_attempt_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_dispatch_pending
-                    ON project_execution_dispatches(status, available_at, priority, created_at);
-                CREATE INDEX IF NOT EXISTS idx_project_dispatch_project
-                    ON project_execution_dispatches(project_run_id, created_at);
-
-
-                CREATE TABLE IF NOT EXISTS project_events (
-                    event_id TEXT PRIMARY KEY,
-                    project_run_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL CHECK(sequence >= 1),
-                    event_type TEXT NOT NULL,
-                    request_id TEXT NOT NULL,
-                    previous_state_version INTEGER NOT NULL,
-                    resulting_state_version INTEGER NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    event_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(project_run_id, sequence),
-                    UNIQUE(project_run_id, request_id),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_events_project
-                    ON project_events(project_run_id, sequence);
-                CREATE INDEX IF NOT EXISTS idx_project_events_request
-                    ON project_events(request_id);
-
-                CREATE TABLE IF NOT EXISTS project_idempotency (
-                    project_run_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL,
-                    command_type TEXT NOT NULL,
-                    request_hash TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(project_run_id, idempotency_key),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_project_idempotency_request
-                    ON project_idempotency(idempotency_key, command_type);
-
-                CREATE TABLE IF NOT EXISTS project_legacy_reconciliations (
-                    legacy_type TEXT NOT NULL,
-                    legacy_id TEXT NOT NULL,
-                    project_run_id TEXT NOT NULL UNIQUE,
-                    legacy_hash TEXT NOT NULL,
-                    canonical_generation TEXT NOT NULL DEFAULT 'legacy',
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(legacy_type, legacy_id),
-                    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
-                );
-                """
-            )
-            dispatch_columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(project_execution_dispatches)")
-            }
-            if "failure_classification" not in dispatch_columns:
-                connection.execute(
-                    "ALTER TABLE project_execution_dispatches ADD COLUMN failure_classification TEXT"
-                )
         assert_schema_compatible(self.database_path)
 
     def execute(self, command: ProjectCommand | dict[str, Any]) -> TransitionResult:
@@ -317,6 +126,20 @@ class ProjectControlPlane:
                 "SELECT 1 FROM project_idempotency WHERE project_run_id = ? AND idempotency_key = ?",
                 (project_run_id, idempotency_key),
             ).fetchone() is not None
+
+    def replay_completed(self, command: ProjectCommand) -> TransitionResult | None:
+        """Return a completed exact command result without evaluating live state.
+
+        Identity is still checked against the canonical project. The normalized
+        command hash includes every request/version/artifact/authority binding,
+        so a reused key with any changed binding fails closed.
+        """
+        parsed = ProjectCommand.model_validate(command)
+        request_hash = content_hash(parsed.model_dump(mode="json"))
+        with self._connect() as connection:
+            run = self._load_project(connection, parsed.project_run_id)
+            self._validate_identity(run, parsed)
+            return self._idempotent_result(connection, parsed, request_hash)
 
     def list_projects_for_conversation(self, conversation_id: str) -> list[ProjectReadModel]:
         with self._connect() as connection:
@@ -860,16 +683,15 @@ class ProjectControlPlane:
                 "pending_user_action": f"approve_command:{payload['command_id']}",
             }), artifact), ()
         if kind == ProjectCommandType.APPROVE_COMMAND:
-            approval_type = ApprovalType(str(payload.get("approval_type") or ApprovalType.COMMAND.value))
-            grant = self._create_approval(connection, run, command, approval_type)
+            # Client-supplied payload can never select the approval type: manual
+            # verification has its own dedicated SUBMIT_MANUAL_EVIDENCE command
+            # and criterion binding. Honoring a payload override here would let
+            # an approve_command request skip execution/verification entirely.
+            grant = self._create_approval(connection, run, command, ApprovalType.COMMAND)
             created.append(grant.approval_grant_id)
-            if approval_type == ApprovalType.MANUAL_VERIFICATION:
-                return self._with_grant(run, grant).model_copy(update={
-                    "pending_user_action": "complete_work_unit",
-                }), tuple(created)
             return self._with_grant(run, grant).model_copy(update={
                 "lifecycle_status": ProjectLifecycle.WORK_IN_PROGRESS,
-                "pending_user_action": "record_command_result" if approval_type == ApprovalType.COMMAND else "request_verification",
+                "pending_user_action": "record_command_result",
             }), tuple(created)
         if kind == ProjectCommandType.BEGIN_COMMAND_EXECUTION:
             command_id = _required(payload, "command_id")
@@ -928,12 +750,30 @@ class ProjectControlPlane:
                 "criterion_hash": self._hash(payload, "criterion_hash"),
             }
             succeeded = outcome == "passed"
+            if outcome == "manual_required":
+                active_attempt = self._active_attempt(connection, run)
+                if active_attempt is None:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "Manual evidence requires an active verification attempt.",
+                    )
+                verification[criterion_id]["outcome"] = "manual_evidence_required"
+                verification[criterion_id]["verification_artifact_id"] = command.artifact_id
+                verification[criterion_id]["verification_artifact_hash"] = command.artifact_hash
+                verification[criterion_id]["execution_attempt_id"] = active_attempt.execution_attempt_id
+                updated = self._with_artifact(run.model_copy(update={
+                    "verification_state": verification,
+                    "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING,
+                    "pending_user_action": f"submit_manual_evidence:{criterion_id}",
+                    "handoff_eligible": False,
+                }), artifact)
+                return updated, tuple(created)
             attempt = self._finish_or_create_attempt(connection, run, command, ExecutionAttemptType.VERIFICATION, succeeded=succeeded)
             created.append(attempt.execution_attempt_id)
             updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "verification_state": verification,
-                "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING if succeeded or outcome == "manual_required" else ProjectLifecycle.REPAIR_REQUIRED,
-                "pending_user_action": "complete_work_unit" if succeeded else ("approve_manual_verification" if outcome == "manual_required" else "initiate_repair"),
+                "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING if succeeded else ProjectLifecycle.REPAIR_REQUIRED,
+                "pending_user_action": "complete_work_unit" if succeeded else "initiate_repair",
                 "handoff_eligible": False,
             }), artifact)
             if succeeded and run.canonical_generation == "canonical":
@@ -955,6 +795,88 @@ class ProjectControlPlane:
                         },
                     })
             return updated, tuple(created)
+        if kind == ProjectCommandType.SUBMIT_MANUAL_EVIDENCE:
+            criterion_id = _required(payload, "criterion_id")
+            current = _copy(run.verification_state.get(criterion_id)) or {}
+            active_attempt = self._active_attempt(connection, run)
+            active_attempt_id = active_attempt.execution_attempt_id if active_attempt else None
+            if current.get("outcome") != "manual_evidence_required":
+                raise ProjectControlError(
+                    ProjectControlErrorCode.STALE_VERIFICATION,
+                    "The criterion is not awaiting manual evidence.",
+                )
+            exact = {
+                "plan_revision_id": run.current_plan_revision_id,
+                "scope_revision_id": run.current_scope_revision_id,
+                "manifest_hash": run.current_manifest_hash,
+                "execution_attempt_id": active_attempt_id,
+                "criterion_hash": current.get("criterion_hash"),
+                "verification_artifact_id": current.get("verification_artifact_id"),
+            }
+            for field, expected_value in exact.items():
+                if payload.get(field) != expected_value:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        f"Manual evidence has a stale {field.replace('_', ' ')} binding.",
+                    )
+            decision = _required(payload, "decision")
+            if decision not in {"passed", "failed"}:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "Manual evidence requires an explicit passed or failed reviewer decision.",
+                )
+            evidence_id = _required(payload, "evidence_id")
+            evidence_hash = self._hash(payload, "evidence_hash")
+            now = self._now()
+            evidence_record = {
+                "schema_version": "astra.project-control.manual-evidence.v1",
+                "evidence_id": evidence_id,
+                "project_run_id": run.project_run_id,
+                "criterion_id": criterion_id,
+                "criterion_hash": current.get("criterion_hash"),
+                "work_unit_id": payload.get("work_unit_id"),
+                "execution_attempt_id": active_attempt_id,
+                "plan_revision_id": run.current_plan_revision_id,
+                "scope_revision_id": run.current_scope_revision_id,
+                "manifest_hash": run.current_manifest_hash,
+                "verification_artifact_id": current.get("verification_artifact_id"),
+                "evidence_artifact_id": command.artifact_id,
+                "evidence_hash": evidence_hash,
+                "decision": decision,
+                "evidence": _bounded_object(payload.get("evidence")),
+                "reviewer_id": command.actor_id,
+                "created_at": now.isoformat(),
+            }
+            connection.execute(
+                "INSERT INTO project_manual_evidence (evidence_id, project_run_id, criterion_id, execution_attempt_id, evidence_hash, status, idempotency_key, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (evidence_id, run.project_run_id, criterion_id, str(active_attempt_id),
+                 evidence_hash, decision, command.idempotency_key, canonical_json(evidence_record),
+                 now.isoformat(), now.isoformat()),
+            )
+            verification = _copy(run.verification_state)
+            verification[criterion_id] = {
+                **current,
+                "outcome": decision,
+                "manual_status": "verification_passed" if decision == "passed" else "verification_failed",
+                "evidence_id": evidence_id,
+                "evidence_artifact_id": command.artifact_id,
+                "evidence_hash": evidence_hash,
+                "reviewer_id": command.actor_id,
+            }
+            attempt = self._finish_or_create_attempt(
+                connection, run, command, ExecutionAttemptType.VERIFICATION,
+                succeeded=decision == "passed",
+            )
+            created.extend((evidence_id, attempt.execution_attempt_id))
+            updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
+                "verification_state": verification,
+                "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING,
+                "pending_user_action": "complete_work_unit" if decision == "passed" else f"review_manual_failure:{criterion_id}",
+                "handoff_eligible": False,
+            }), artifact)
+            if decision == "passed" and run.canonical_generation == "canonical":
+                updated = self._advance_after_canonical_verification(connection, updated, criterion_id)
+            return updated, tuple(created)
         if kind == ProjectCommandType.REQUEST_CLARIFICATION:
             return run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.CLARIFICATION_REQUIRED,
@@ -975,6 +897,7 @@ class ProjectControlPlane:
             scope = self._create_scope(connection, run, command, specification_hash)
             created.append(scope.scope_revision_id)
             self._invalidate_approvals(connection, run.project_run_id, "scope_revision_superseded")
+            self._invalidate_manual_evidence(connection, run.project_run_id, "scope_revision_superseded")
             return self._with_artifact(run.model_copy(update={
                 "specification_hash": specification_hash,
                 "current_scope_revision_id": scope.scope_revision_id,
@@ -993,6 +916,7 @@ class ProjectControlPlane:
                     "The automatic one-repair budget has been exhausted.",
                 )
             failure_artifact_id = _required(payload, "failure_artifact_id")
+            self._invalidate_manual_evidence(connection, run.project_run_id, "repair_attempt_started")
             if run.current_artifact_ids.get("failure_evidence") != failure_artifact_id:
                 raise ProjectControlError(
                     ProjectControlErrorCode.STALE_VERIFICATION,
@@ -1025,10 +949,10 @@ class ProjectControlPlane:
             return updated, tuple(created)
         if kind == ProjectCommandType.RECORD_ROLLBACK_PREVIEW:
             rollback_id = _required(payload, "rollback_id")
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.ROLLBACK_PENDING,
                 "pending_user_action": f"approve_rollback:{rollback_id}",
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.APPROVE_ROLLBACK:
             grant = self._create_approval(connection, run, command, ApprovalType.ROLLBACK)
             created.append(grant.approval_grant_id)
@@ -1085,6 +1009,7 @@ class ProjectControlPlane:
                 succeeded=bool(payload.get("succeeded")),
             )
             created.append(attempt.execution_attempt_id)
+            self._invalidate_manual_evidence(connection, run.project_run_id, "rollback_changed_manifest")
             succeeded = bool(payload.get("succeeded"))
             return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "current_manifest_hash": _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash,
@@ -1273,6 +1198,24 @@ class ProjectControlPlane:
             (resulting.project_run_id, command.idempotency_key, command.command_type.value,
              request_hash, result.model_dump_json(), now.isoformat()),
         )
+        replay_payload = {
+            "request_fingerprint": request_hash,
+            "command": command.model_dump(mode="json"),
+            "result": result.model_dump(mode="json"),
+            "artifact_binding": {
+                "artifact_id": command.artifact_id,
+                "artifact_type": command.artifact_type,
+                "artifact_hash": command.artifact_hash,
+                "artifact_binding_hash": command.artifact_binding_hash,
+            },
+            "authority": command.authority_scope,
+        }
+        connection.execute(
+            "INSERT INTO project_action_replays (project_run_id, idempotency_key, action_type, request_fingerprint, terminal_status, state_version_before, state_version_after, event_id, result_schema_version, replay_json, created_at) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)",
+            (resulting.project_run_id, command.idempotency_key, command.command_type.value,
+             request_hash, event.previous_state_version, resulting.state_version,
+             event.event_id, result.schema_version, canonical_json(replay_payload), now.isoformat()),
+        )
         return result
 
     def _idempotent_result(self, connection: sqlite3.Connection, command: ProjectCommand, request_hash: str) -> TransitionResult | None:
@@ -1287,7 +1230,9 @@ class ProjectControlPlane:
                 ProjectControlErrorCode.IDEMPOTENCY_CONFLICT,
                 "This idempotency key was already used for a different project command.",
             )
-        return self._stored_model(TransitionResult, row["result_json"], "transition result")
+        return self._stored_model(TransitionResult, row["result_json"], "transition result").model_copy(
+            update={"replayed": True}
+        )
 
     def _load_execution_dispatch(
         self,
@@ -1441,7 +1386,11 @@ class ProjectControlPlane:
             plan_revision_id=run.current_plan_revision_id, scope_revision_id=run.current_scope_revision_id,
             specification_hash=run.specification_hash, manifest_hash=run.current_manifest_hash,
             expected_state_version=command.expected_state_version, authority=authority,
-            authority_hash=authority_hash, created_at=self._now(),
+            authority_hash=authority_hash,
+            artifact_id=command.artifact_id, artifact_type=command.artifact_type,
+            artifact_hash=command.artifact_hash,
+            artifact_binding_hash=command.artifact_binding_hash,
+            created_at=self._now(),
         )
         connection.execute(
             "INSERT INTO project_approval_grants (approval_grant_id, project_run_id, approval_type, plan_revision_id, scope_revision_id, manifest_hash, authority_hash, schema_version, grant_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1588,6 +1537,18 @@ class ProjectControlPlane:
             connection, run, command, attempt_type, terminal=True, succeeded=succeeded,
         )
 
+    def _active_attempt(
+        self, connection: sqlite3.Connection, run: ProjectRun
+    ) -> ExecutionAttempt | None:
+        row = connection.execute(
+            "SELECT attempt_json FROM project_execution_attempts WHERE project_run_id = ? AND status IN ('pending', 'active', 'cancelling') ORDER BY started_at DESC, execution_attempt_id DESC LIMIT 1",
+            (run.project_run_id,),
+        ).fetchone()
+        return (
+            self._stored_model(ExecutionAttempt, row["attempt_json"], "attempt")
+            if row is not None else None
+        )
+
     def _finish_active_attempt(
         self,
         connection: sqlite3.Connection,
@@ -1628,6 +1589,22 @@ class ProjectControlPlane:
             connection.execute(
                 "INSERT INTO project_approval_invalidations (invalidation_id, approval_grant_id, project_run_id, reason, created_at) VALUES (?, ?, ?, ?, ?)",
                 (uuid4().hex, row["approval_grant_id"], project_run_id, reason, now),
+            )
+
+    def _invalidate_manual_evidence(
+        self, connection: sqlite3.Connection, project_run_id: str, reason: str
+    ) -> None:
+        rows = connection.execute(
+            "SELECT evidence_id, evidence_json FROM project_manual_evidence WHERE project_run_id = ? AND status IN ('submitted', 'passed', 'failed')",
+            (project_run_id,),
+        ).fetchall()
+        now = self._now().isoformat()
+        for row in rows:
+            record = json.loads(row["evidence_json"])
+            record.update({"status": "invalidated", "invalidation_reason": reason, "invalidated_at": now})
+            connection.execute(
+                "UPDATE project_manual_evidence SET status = 'invalidated', evidence_json = ?, updated_at = ? WHERE evidence_id = ?",
+                (canonical_json(record), now, row["evidence_id"]),
             )
 
     def _require_approval(self, connection: sqlite3.Connection, run: ProjectRun, approval_type: ApprovalType) -> ApprovalGrant:
@@ -1780,7 +1757,21 @@ class ProjectControlPlane:
             mode = str(criterion.get("verification_mode") or "")
             evidence = run.verification_state.get(criterion_id) or {}
             if mode == "manual_user_verification_required":
-                self._require_authority_approval(connection, run, ApprovalType.MANUAL_VERIFICATION, "criterion_id", criterion_id)
+                if evidence.get("outcome") != "passed" or not evidence.get("evidence_id"):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "A required manual criterion lacks fresh accepted evidence.",
+                    )
+                if (
+                    evidence.get("plan_revision_id") != run.current_plan_revision_id
+                    or evidence.get("scope_revision_id") != run.current_scope_revision_id
+                    or evidence.get("manifest_hash") != run.current_manifest_hash
+                    or evidence.get("criterion_hash") != content_hash(criterion)
+                ):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "Required manual evidence is stale.",
+                    )
                 continue
             if not evidence or evidence.get("outcome") != "passed":
                 raise ProjectControlError(ProjectControlErrorCode.STALE_VERIFICATION, "A required criterion lacks fresh passing verifier evidence.")
@@ -1803,6 +1794,13 @@ class ProjectControlPlane:
             ProjectCommandType.REVISE_SCOPE: frozenset({ProjectArtifactType.SPECIFICATION}),
             ProjectCommandType.REGISTER_MANIFEST: frozenset({ProjectArtifactType.MANIFEST}),
             ProjectCommandType.PROPOSE_PLAN_REVISION: frozenset({ProjectArtifactType.PLAN}),
+            ProjectCommandType.APPROVE_PLAN: frozenset({ProjectArtifactType.PLAN}),
+            ProjectCommandType.APPROVE_PATCH: frozenset({
+                ProjectArtifactType.PATCH_PREVIEW,
+                ProjectArtifactType.REPAIR_PREVIEW,
+            }),
+            ProjectCommandType.RECORD_ROLLBACK_PREVIEW: frozenset({ProjectArtifactType.ROLLBACK_PREVIEW}),
+            ProjectCommandType.APPROVE_ROLLBACK: frozenset({ProjectArtifactType.ROLLBACK_PREVIEW}),
             ProjectCommandType.BEGIN_WORK_UNIT: frozenset({ProjectArtifactType.PATCH_PREVIEW}),
             ProjectCommandType.INITIATE_REPAIR: frozenset({ProjectArtifactType.REPAIR_PREVIEW}),
             ProjectCommandType.RECORD_PATCH_PREVIEW: frozenset({
@@ -1811,6 +1809,7 @@ class ProjectControlPlane:
             }),
             ProjectCommandType.RECORD_COMMAND_PREVIEW: frozenset({ProjectArtifactType.COMMAND_PREVIEW}),
             ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({ProjectArtifactType.VERIFIER_RESULT}),
+            ProjectCommandType.SUBMIT_MANUAL_EVIDENCE: frozenset({ProjectArtifactType.MANUAL_EVIDENCE}),
             ProjectCommandType.REQUEST_HANDOFF: frozenset({ProjectArtifactType.HANDOFF}),
             ProjectCommandType.FINALIZE_PROJECT: frozenset({ProjectArtifactType.HANDOFF}),
             ProjectCommandType.MARK_BLOCKED: frozenset({ProjectArtifactType.COORDINATOR_DECISION}),
@@ -1823,6 +1822,8 @@ class ProjectControlPlane:
             ProjectCommandType.RECOVER_ATTEMPT: frozenset({ProjectArtifactType.EXECUTION_RESULT}),
         }
         allowed = expected.get(command.command_type)
+        if command.command_type == ProjectCommandType.APPROVE_COMMAND:
+            allowed = frozenset({ProjectArtifactType.COMMAND_PREVIEW})
         supplied = command.artifact_id is not None
         required = (
             run.canonical_generation == "canonical"
@@ -1830,6 +1831,7 @@ class ProjectControlPlane:
             and command.command_type not in {
                 ProjectCommandType.BEGIN_WORK_UNIT,
                 ProjectCommandType.RECOVER_ATTEMPT,
+                ProjectCommandType.RECORD_ROLLBACK_PREVIEW,
             }
         )
         if not supplied:
@@ -1894,6 +1896,75 @@ class ProjectControlPlane:
                 raise ProjectControlError(
                     ProjectControlErrorCode.INVALID_COMMAND,
                     "The execution-result artifact is bound to a different attempt.",
+                )
+        for field in ("work_unit_id", "criterion_id", "criterion_hash"):
+            bound = getattr(binding, field, None)
+            if bound is not None and bound != _text(command.payload.get(field)):
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    f"The artifact is bound to a different {field.replace('_', ' ')}.",
+                )
+        approval_commands = {
+            ProjectCommandType.APPROVE_PLAN,
+            ProjectCommandType.APPROVE_PATCH,
+            ProjectCommandType.APPROVE_COMMAND,
+            ProjectCommandType.APPROVE_ROLLBACK,
+        }
+        if command.command_type in approval_commands:
+            current_artifact_id = run.current_artifact_ids.get(artifact.artifact_type.value)
+            if current_artifact_id != artifact.artifact_id:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.NON_CURRENT_ARTIFACT,
+                    "The approval must reference the current artifact of its type, not a superseded one.",
+                )
+            # A plan artifact is the immutable input that creates its plan
+            # revision, so it cannot self-reference that revision. The current
+            # artifact pointer plus the command's exact plan revision supplies
+            # that link. All later approval artifacts must carry it directly.
+            plan_binding_matches = (
+                artifact.artifact_type == ProjectArtifactType.PLAN
+                and binding.plan_revision_id is None
+            ) or binding.plan_revision_id == run.current_plan_revision_id
+            if (
+                not plan_binding_matches
+                or binding.scope_revision_id != run.current_scope_revision_id
+                or binding.manifest_hash != run.current_manifest_hash
+            ):
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "Approval artifacts require complete bindings to the current plan, scope, and manifest.",
+                )
+            bound_object_fields = {
+                "work_unit_id": artifact.payload.get("work_unit_id"),
+                "criterion_id": artifact.payload.get("criterion_id"),
+                "patch_id": artifact.payload.get("patch_id"),
+                "command_id": artifact.payload.get("command_id"),
+                "rollback_id": artifact.payload.get("rollback_id"),
+            }
+            for field, artifact_value in bound_object_fields.items():
+                if artifact_value is None:
+                    continue
+                requested_value = command.payload.get(field)
+                if requested_value is None:
+                    requested_value = command.authority_scope.get(field)
+                if str(requested_value or "") != str(artifact_value):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.INVALID_COMMAND,
+                        f"The approval is not bound to the artifact's exact {field}.",
+                    )
+            coordinator_bound_types = {
+                ProjectArtifactType.PATCH_PREVIEW,
+                ProjectArtifactType.REPAIR_PREVIEW,
+                ProjectArtifactType.COMMAND_PREVIEW,
+                ProjectArtifactType.VERIFIER_RESULT,
+            }
+            if (
+                artifact.artifact_type in coordinator_bound_types
+                and not binding.coordinator_intent_id
+            ):
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "Coordinator-produced approval artifacts require an exact coordinator-intent binding.",
                 )
         return artifact
 
@@ -2064,13 +2135,13 @@ class ProjectControlPlane:
             pending_user_action=run.pending_user_action,
             verification_summary={
                 "passed": outcomes.count("passed"), "failed": outcomes.count("failed"),
-                "manual_required": outcomes.count("manual_required"), "total": len(outcomes),
+                "manual_required": outcomes.count("manual_required") + outcomes.count("manual_evidence_required"),
+                "manual_evidence_required": outcomes.count("manual_evidence_required"),
+                "stale": outcomes.count("verification_stale") + outcomes.count("stale"),
+                "total": len(outcomes),
             },
             criterion_states={
-                criterion_id: {
-                    "outcome": str(evidence.get("outcome") or "pending"),
-                    "result_hash": str(evidence.get("result_hash") or ""),
-                }
+                criterion_id: _bounded_object(evidence)
                 for criterion_id, evidence in run.verification_state.items()
             },
             repair_state=_copy(run.repair_state),
@@ -2113,6 +2184,8 @@ class ProjectControlPlane:
             current_patch_preview_artifact_hash=run.current_artifact_hashes.get("patch_preview"),
             current_command_preview_artifact_id=run.current_artifact_ids.get("command_preview"),
             current_command_preview_artifact_hash=run.current_artifact_hashes.get("command_preview"),
+            current_rollback_preview_artifact_id=run.current_artifact_ids.get("rollback_preview"),
+            current_rollback_preview_artifact_hash=run.current_artifact_hashes.get("rollback_preview"),
             current_verifier_result_artifact_id=run.current_artifact_ids.get("verifier_result"),
             current_verifier_result_artifact_hash=run.current_artifact_hashes.get("verifier_result"),
             current_repair_preview_artifact_id=run.current_artifact_ids.get("repair_preview"),

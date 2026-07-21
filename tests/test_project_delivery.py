@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +75,39 @@ def _connect(client: TestClient, project: Path) -> str:
     )
     assert approved.status_code == 200
     return requested["conversation_id"]
+
+
+def _bound_delivery_request(
+    delivery: dict,
+    conversation_id: str,
+    idempotency_key: str,
+    **extra,
+) -> dict:
+    return {
+        "conversation_id": conversation_id,
+        **dict(delivery["compatibility_action_binding"]),
+        "idempotency_key": idempotency_key,
+        **extra,
+    }
+
+
+def _prepare_with_fresh_binding(
+    client: TestClient,
+    delivery_id: str,
+    conversation_id: str,
+    idempotency_key: str,
+):
+    """Model the reload-and-retry required when a coordinator advances state."""
+    for _ in range(100):
+        delivery = client.get(f"/chat/projects/deliveries/{delivery_id}").json()
+        response = client.post(
+            f"/chat/projects/deliveries/{delivery_id}/prepare",
+            json=_bound_delivery_request(delivery, conversation_id, idempotency_key),
+        )
+        if response.status_code != 409 or response.json()["detail"]["code"] != "stale_state_version":
+            return response
+        time.sleep(0.01)
+    raise AssertionError("coordinator kept advancing across exact-bound retries")
 
 
 def _satisfy(job: dict, project: Path, criterion: dict) -> dict:
@@ -328,7 +362,10 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
         before = (project / "app.py").read_text(encoding="utf-8")
         approved = client.post(
             f"/chat/projects/deliveries/{delivery_id}/plan/approve",
-            json={"conversation_id": conversation_id, "immutable_hash": delivery["plan"]["plan_hash"]},
+            json=_bound_delivery_request(
+                delivery, conversation_id, "approve-delivery-plan",
+                immutable_hash=delivery["plan"]["plan_hash"],
+            ),
         )
         assert approved.status_code == 200, approved.text
         assert (project / "app.py").read_text(encoding="utf-8") == before
@@ -341,8 +378,8 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
             f"/chat/projects/deliveries/{delivery_id}"
         ).json()["coordinator_intents"]
         assert coordinator_replay[0]["coordinator_intent_id"] == coordinator_before_prepare[0]["coordinator_intent_id"]
-        preview = client.post(
-            f"/chat/projects/deliveries/{delivery_id}/prepare", json={"conversation_id": conversation_id},
+        preview = _prepare_with_fresh_binding(
+            client, delivery_id, conversation_id, "prepare-delivery-work-unit"
         )
         assert preview.status_code == 200, preview.text
         patch = preview.json()["action"]["technical_details"]["project_patch"]
@@ -354,7 +391,7 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
             f"/chat/projects/patches/{patch['patch_id']}/approve",
             json={"chat_run_id": preview.json()["run_id"], "confirmation": f"APPROVE PATCH {patch['patch_id']}"},
         )
-        assert exact.status_code == 200
+        assert exact.status_code == 200, exact.text
         applied = client.post(
             f"/chat/projects/patches/{patch['patch_id']}/apply", json={"chat_run_id": preview.json()["run_id"]},
         )
@@ -399,11 +436,10 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
         )
         verification = client.post(
             f"/chat/projects/deliveries/{delivery_id}/verification",
-            json={
-                "conversation_id": conversation_id,
-                "criterion_id": subprocess_criterion["criterion_id"],
-                "idempotency_key": "queue-subprocess-verification",
-            },
+            json=_bound_delivery_request(
+                completed.json(), conversation_id, "queue-subprocess-verification",
+                criterion_id=subprocess_criterion["criterion_id"],
+            ),
         )
         assert verification.status_code == 200, verification.text
         command_run = verification.json()
@@ -482,23 +518,23 @@ def test_api_canonical_rollback_is_queued_and_rehydrates_exact_identity(tmp_path
         delivery_id = delivery["delivery_job_id"]
         assert client.post(
             f"/chat/projects/deliveries/{delivery_id}/plan/approve",
-            json={
-                "conversation_id": conversation_id,
-                "immutable_hash": delivery["plan"]["plan_hash"],
-            },
+            json=_bound_delivery_request(
+                delivery, conversation_id, "approve-rollback-plan",
+                immutable_hash=delivery["plan"]["plan_hash"],
+            ),
         ).status_code == 200
-        preview = client.post(
-            f"/chat/projects/deliveries/{delivery_id}/prepare",
-            json={"conversation_id": conversation_id},
+        preview = _prepare_with_fresh_binding(
+            client, delivery_id, conversation_id, "prepare-rollback-work-unit"
         ).json()
         patch = preview["action"]["technical_details"]["project_patch"]
-        assert client.post(
+        patch_approval = client.post(
             f"/chat/projects/patches/{patch['patch_id']}/approve",
             json={
                 "chat_run_id": preview["run_id"],
                 "confirmation": f"APPROVE PATCH {patch['patch_id']}",
             },
-        ).status_code == 200
+        )
+        assert patch_approval.status_code == 200, patch_approval.text
         assert client.post(
             f"/chat/projects/patches/{patch['patch_id']}/apply",
             json={"chat_run_id": preview["run_id"]},
@@ -552,7 +588,10 @@ def test_api_wrong_conversation_and_duplicate_plan_click_are_safe(tmp_path: Path
         run = client.post("/chat/projects/deliveries", json={"conversation_id": conversation_id, "user_request": TASK}).json()
         delivery = run["action"]["technical_details"]["project_delivery"]
         path = f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve"
-        body = {"conversation_id": conversation_id, "immutable_hash": delivery["plan"]["plan_hash"]}
+        body = _bound_delivery_request(
+            delivery, conversation_id, "duplicate-plan-click",
+            immutable_hash=delivery["plan"]["plan_hash"],
+        )
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: client.post(path, json=body), range(2)))
         assert sorted(response.status_code for response in responses) == [200, 409]
@@ -641,7 +680,10 @@ def test_conversation_hydration_returns_current_canonical_delivery_once(tmp_path
         delivery = started["action"]["technical_details"]["project_delivery"]
         approved = client.post(
             f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve",
-            json={"conversation_id": conversation_id, "immutable_hash": delivery["plan"]["plan_hash"]},
+            json=_bound_delivery_request(
+                delivery, conversation_id, "hydrate-plan-approval",
+                immutable_hash=delivery["plan"]["plan_hash"],
+            ),
         )
         detail = client.get(f"/chat/conversations/{conversation_id}")
 
@@ -671,15 +713,10 @@ def test_stage1_delivery_card_binds_actions_and_reloads_same_control_run(tmp_pat
         control = delivery["project_control"]
         assert control["project_run_id"] == delivery["delivery_job_id"]
         assert control["lifecycle_state"] == "awaiting_plan_approval"
-        request = {
-            "conversation_id": conversation_id,
-            "project_run_id": control["project_run_id"],
-            "plan_revision_id": control["plan_revision_id"],
-            "scope_revision_id": control["scope_revision_id"],
-            "expected_state_version": control["state_version"],
-            "idempotency_key": "browser-plan-approval-1",
-            "immutable_hash": delivery["plan"]["plan_hash"],
-        }
+        request = _bound_delivery_request(
+            delivery, conversation_id, "browser-plan-approval-1",
+            immutable_hash=delivery["plan"]["plan_hash"],
+        )
         approved = client.post(
             f"/chat/projects/deliveries/{delivery['delivery_job_id']}/plan/approve", json=request,
         )

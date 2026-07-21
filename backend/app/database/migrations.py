@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import quote
 
+from backend.app.database.canonical_schema import CANONICAL_PROJECT_SCHEMA_V9_SQL
+
 
 MigrationAction = Callable[[sqlite3.Connection], None]
 MigrationBoundary = Callable[[str, int, str | None], None]
@@ -80,9 +82,6 @@ class MigrationResult:
 
 # Stage 3B or a later migration checkpoint must absorb all compatibility DDL into
 # the reviewed registry and remove this switch plus the service-local DDL paths.
-STAGE3A_TEMPORARY_COMPATIBILITY_DDL_ENABLED = True
-
-
 _ARTIFACT_TABLE_SQL = """CREATE TABLE project_artifacts (
     artifact_id TEXT PRIMARY KEY,
     project_run_id TEXT NOT NULL,
@@ -391,6 +390,170 @@ fail when a legacy project has an active execution attempt
     )
 
 
+def _canonical_schema_ownership_step() -> SchemaMigrationStep:
+    checksum_material = "canonical-schema-ownership:v1\n" + CANONICAL_PROJECT_SCHEMA_V9_SQL
+
+    def apply(connection: sqlite3.Connection) -> None:
+        # Do not use executescript here: sqlite3 commits before executescript,
+        # which would violate the migration registry's atomic crash boundary.
+        # These reviewed statements contain no triggers or embedded semicolons.
+        coordinator_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'project_coordinator_intents'"
+        ).fetchone()
+        if coordinator_exists is not None:
+            coordinator_columns = {
+                str(row[1]) for row in connection.execute(
+                    "PRAGMA table_info(project_coordinator_intents)"
+                )
+            }
+            for name, definition in {
+                "lease_expires_at": "TEXT",
+                "heartbeat_at": "TEXT",
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "last_failure_classification": "TEXT",
+                "completed_at": "TEXT",
+            }.items():
+                if name not in coordinator_columns:
+                    connection.execute(
+                        f"ALTER TABLE project_coordinator_intents ADD COLUMN {name} {definition}"
+                    )
+        dispatch_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(project_execution_dispatches)")
+        }
+        if dispatch_columns and "failure_classification" not in dispatch_columns:
+            connection.execute(
+                "ALTER TABLE project_execution_dispatches "
+                "ADD COLUMN failure_classification TEXT"
+            )
+        worker_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'project_worker_requests'"
+        ).fetchone()
+        if worker_exists is not None:
+            worker_columns = {
+                str(row[1]) for row in connection.execute(
+                    "PRAGMA table_info(project_worker_requests)"
+                )
+            }
+            for name, definition in {
+                "lease_owner": "TEXT",
+                "lease_token_hash": "TEXT",
+                "lease_expires_at": "TEXT",
+                "heartbeat_at": "TEXT",
+                "cancellation_requested_at": "TEXT",
+                "failure_classification": "TEXT",
+                "finished_at": "TEXT",
+                "canonical_reconciled_at": "TEXT",
+            }.items():
+                if name not in worker_columns:
+                    connection.execute(
+                        f"ALTER TABLE project_worker_requests ADD COLUMN {name} {definition}"
+                    )
+        for statement in CANONICAL_PROJECT_SCHEMA_V9_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+
+    return SchemaMigrationStep(
+        "own_all_canonical_project_tables",
+        checksum_material,
+        apply,
+    )
+
+
+_STAGE7A_SCHEMA_SQL = """
+CREATE TABLE project_action_replays (
+    project_run_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    terminal_status TEXT NOT NULL CHECK(terminal_status IN ('completed', 'failed')),
+    state_version_before INTEGER NOT NULL,
+    state_version_after INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    result_schema_version TEXT NOT NULL,
+    replay_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(project_run_id, idempotency_key),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+);
+CREATE INDEX idx_project_action_replays_event ON project_action_replays(event_id);
+CREATE TABLE project_manual_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    criterion_id TEXT NOT NULL,
+    execution_attempt_id TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('submitted', 'passed', 'failed', 'stale', 'invalidated')),
+    idempotency_key TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_run_id, idempotency_key),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+);
+CREATE INDEX idx_project_manual_evidence_criterion ON project_manual_evidence(project_run_id, criterion_id, created_at);
+CREATE TABLE local_ai_capability_snapshots (
+    snapshot_id TEXT PRIMARY KEY, report_hash TEXT NOT NULL, report_json TEXT NOT NULL, generated_at TEXT NOT NULL
+);
+CREATE INDEX idx_local_ai_capability_time ON local_ai_capability_snapshots(generated_at);
+CREATE TABLE local_ai_providers (
+    provider_id TEXT PRIMARY KEY, config_version INTEGER NOT NULL CHECK(config_version >= 1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), profile_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE local_ai_models (
+    model_profile_id TEXT PRIMARY KEY, config_version INTEGER NOT NULL CHECK(config_version >= 1), provider_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), profile_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    FOREIGN KEY(provider_id) REFERENCES local_ai_providers(provider_id)
+);
+CREATE INDEX idx_local_ai_models_provider ON local_ai_models(provider_id, enabled);
+CREATE TABLE local_ai_role_mappings (
+    role_id TEXT PRIMARY KEY, model_profile_id TEXT NOT NULL, config_version INTEGER NOT NULL CHECK(config_version >= 1), mapping_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    FOREIGN KEY(model_profile_id) REFERENCES local_ai_models(model_profile_id)
+);
+CREATE TABLE local_ai_scheduler_jobs (
+    job_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, job_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_local_ai_scheduler_queue ON local_ai_scheduler_jobs(status, priority, created_at);
+CREATE TABLE local_ai_execution_provenance (
+    execution_id TEXT PRIMARY KEY, project_run_id TEXT, provider_id TEXT NOT NULL, model_profile_id TEXT NOT NULL, status TEXT NOT NULL, provenance_json TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+);
+CREATE INDEX idx_local_ai_provenance_project ON local_ai_execution_provenance(project_run_id, created_at);
+CREATE TABLE local_ai_config_idempotency (
+    idempotency_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE local_ai_audit_events (
+    event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, aggregate_id TEXT NOT NULL, event_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX idx_local_ai_audit_aggregate ON local_ai_audit_events(aggregate_id, created_at);
+CREATE TABLE local_ai_rag_source_manifests (
+    source_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled = 0), manifest_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE local_ai_evaluation_definitions (
+    evaluation_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled = 0), definition_json TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE local_ai_training_definitions (
+    training_definition_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled = 0), definition_json TEXT NOT NULL, created_at TEXT NOT NULL
+)
+"""
+
+
+def _stage7a_schema_step() -> SchemaMigrationStep:
+    def apply(connection: sqlite3.Connection) -> None:
+        for statement in _STAGE7A_SCHEMA_SQL.split(";"):
+            if statement.strip():
+                adoptable = statement.replace(
+                    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+                ).replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+                connection.execute(adoptable)
+
+    return SchemaMigrationStep(
+        "create_replay_manual_evidence_and_local_ai_tables",
+        "stage7a-schema:v1\n" + _STAGE7A_SCHEMA_SQL,
+        apply,
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -463,6 +626,18 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "compatibility_retirement",
             "astra-schema-migration:compatibility-retirement:v1",
             (_stage3h_compatibility_retirement_step(),),
+        ),
+        SchemaMigration(
+            9,
+            "canonical_schema_ownership",
+            "astra-schema-migration:canonical-schema-ownership:v1",
+            (_canonical_schema_ownership_step(),),
+        ),
+        SchemaMigration(
+            10,
+            "exact_replay_manual_evidence_and_local_ai",
+            "astra-schema-migration:exact-replay-manual-evidence-local-ai:v1",
+            (_stage7a_schema_step(),),
         ),
     )
 
@@ -656,11 +831,15 @@ def _backup_before_stage3h_tagging(path: Path) -> Path:
 
 
 def initialize_stage3a_schema(database_path: str | Path) -> bool:
-    """Validate/apply central migrations before temporary service-local DDL."""
+    """Compatibility name for the migration-only database bootstrap.
+
+    The boolean return is retained for callers being migrated away from the old
+    switch, but is always false: application tables are owned by migrations.
+    """
 
     preflight_schema_compatibility(database_path)
     apply_schema_migrations(database_path)
-    return STAGE3A_TEMPORARY_COMPATIBILITY_DDL_ENABLED
+    return False
 
 
 def current_schema_version(database_path: str | Path) -> int:
@@ -682,6 +861,267 @@ def current_schema_version(database_path: str | Path) -> int:
         raise MigrationError(f"Schema version inspection failed: {exc}") from exc
 
 
+# Declarative required shape for the canonical project schema at the current
+# ledger version. Read-only shape validation fails closed when a table, column,
+# or critical index is missing or altered, instead of letting a service-local
+# `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE` silently repair drift without a
+# new ledger entry.
+# Each table declares `present`: migration-owned tables must exist at the current
+# ledger version; service-owned tables (created by a service initializer that may
+# run before or after this assert) are validated only when they already exist, so
+# a dropped column on an existing table still fails closed without imposing a
+# cross-module initialization order.
+REQUIRED_SCHEMA_SHAPE: dict[int, dict[str, dict[str, object]]] = {
+    8: {
+        # Migration-owned tables (always present after the ledger is applied).
+        "project_artifacts": {
+            "present": True,
+            "columns": ("artifact_id", "project_run_id", "content_hash", "binding_hash", "revision_number"),
+            "indexes": ("idx_project_artifacts_revision",),
+        },
+        "project_coordinator_intents": {
+            "present": True,
+            "columns": ("coordinator_intent_id", "project_run_id", "status", "intent_json"),
+        },
+        "project_model_invocations": {
+            "present": True,
+            "columns": ("invocation_id", "project_run_id", "idempotency_key", "status"),
+        },
+        "project_compatibility_records": {
+            "present": True,
+            "columns": ("record_id", "source_id", "generation", "read_only"),
+        },
+        # Service-owned tables (validated only when already created).
+        "project_runs": {
+            "present": False,
+            "columns": ("project_run_id", "lifecycle_status", "state_version", "run_json"),
+        },
+        "project_events": {
+            "present": False,
+            "columns": ("event_id", "project_run_id", "event_json"),
+        },
+        "project_approval_grants": {
+            "present": False,
+            "columns": ("approval_grant_id", "project_run_id", "approval_type", "grant_json"),
+        },
+        "project_execution_dispatches": {
+            # `failure_classification` is the column the audit flagged as being
+            # silently re-added by service-local repair.
+            "present": False,
+            "columns": ("execution_dispatch_id", "project_run_id", "failure_classification"),
+        },
+        "project_idempotency": {
+            "present": False,
+            "columns": ("project_run_id", "idempotency_key", "request_hash", "result_json"),
+        },
+    },
+    9: {
+        "project_runs": {
+            "present": True,
+            "columns": ("project_run_id", "conversation_id", "workspace_id", "lifecycle_status", "state_version", "run_json"),
+            "indexes": ("idx_project_runs_conversation", "idx_project_runs_status", "idx_project_runs_workspace"),
+        },
+        "project_scope_revisions": {
+            "present": True,
+            "columns": ("scope_revision_id", "project_run_id", "revision_number", "content_hash", "revision_json"),
+            "indexes": ("idx_project_scope_project",),
+        },
+        "project_plan_revisions_v3": {
+            "present": True,
+            "columns": ("plan_revision_id", "project_run_id", "scope_revision_id", "required_manifest_hash", "revision_json"),
+            "indexes": ("idx_project_plan_project", "idx_project_plan_scope"),
+        },
+        "project_approval_grants": {
+            "present": True,
+            "columns": ("approval_grant_id", "project_run_id", "approval_type", "authority_hash", "grant_json"),
+            "indexes": ("idx_project_approval_binding",),
+        },
+        "project_execution_attempts": {
+            "present": True,
+            "columns": ("execution_attempt_id", "project_run_id", "attempt_type", "status", "attempt_json"),
+            "indexes": ("idx_project_attempt_status",),
+        },
+        "project_execution_dispatches": {
+            "present": True,
+            "columns": ("execution_dispatch_id", "project_run_id", "execution_attempt_id", "failure_classification", "dispatch_json"),
+            "indexes": ("idx_project_dispatch_pending", "idx_project_dispatch_project"),
+        },
+        "project_events": {
+            "present": True,
+            "columns": ("event_id", "project_run_id", "sequence", "request_id", "event_json"),
+            "indexes": ("idx_project_events_project", "idx_project_events_request"),
+        },
+        "project_idempotency": {
+            "present": True,
+            "columns": ("project_run_id", "idempotency_key", "request_hash", "result_json"),
+            "indexes": ("idx_project_idempotency_request",),
+        },
+        "project_artifacts": {
+            "present": True,
+            "columns": ("artifact_id", "project_run_id", "content_hash", "binding_hash", "revision_number"),
+            "indexes": ("idx_project_artifacts_project", "idx_project_artifacts_binding", "idx_project_artifacts_revision"),
+        },
+        "project_model_invocations": {
+            "present": True,
+            "columns": ("invocation_id", "project_run_id", "coordinator_intent_id", "idempotency_key", "status", "invocation_json"),
+            "indexes": ("idx_project_model_invocations_project", "idx_project_model_invocations_claim", "idx_project_model_invocations_binding"),
+        },
+        "project_coordinator_intents": {
+            "present": True,
+            "columns": ("coordinator_intent_id", "project_run_id", "status", "heartbeat_at", "attempt_count", "intent_json"),
+            "indexes": ("idx_coordinator_pending", "idx_coordinator_project", "idx_coordinator_claimed_lease"),
+        },
+        "project_worker_requests": {
+            "present": True,
+            "columns": ("worker_request_id", "project_run_id", "execution_attempt_id", "status", "request_json", "canonical_reconciled_at"),
+            "indexes": ("idx_project_worker_claim", "idx_project_worker_project", "idx_project_worker_lease"),
+        },
+        "project_worker_events": {
+            "present": True,
+            "columns": ("event_id", "worker_request_id", "project_run_id", "sequence", "event_json"),
+            "indexes": ("idx_project_worker_events_request",),
+        },
+        "project_file_mutation_specs": {
+            "present": True,
+            "columns": ("file_mutation_id", "project_run_id", "execution_attempt_id", "spec_hash", "spec_json"),
+            "indexes": ("idx_file_mutation_project",),
+        },
+        "project_file_mutation_journals": {
+            "present": True,
+            "columns": ("file_mutation_id", "status", "journal_json", "failure_classification"),
+            "indexes": ("idx_file_mutation_journal_status",),
+        },
+        "project_file_mutation_snapshots": {
+            "present": True,
+            "columns": ("file_mutation_id", "operation_index", "relative_path", "existed_before"),
+        },
+        "project_execution_cancellations": {
+            "present": True,
+            "columns": ("cancellation_id", "project_run_id", "execution_attempt_id", "status", "cancellation_json"),
+            "indexes": ("idx_project_execution_cancellations_status",),
+        },
+        "project_projection_checkpoints": {
+            "present": True,
+            "columns": ("project_run_id", "last_event_sequence", "status", "updated_at"),
+            "indexes": ("idx_project_projection_checkpoints_status",),
+        },
+        "project_repair_cycles_v2": {
+            "present": True,
+            "columns": ("repair_cycle_id", "project_run_id", "cycle_number", "status", "cycle_json"),
+            "indexes": ("idx_project_repair_cycles_v2_status",),
+        },
+        "project_compatibility_records": {
+            "present": True,
+            "columns": ("record_id", "source_table", "source_id", "generation", "read_only"),
+            "sql_contains": ("CHECK(generation IN ('legacy', 'canonical'))", "CHECK(read_only IN (0, 1))"),
+        },
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[10] = {
+    **REQUIRED_SCHEMA_SHAPE[9],
+    "project_action_replays": {
+        "present": True,
+        "columns": ("project_run_id", "idempotency_key", "request_fingerprint", "terminal_status", "replay_json"),
+        "indexes": ("idx_project_action_replays_event",),
+    },
+    "project_manual_evidence": {
+        "present": True,
+        "columns": ("evidence_id", "project_run_id", "criterion_id", "execution_attempt_id", "status", "evidence_json"),
+        "indexes": ("idx_project_manual_evidence_criterion",),
+    },
+    "local_ai_capability_snapshots": {"present": True, "columns": ("snapshot_id", "report_hash", "report_json"), "indexes": ("idx_local_ai_capability_time",)},
+    "local_ai_providers": {"present": True, "columns": ("provider_id", "config_version", "enabled", "profile_json")},
+    "local_ai_models": {"present": True, "columns": ("model_profile_id", "provider_id", "enabled", "profile_json"), "indexes": ("idx_local_ai_models_provider",)},
+    "local_ai_role_mappings": {"present": True, "columns": ("role_id", "model_profile_id", "config_version", "mapping_json")},
+    "local_ai_scheduler_jobs": {"present": True, "columns": ("job_id", "idempotency_key", "request_hash", "status", "job_json"), "indexes": ("idx_local_ai_scheduler_queue",)},
+    "local_ai_execution_provenance": {"present": True, "columns": ("execution_id", "project_run_id", "provider_id", "model_profile_id", "provenance_json"), "indexes": ("idx_local_ai_provenance_project",)},
+    "local_ai_config_idempotency": {"present": True, "columns": ("idempotency_key", "request_hash", "result_json")},
+    "local_ai_audit_events": {"present": True, "columns": ("event_id", "event_type", "aggregate_id", "event_json"), "indexes": ("idx_local_ai_audit_aggregate",)},
+    "local_ai_rag_source_manifests": {"present": True, "columns": ("source_id", "enabled", "manifest_json"), "sql_contains": ("CHECK(enabled = 0)",)},
+    "local_ai_evaluation_definitions": {"present": True, "columns": ("evaluation_id", "enabled", "definition_json"), "sql_contains": ("CHECK(enabled = 0)",)},
+    "local_ai_training_definitions": {"present": True, "columns": ("training_definition_id", "enabled", "definition_json"), "sql_contains": ("CHECK(enabled = 0)",)},
+}
+
+
+def validate_schema_shape(database_path: str | Path, current_version: int) -> None:
+    """Fail closed when the live schema drifts from the required shape.
+
+    Runs read-only after ledger validation. A required migration-owned table that
+    is missing, or any required table that exists but is missing a required column
+    or critical index, is rejected rather than silently repaired.
+    """
+    shape = REQUIRED_SCHEMA_SHAPE.get(current_version)
+    if not shape:
+        return
+    path = Path(database_path)
+    with _connect_readonly(path) as connection:
+        for table, requirements in shape.items():
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if exists is None:
+                if requirements.get("present"):
+                    raise MigrationError(
+                        f"Required table '{table}' is missing at schema version {current_version}."
+                    )
+                continue
+            columns = {
+                str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            missing_columns = tuple(
+                column for column in requirements.get("columns", ()) if column not in columns
+            )
+            if missing_columns:
+                raise MigrationError(
+                    f"Table '{table}' is missing required column(s) "
+                    f"{', '.join(missing_columns)} at schema version {current_version}."
+                )
+            index_names = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?",
+                    (table,),
+                )
+            }
+            missing_indexes = tuple(
+                index for index in requirements.get("indexes", ()) if index not in index_names
+            )
+            if missing_indexes:
+                raise MigrationError(
+                    f"Table '{table}' is missing required index(es) "
+                    f"{', '.join(missing_indexes)} at schema version {current_version}."
+                )
+            foreign_keys = {
+                (str(row[3]), str(row[2]), str(row[4]))
+                for row in connection.execute(f"PRAGMA foreign_key_list({table})")
+            }
+            missing_foreign_keys = tuple(
+                item for item in requirements.get("foreign_keys", ())
+                if tuple(item) not in foreign_keys
+            )
+            if missing_foreign_keys:
+                raise MigrationError(
+                    f"Table '{table}' is missing required foreign key(s) at schema "
+                    f"version {current_version}."
+                )
+            table_sql_row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            normalized_sql = " ".join(str(table_sql_row[0] or "").split())
+            missing_sql = tuple(
+                fragment for fragment in requirements.get("sql_contains", ())
+                if " ".join(str(fragment).split()) not in normalized_sql
+            )
+            if missing_sql:
+                raise MigrationError(
+                    f"Table '{table}' is missing a required constraint at schema "
+                    f"version {current_version}."
+                )
+
+
 def assert_schema_compatible(
     database_path: str | Path,
     *,
@@ -700,4 +1140,5 @@ def assert_schema_compatible(
         raise MigrationError(
             f"Database schema version {current} is not current ({registry[-1].version})."
         )
+    validate_schema_shape(path, current)
     return current
