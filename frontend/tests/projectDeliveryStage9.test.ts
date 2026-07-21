@@ -190,6 +190,9 @@ test("canonical queue and coordinator identities survive delivery reload parsing
     active_execution_attempt_status: "active",
     execution_dispatch_id: "dispatch-1", execution_dispatch_status: "dispatched",
     worker_request_id: "worker-request-1", worker_request_status: "running",
+    execution_cancellation_id: "cancellation-1", execution_cancellation_status: "dispatched",
+    projection_status: "paused", projection_lag: 2,
+    projection_failure_classification: "projection_failed:ValueError",
     execution_evidence_references: { image_digest: "sha256:abc" },
   };
   delivery.coordinator_intents = [{
@@ -200,6 +203,11 @@ test("canonical queue and coordinator identities survive delivery reload parsing
   assert.equal(action.execution?.attemptId, "attempt-1");
   assert.equal(action.execution?.workerRequestId, "worker-request-1");
   assert.equal(action.execution?.workerStatus, "running");
+  assert.equal(action.execution?.cancellationId, "cancellation-1");
+  assert.equal(action.execution?.cancellationStatus, "dispatched");
+  assert.equal(action.execution?.projectionStatus, "paused");
+  assert.equal(action.execution?.projectionLag, 2);
+  assert.equal(action.execution?.recoveryClassification, "projection_failed:ValueError");
   assert.equal(action.coordinatorIntent?.id, "intent-1");
   assert.equal(action.coordinatorIntent?.status, "claimed");
 });

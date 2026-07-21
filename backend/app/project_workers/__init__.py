@@ -13,7 +13,6 @@ from backend.app.project_workers.contracts import (
     WorkerRuntimeInstance,
 )
 from backend.app.project_workers.errors import ProjectWorkerError, ProjectWorkerErrorCode
-from backend.app.project_workers.execution import ProjectSubprocessExecutor
 from backend.app.project_workers.isolated_execution import ProjectIsolatedExecutor
 from backend.app.project_workers.isolation import (
     DockerIsolationBackend,
@@ -59,9 +58,16 @@ from backend.app.project_workers.runtime_contracts import (
     calculate_execution_hash,
 )
 from backend.app.project_workers.service import ProjectWorkerService
+from backend.app.project_workers.cancellation import (
+    CancellationDispatcher,
+    CancellationDispatchReport,
+)
+from backend.app.project_workers.reconciliation import TerminalResultReconciler
 
 __all__ = [
     "CompositeProjectExecutor",
+    "CancellationDispatcher",
+    "CancellationDispatchReport",
     "ExecutionInputArtifact",
     "FileMutationEngine",
     "FileMutationError",
@@ -84,13 +90,13 @@ __all__ = [
     "ProjectExecutionPolicyError",
     "ProjectIsolatedExecutor",
     "ProjectMutationExecutor",
-    "ProjectSubprocessExecutor",
     "ProjectWorkerError",
     "ProjectWorkerErrorCode",
     "ProjectWorkerEvent",
     "ProjectWorkerQueue",
     "ProjectWorkerRequest",
     "ProjectWorkerService",
+    "TerminalResultReconciler",
     "WorkerCommandAction",
     "WorkerCompletion",
     "WorkerCompletionOutcome",

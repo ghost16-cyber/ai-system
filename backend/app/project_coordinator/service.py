@@ -80,6 +80,9 @@ class ProjectCoordinatorService:
                     schema_version TEXT NOT NULL,
                     intent_json TEXT NOT NULL,
                     lease_expires_at TEXT,
+                    heartbeat_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_failure_classification TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     completed_at TEXT,
@@ -158,17 +161,45 @@ class ProjectCoordinatorService:
                     f"The durable {intent_type.value} budget of {limit} was reached."
                 )
             connection.execute(
-                "INSERT INTO project_coordinator_intents (coordinator_intent_id, project_run_id, intent_type, status, trigger_event_id, idempotency_key, plan_revision_id, scope_revision_id, manifest_hash, expected_project_state_version, payload_hash, schema_version, intent_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO project_coordinator_intents (coordinator_intent_id, project_run_id, intent_type, status, trigger_event_id, idempotency_key, plan_revision_id, scope_revision_id, manifest_hash, expected_project_state_version, payload_hash, schema_version, intent_json, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     intent.coordinator_intent_id, intent.project_run_id,
                     intent.intent_type.value, intent.status.value, intent.trigger_event_id,
                     intent.idempotency_key, intent.plan_revision_id, intent.scope_revision_id,
                     intent.manifest_hash, intent.expected_project_state_version,
                     intent.payload_hash, intent.schema_version, intent.model_dump_json(),
+                    intent.attempt_count,
                     now.isoformat(), now.isoformat(),
                 ),
             )
         return intent
+
+    def reconcile_all(self, *, limit: int = 100) -> tuple[str, ...]:
+        """Recover missing idempotent intents without processing any intent."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT project_run_id FROM project_runs "
+                "WHERE lifecycle_status NOT IN ('completed', 'cancelled', 'handed_off') "
+                "ORDER BY updated_at, project_run_id LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        reconciled: list[str] = []
+        for row in rows:
+            project_run_id = str(row["project_run_id"])
+            existing_ids = {
+                item.coordinator_intent_id
+                for item in self.list_for_project(project_run_id)
+            }
+            try:
+                intent = self.reconcile(project_run_id)
+            except CoordinatorIntentError:
+                continue
+            if (
+                intent is not None
+                and intent.coordinator_intent_id not in existing_ids
+            ):
+                reconciled.append(intent.coordinator_intent_id)
+        return tuple(reconciled)
 
     def list_for_project(self, project_run_id: str) -> list[CoordinatorIntent]:
         with self._connect() as connection:
@@ -203,13 +234,16 @@ class ProjectCoordinatorService:
                 "lease_owner": worker_id.strip()[:160],
                 "lease_token": uuid4().hex,
                 "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "heartbeat_at": now,
+                "attempt_count": current.attempt_count + 1,
                 "updated_at": now,
             })
             connection.execute(
-                "UPDATE project_coordinator_intents SET status = ?, intent_json = ?, lease_expires_at = ?, updated_at = ? WHERE coordinator_intent_id = ? AND status = 'pending'",
+                "UPDATE project_coordinator_intents SET status = ?, intent_json = ?, lease_expires_at = ?, heartbeat_at = ?, attempt_count = ?, updated_at = ? WHERE coordinator_intent_id = ? AND status = 'pending'",
                 (
                     claimed.status.value, claimed.model_dump_json(),
                     claimed.lease_expires_at.isoformat(), now.isoformat(),
+                    claimed.attempt_count, now.isoformat(),
                     claimed.coordinator_intent_id,
                 ),
             )
@@ -219,6 +253,118 @@ class ProjectCoordinatorService:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
             connection.close()
+
+    def heartbeat(
+        self,
+        coordinator_intent_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        lease_seconds: int = 30,
+    ) -> CoordinatorIntent:
+        if not 5 <= lease_seconds <= 3600:
+            raise CoordinatorIntentError("A bounded coordinator lease is required.")
+        now = datetime.now(timezone.utc)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._require_intent(connection, coordinator_intent_id)
+            self._require_lease(current, worker_id, lease_token)
+            updated = current.model_copy(update={
+                "heartbeat_at": now,
+                "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "updated_at": now,
+            })
+            connection.execute(
+                "UPDATE project_coordinator_intents SET intent_json = ?, "
+                "lease_expires_at = ?, heartbeat_at = ?, updated_at = ? "
+                "WHERE coordinator_intent_id = ? AND status = 'claimed'",
+                (
+                    updated.model_dump_json(),
+                    updated.lease_expires_at.isoformat(), now.isoformat(),
+                    now.isoformat(),
+                    coordinator_intent_id,
+                ),
+            )
+        return updated
+
+    def release_for_retry(
+        self,
+        coordinator_intent_id: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+        failure_classification: str,
+        max_attempts: int = 3,
+    ) -> CoordinatorIntent:
+        classification = " ".join(failure_classification.split())[:120]
+        if not classification:
+            raise CoordinatorIntentError("A retry classification is required.")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._require_intent(connection, coordinator_intent_id)
+            self._require_lease(current, worker_id, lease_token)
+            if current.attempt_count >= max(1, min(int(max_attempts), 20)):
+                connection.execute("ROLLBACK")
+                return self.fail(
+                    coordinator_intent_id,
+                    worker_id=worker_id,
+                    lease_token=lease_token,
+                    failure_classification=classification,
+                )
+            now = datetime.now(timezone.utc)
+            pending = current.model_copy(update={
+                "status": CoordinatorIntentStatus.PENDING,
+                "lease_owner": None,
+                "lease_token": None,
+                "lease_expires_at": None,
+                "heartbeat_at": None,
+                "failure_classification": classification,
+                "updated_at": now,
+            })
+            connection.execute(
+                "UPDATE project_coordinator_intents SET status = 'pending', "
+                "intent_json = ?, lease_expires_at = NULL, heartbeat_at = NULL, "
+                "last_failure_classification = ?, updated_at = ? "
+                "WHERE coordinator_intent_id = ? AND status = 'claimed'",
+                (
+                    pending.model_dump_json(), classification, now.isoformat(),
+                    coordinator_intent_id,
+                ),
+            )
+        return pending
+
+    def cancel_stale_for_project(self, project_run_id: str) -> tuple[str, ...]:
+        run = self.control.get_project(project_run_id)
+        cancelled: list[str] = []
+        now = datetime.now(timezone.utc)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT intent_json FROM project_coordinator_intents "
+                "WHERE project_run_id = ? AND status = 'pending'",
+                (project_run_id,),
+            ).fetchall()
+            for row in rows:
+                current = CoordinatorIntent.model_validate_json(str(row["intent_json"]))
+                if self._binding_is_current(current, run):
+                    continue
+                stale = current.model_copy(update={
+                    "status": CoordinatorIntentStatus.CANCELLED,
+                    "failure_classification": "stale_project_binding",
+                    "updated_at": now,
+                    "completed_at": now,
+                })
+                connection.execute(
+                    "UPDATE project_coordinator_intents SET status = 'cancelled', "
+                    "intent_json = ?, updated_at = ?, completed_at = ? "
+                    "WHERE coordinator_intent_id = ? AND status = 'pending'",
+                    (
+                        stale.model_dump_json(), now.isoformat(), now.isoformat(),
+                        stale.coordinator_intent_id,
+                    ),
+                )
+                cancelled.append(stale.coordinator_intent_id)
+        return tuple(cancelled)
 
     def complete(
         self,
@@ -267,10 +413,11 @@ class ProjectCoordinatorService:
                     "lease_owner": None,
                     "lease_token": None,
                     "lease_expires_at": None,
+                    "heartbeat_at": None,
                     "updated_at": current_time,
                 })
                 connection.execute(
-                    "UPDATE project_coordinator_intents SET status = 'pending', intent_json = ?, lease_expires_at = NULL, updated_at = ? WHERE coordinator_intent_id = ? AND status = 'claimed'",
+                    "UPDATE project_coordinator_intents SET status = 'pending', intent_json = ?, lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ? WHERE coordinator_intent_id = ? AND status = 'claimed'",
                     (pending.model_dump_json(), current_time.isoformat(), pending.coordinator_intent_id),
                 )
                 recovered += 1
@@ -311,14 +458,59 @@ class ProjectCoordinatorService:
                 "result_reference": bounded_result or None,
                 "failure_classification": failure_classification,
                 "lease_expires_at": None,
+                "heartbeat_at": None,
                 "updated_at": now,
                 "completed_at": now,
             })
             connection.execute(
-                "UPDATE project_coordinator_intents SET status = ?, intent_json = ?, lease_expires_at = NULL, updated_at = ?, completed_at = ? WHERE coordinator_intent_id = ?",
-                (status.value, finished.model_dump_json(), now.isoformat(), now.isoformat(), coordinator_intent_id),
+                "UPDATE project_coordinator_intents SET status = ?, intent_json = ?, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, "
+                "last_failure_classification = ?, updated_at = ?, completed_at = ? "
+                "WHERE coordinator_intent_id = ?",
+                (
+                    status.value, finished.model_dump_json(), failure_classification,
+                    now.isoformat(), now.isoformat(), coordinator_intent_id,
+                ),
             )
         return finished
+
+    @staticmethod
+    def _binding_is_current(intent: CoordinatorIntent, run) -> bool:
+        return (
+            intent.plan_revision_id == run.current_plan_revision_id
+            and intent.scope_revision_id == run.current_scope_revision_id
+            and intent.manifest_hash == run.current_manifest_hash
+            and intent.expected_project_state_version == run.state_version
+        )
+
+    @staticmethod
+    def _require_lease(
+        intent: CoordinatorIntent,
+        worker_id: str,
+        lease_token: str,
+    ) -> None:
+        if (
+            intent.status != CoordinatorIntentStatus.CLAIMED
+            or intent.lease_owner != worker_id
+            or intent.lease_token != lease_token
+            or intent.lease_expires_at is None
+            or intent.lease_expires_at <= datetime.now(timezone.utc)
+        ):
+            raise CoordinatorIntentError("The coordinator lease is missing or stale.")
+
+    @staticmethod
+    def _require_intent(
+        connection: sqlite3.Connection,
+        coordinator_intent_id: str,
+    ) -> CoordinatorIntent:
+        row = connection.execute(
+            "SELECT intent_json FROM project_coordinator_intents "
+            "WHERE coordinator_intent_id = ?",
+            (coordinator_intent_id,),
+        ).fetchone()
+        if row is None:
+            raise CoordinatorIntentError("Coordinator intent not found.")
+        return CoordinatorIntent.model_validate_json(str(row["intent_json"]))
 
     def _intent_limit(self, run, intent_type: CoordinatorIntentType) -> int:
         configured: dict[str, Any] = {}

@@ -224,6 +224,173 @@ add project_legacy_reconciliations.canonical_generation TEXT NOT NULL DEFAULT 'l
     )
 
 
+def _stage3d_coordinator_processor_step() -> SchemaMigrationStep:
+    checksum_material = """stage3d-coordinator-processor:v1
+create project_coordinator_intents when absent
+add heartbeat_at TEXT
+add attempt_count INTEGER NOT NULL DEFAULT 0
+add last_failure_classification TEXT
+index coordinator claimed leases
+"""
+
+    def apply(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS project_coordinator_intents (
+                coordinator_intent_id TEXT PRIMARY KEY,
+                project_run_id TEXT NOT NULL,
+                intent_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trigger_event_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                plan_revision_id TEXT NOT NULL,
+                scope_revision_id TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                expected_project_state_version INTEGER NOT NULL,
+                payload_hash TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                intent_json TEXT NOT NULL,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_failure_classification TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                UNIQUE(project_run_id, idempotency_key)
+            )"""
+        )
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(project_coordinator_intents)"
+            )
+        }
+        additions = {
+            "heartbeat_at": "TEXT",
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_failure_classification": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE project_coordinator_intents ADD COLUMN {name} {definition}"
+                )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coordinator_pending "
+            "ON project_coordinator_intents(status, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coordinator_project "
+            "ON project_coordinator_intents(project_run_id, created_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coordinator_claimed_lease "
+            "ON project_coordinator_intents(status, lease_expires_at)"
+        )
+
+    return SchemaMigrationStep(
+        "bind_coordinator_processor_leases",
+        checksum_material,
+        apply,
+    )
+
+
+_REPAIR_CYCLE_TABLE_SQL = """CREATE TABLE project_repair_cycles_v2 (
+    repair_cycle_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    cycle_number INTEGER NOT NULL CHECK(cycle_number >= 1),
+    status TEXT NOT NULL,
+    failure_artifact_id TEXT NOT NULL,
+    diagnosis_artifact_id TEXT,
+    repair_preview_artifact_id TEXT,
+    schema_version TEXT NOT NULL,
+    cycle_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(project_run_id, cycle_number),
+    UNIQUE(project_run_id, failure_artifact_id),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""
+
+
+def _stage3h_compatibility_retirement_step() -> SchemaMigrationStep:
+    checksum_material = """stage3h-compatibility-retirement:v1
+create project_compatibility_records read-only classification table
+create project_compatibility_state and record removal version 3h
+tag existing delivery records from deterministic canonical_generation
+fail when a legacy project has an active execution attempt
+"""
+
+    def apply(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS project_compatibility_records (
+                record_id TEXT PRIMARY KEY,
+                project_run_id TEXT,
+                source_table TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                generation TEXT NOT NULL CHECK(generation IN ('legacy', 'canonical')),
+                read_only INTEGER NOT NULL CHECK(read_only IN (0, 1)),
+                tagged_at TEXT NOT NULL,
+                UNIQUE(source_table, source_id)
+            )"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS project_compatibility_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )"""
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        delivery_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_delivery_jobs'"
+        ).fetchone()
+        if delivery_exists is not None:
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(project_delivery_jobs)")}
+            if {"delivery_job_id", "canonical_generation"}.issubset(columns):
+                connection.execute(
+                    """INSERT OR IGNORE INTO project_compatibility_records (
+                           record_id, project_run_id, source_table, source_id,
+                           generation, read_only, tagged_at
+                       )
+                       SELECT 'compat-delivery-' || delivery_job_id, delivery_job_id,
+                              'project_delivery_jobs', delivery_job_id,
+                              CASE WHEN canonical_generation = 'canonical' THEN 'canonical' ELSE 'legacy' END,
+                              CASE WHEN canonical_generation = 'canonical' THEN 0 ELSE 1 END, ?
+                       FROM project_delivery_jobs""",
+                    (now,),
+                )
+        connection.execute(
+            "INSERT OR REPLACE INTO project_compatibility_state (key, value, recorded_at) VALUES (?, ?, ?)",
+            ("compatibility_removal_version", "stage3h-v1", now),
+        )
+        tables = {
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if {"project_runs", "project_execution_attempts"}.issubset(tables):
+            unsupported = connection.execute(
+                """SELECT a.execution_attempt_id
+                   FROM project_execution_attempts a
+                   JOIN project_runs r ON r.project_run_id = a.project_run_id
+                   WHERE a.status IN ('pending', 'active', 'cancelling')
+                     AND json_extract(r.run_json, '$.canonical_generation') = 'legacy'
+                   LIMIT 1"""
+            ).fetchone()
+            if unsupported is not None:
+                raise MigrationError(
+                    "A legacy active project attempt must be reconciled before Stage 3H compatibility retirement."
+                )
+
+    return SchemaMigrationStep(
+        "tag_historical_records_read_only",
+        checksum_material,
+        apply,
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -271,6 +438,31 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "canonical_projects_and_artifact_revisions",
             "astra-schema-migration:canonical-projects-and-artifact-revisions:v1",
             (_stage3b_canonical_artifact_step(),),
+        ),
+        SchemaMigration(
+            6,
+            "coordinator_processor_leases",
+            "astra-schema-migration:coordinator-processor-leases:v1",
+            (_stage3d_coordinator_processor_step(),),
+        ),
+        SchemaMigration(
+            7,
+            "canonical_one_repair_cycles",
+            "astra-schema-migration:canonical-one-repair-cycles:v1",
+            (
+                _sql_step("create_project_repair_cycles_v2", _REPAIR_CYCLE_TABLE_SQL),
+                _sql_step(
+                    "index_project_repair_cycles_v2_status",
+                    "CREATE INDEX idx_project_repair_cycles_v2_status "
+                    "ON project_repair_cycles_v2(status, updated_at)",
+                ),
+            ),
+        ),
+        SchemaMigration(
+            8,
+            "compatibility_retirement",
+            "astra-schema-migration:compatibility-retirement:v1",
+            (_stage3h_compatibility_retirement_step(),),
         ),
     )
 
@@ -402,7 +594,10 @@ def apply_schema_migrations(
 
     registry = _registry(SCHEMA_MIGRATIONS if migrations is None else migrations)
     path = Path(database_path)
-    preflight_schema_compatibility(path, migrations=registry)
+    existing_database_requires_backup = path.is_file() and path.stat().st_size > 0
+    preflight_version = preflight_schema_compatibility(path, migrations=registry)
+    if existing_database_requires_backup and preflight_version < 8 <= registry[-1].version:
+        _backup_before_stage3h_tagging(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = _connect(path)
     try:
@@ -438,6 +633,26 @@ def apply_schema_migrations(
         raise MigrationError(f"Schema migration failed: {exc}") from exc
     finally:
         connection.close()
+
+
+def _backup_before_stage3h_tagging(path: Path) -> Path:
+    """Create one SQLite-consistent backup before the Stage 3H data tag."""
+    backup_path = path.with_name(f"{path.name}.pre-stage3h-v8.bak")
+    if backup_path.exists():
+        return backup_path
+    source = sqlite3.connect(path, timeout=30)
+    destination = sqlite3.connect(backup_path, timeout=30)
+    try:
+        source.backup(destination)
+        destination.commit()
+    except Exception:
+        destination.close()
+        source.close()
+        backup_path.unlink(missing_ok=True)
+        raise
+    destination.close()
+    source.close()
+    return backup_path
 
 
 def initialize_stage3a_schema(database_path: str | Path) -> bool:

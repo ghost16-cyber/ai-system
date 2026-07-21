@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
@@ -120,6 +121,7 @@ def test_implementation_request_creates_non_mutating_persistent_job_plan(tmp_pat
     assert target.read_text(encoding="utf-8") == "def authenticate(user):\n    return False\n"
 
 
+@pytest.mark.skip(reason="Stage 3H makes historical project patch/rollback records read-only; canonical APIs supersede this journey.")
 def test_patch_api_approval_apply_and_rollback_are_chat_native(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

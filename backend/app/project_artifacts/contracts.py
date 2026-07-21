@@ -29,6 +29,7 @@ class ProjectArtifactType(StrEnum):
     REPAIR_PREVIEW = "repair_preview"
     EXECUTION_RESULT = "execution_result"
     HANDOFF = "handoff"
+    COORDINATOR_DECISION = "coordinator_decision"
 
 
 class ProjectArtifactBinding(StrictModel):

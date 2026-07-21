@@ -1,8 +1,10 @@
 # Historical Repository Reorganization - Migration Guide
 
 > Historical record: this document describes an earlier experimental layout and
-> does not represent the active runtime. See `README.md`, `STRUCTURE.md`, and
-> `docs/FINAL_SYSTEM_STATUS.md` for the current deterministic backend.
+> does not represent the active runtime. See [`../README.md`](../README.md),
+> [`../STRUCTURE.md`](../STRUCTURE.md), and
+> [`astra-local-operations.md`](astra-local-operations.md) for the current
+> canonical local backend.
 
 Your repository has been reorganized into a clean, professional structure for the ML/RL system. Here's what changed:
 

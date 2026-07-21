@@ -25,7 +25,8 @@ LEGAL_TRANSITIONS: dict[ProjectLifecycle, frozenset[ProjectLifecycle]] = {
         ProjectLifecycle.SCOPE_CHANGE_REQUIRED, ProjectLifecycle.BLOCKED, ProjectLifecycle.CANCELLED,
     }),
     ProjectLifecycle.READY_FOR_WORK: frozenset({
-        ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.VERIFICATION_PENDING,
+        ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.AWAITING_PATCH_APPROVAL,
+        ProjectLifecycle.VERIFICATION_PENDING,
         ProjectLifecycle.PLANNING, ProjectLifecycle.SCOPE_CHANGE_REQUIRED,
         ProjectLifecycle.BLOCKED, ProjectLifecycle.CANCELLED,
     }),
@@ -49,7 +50,8 @@ LEGAL_TRANSITIONS: dict[ProjectLifecycle, frozenset[ProjectLifecycle]] = {
         ProjectLifecycle.BLOCKED, ProjectLifecycle.CANCELLED,
     }),
     ProjectLifecycle.REPAIR_REQUIRED: frozenset({
-        ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.READY_FOR_WORK, ProjectLifecycle.PLANNING, ProjectLifecycle.ROLLBACK_PENDING,
+        ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.AWAITING_PATCH_APPROVAL,
+        ProjectLifecycle.READY_FOR_WORK, ProjectLifecycle.PLANNING, ProjectLifecycle.ROLLBACK_PENDING,
         ProjectLifecycle.SCOPE_CHANGE_REQUIRED, ProjectLifecycle.BLOCKED, ProjectLifecycle.CANCELLED,
     }),
     ProjectLifecycle.SCOPE_CHANGE_REQUIRED: frozenset({
@@ -65,7 +67,8 @@ LEGAL_TRANSITIONS: dict[ProjectLifecycle, frozenset[ProjectLifecycle]] = {
         ProjectLifecycle.CANCELLED,
     }),
     ProjectLifecycle.HANDOFF_READY: frozenset({
-        ProjectLifecycle.HANDED_OFF, ProjectLifecycle.VERIFICATION_PENDING, ProjectLifecycle.CANCELLED,
+        ProjectLifecycle.HANDED_OFF, ProjectLifecycle.COMPLETED,
+        ProjectLifecycle.VERIFICATION_PENDING, ProjectLifecycle.CANCELLED,
     }),
     ProjectLifecycle.HANDED_OFF: frozenset({ProjectLifecycle.COMPLETED}),
     ProjectLifecycle.CANCELLED: frozenset(),
@@ -91,7 +94,10 @@ COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
     ProjectCommandType.BEGIN_COMMAND_EXECUTION: frozenset({ProjectLifecycle.WORK_IN_PROGRESS}),
     ProjectCommandType.RECORD_COMMAND_RESULT: frozenset({ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.AWAITING_COMMAND_APPROVAL}),
     ProjectCommandType.REQUEST_VERIFICATION: frozenset({ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.READY_FOR_WORK}),
-    ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({ProjectLifecycle.VERIFICATION_PENDING}),
+    ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({
+        ProjectLifecycle.WORK_IN_PROGRESS,
+        ProjectLifecycle.VERIFICATION_PENDING,
+    }),
     ProjectCommandType.REQUEST_CLARIFICATION: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES)),
     ProjectCommandType.MARK_BLOCKED: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES) - {ProjectLifecycle.HANDED_OFF}),
     ProjectCommandType.REVISE_SCOPE: frozenset({
@@ -112,6 +118,9 @@ COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
     ProjectCommandType.REQUEST_HANDOFF: frozenset({ProjectLifecycle.VERIFICATION_PENDING, ProjectLifecycle.READY_FOR_WORK}),
     ProjectCommandType.FINALIZE_PROJECT: frozenset({ProjectLifecycle.HANDOFF_READY, ProjectLifecycle.HANDED_OFF}),
     ProjectCommandType.CANCEL_PROJECT: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES) - {ProjectLifecycle.HANDED_OFF}),
+    ProjectCommandType.ACKNOWLEDGE_EXECUTION_CANCELLATION: frozenset(
+        set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES) - {ProjectLifecycle.HANDED_OFF}
+    ),
     ProjectCommandType.RECOVER_ATTEMPT: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES)),
     ProjectCommandType.RECONCILE_LEGACY: frozenset(set(ProjectLifecycle) - set(TERMINAL_LIFECYCLES)),
     ProjectCommandType.INITIALIZE_PROJECT: frozenset(),

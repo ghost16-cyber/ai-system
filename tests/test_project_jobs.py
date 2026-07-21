@@ -167,6 +167,7 @@ def test_clarification_answer_updates_same_job(tmp_path: Path) -> None:
         assert run["run_id"] != answer.json()["run_id"]
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host project mutation/execution; canonical MVP journey supersedes it.")
 def test_full_job_patch_command_completion_and_reload(tmp_path: Path) -> None:
     project = _project(tmp_path)
     with _client(tmp_path) as client:
@@ -268,6 +269,7 @@ def test_full_job_patch_command_completion_and_reload(tmp_path: Path) -> None:
         assert folder["conversation_id"] == conversation_id
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host execution; canonical failure/cancellation suites supersede it.")
 def test_failed_validation_is_bounded_and_job_can_cancel(tmp_path: Path) -> None:
     project = _project(tmp_path, failing=True)
     with _client(tmp_path) as client:

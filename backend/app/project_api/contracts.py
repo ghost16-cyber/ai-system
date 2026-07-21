@@ -15,6 +15,8 @@ CANONICAL_PROJECT_CREATE_VERSION = "astra.project-api.create.v1"
 CANONICAL_PROJECT_RESPONSE_VERSION = "astra.project-api.project.v1"
 CANONICAL_PROJECT_COLLECTION_VERSION = "astra.project-api.collection.v1"
 CANONICAL_PROJECT_ACTION_VERSION = "astra.project-api.action.v1"
+CANONICAL_PROJECT_ACTION_DESCRIPTOR_VERSION = "astra.project-api.action-descriptor.v1"
+CANONICAL_COORDINATOR_SUMMARY_VERSION = "astra.project-api.coordinator-summary.v1"
 CANONICAL_ARTIFACT_SUMMARY_VERSION = "astra.project-api.artifact-summary.v1"
 MAX_CANONICAL_CREATE_BYTES = 524_288
 
@@ -55,11 +57,48 @@ class CanonicalProjectCreateRequest(StrictModel):
 class CanonicalProjectActionRequest(StrictModel):
     schema_version: Literal["astra.project-api.action.v1"] = CANONICAL_PROJECT_ACTION_VERSION
     conversation_id: str = Field(min_length=1, max_length=200)
+    workspace_id: str = Field(min_length=1, max_length=200)
+    actor_id: str = Field(min_length=1, max_length=200)
+    repository_root_fingerprint: str = Field(min_length=1, max_length=256)
     expected_state_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=200)
+    plan_revision_id: str | None = Field(default=None, min_length=1, max_length=200)
+    scope_revision_id: str | None = Field(default=None, min_length=1, max_length=200)
+    manifest_hash: str | None = Field(default=None, min_length=64, max_length=64)
     artifact_id: str | None = Field(default=None, min_length=1, max_length=200)
+    artifact_type: str | None = Field(default=None, min_length=1, max_length=80)
     artifact_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    artifact_binding_hash: str | None = Field(default=None, min_length=64, max_length=64)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanonicalProjectActionDescriptor(StrictModel):
+    schema_version: Literal["astra.project-api.action-descriptor.v1"] = CANONICAL_PROJECT_ACTION_DESCRIPTOR_VERSION
+    action: Literal[
+        "approve_plan", "approve_patch", "approve_command", "approve_rollback",
+        "approve_manual_verification", "cancel_project",
+    ]
+    label: str = Field(min_length=1, max_length=100)
+    requires_approval: bool = True
+    expected_state_version: int = Field(ge=1)
+    plan_revision_id: str | None = None
+    scope_revision_id: str | None = None
+    manifest_hash: str | None = None
+    artifact_id: str | None = None
+    artifact_type: str | None = None
+    artifact_hash: str | None = None
+    artifact_binding_hash: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanonicalCoordinatorSummary(StrictModel):
+    schema_version: Literal["astra.project-api.coordinator-summary.v1"] = CANONICAL_COORDINATOR_SUMMARY_VERSION
+    coordinator_intent_id: str
+    intent_type: str
+    status: str
+    attempt_count: int = Field(ge=0)
+    failure_classification: str | None = None
+    updated_at: str
 
 
 class CanonicalArtifactSummary(StrictModel):
@@ -76,6 +115,8 @@ class CanonicalProjectResponse(StrictModel):
     schema_version: Literal["astra.project-api.project.v1"] = CANONICAL_PROJECT_RESPONSE_VERSION
     project: ProjectReadModel
     artifacts: tuple[CanonicalArtifactSummary, ...] = ()
+    coordinator: CanonicalCoordinatorSummary | None = None
+    next_permitted_actions: tuple[CanonicalProjectActionDescriptor, ...] = ()
 
 
 class CanonicalProjectCollection(StrictModel):

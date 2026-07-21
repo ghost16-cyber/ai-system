@@ -76,6 +76,13 @@ import {
 } from "./state/clientEngagementState";
 import { exactValidationReviewRequest, projectValidationActionFromPayload, type ProjectValidationAction } from "./state/projectValidationState";
 import { ProjectValidationCard, type ValidationOperation, type ValidationReviewAction } from "./components/ProjectValidationCard";
+import { ProjectControlCard } from "./components/ProjectControlCard";
+import {
+  canonicalProjectActionFromResponse,
+  exactProjectMutationRequest,
+  type CanonicalProjectAction,
+} from "./state/projectControlState";
+import type { CanonicalProjectActionDescriptor } from "./types/contracts";
 
 interface Settings {
   apiUrl: string;
@@ -102,6 +109,7 @@ interface Message {
   folderAction?: FolderAccessAction;
   jobAction?: ProjectJobAction;
   deliveryAction?: ProjectDeliveryAction;
+  canonicalProject?: CanonicalProjectAction;
   engagementAction?: ClientEngagementAction;
   validationAction?: ProjectValidationAction;
   info?: InfoCard;
@@ -788,6 +796,34 @@ export default function App() {
     finally { locks.current.delete(lockId); }
   }
 
+  async function refreshCanonicalProject(projectRunId: string) {
+    const parsed = canonicalProjectActionFromResponse(await client.getCanonicalProject(projectRunId));
+    if (!parsed) throw new AstraHttpError(409, "The canonical project response was invalid.");
+    setMessages((current) => current.map((item) =>
+      item.canonicalProject?.projectRunId === projectRunId ? { ...item, canonicalProject: parsed } : item,
+    ));
+  }
+
+  async function performCanonicalProjectAction(project: CanonicalProjectAction, action: CanonicalProjectActionDescriptor) {
+    const request = exactProjectMutationRequest(project, action, newId(`project-${action.action}`));
+    const lockId = `canonical-project:${project.projectRunId}:${action.action}:${project.stateVersion}`;
+    if (!request || !tryLockCommandAction(locks.current, lockId)) return;
+    try {
+      const parsed = canonicalProjectActionFromResponse(
+        await client.performCanonicalProjectAction(project.projectRunId, action.action, request),
+      );
+      if (!parsed) throw new AstraHttpError(409, "The canonical project response was invalid.");
+      setMessages((current) => current.map((item) =>
+        item.canonicalProject?.projectRunId === project.projectRunId ? { ...item, canonicalProject: parsed } : item,
+      ));
+    } catch (caught) {
+      setError(cleanError(caught));
+      await refreshCanonicalProject(project.projectRunId).catch(() => undefined);
+    } finally {
+      locks.current.delete(lockId);
+    }
+  }
+
   async function refreshClientEngagement(engagementId: string) {
     if (!conversationId) return;
     const engagement = await client.getClientEngagement(engagementId, conversationId);
@@ -1298,7 +1334,7 @@ export default function App() {
         <section ref={conversationRef} className="conversation" aria-label="Conversation" aria-busy={hydrationStatus === "loading"}>
           {hydrationStatus === "loading" && <div className="startup-loading"><Activity className="spin" size={18} /><span>Restoring conversation…</span></div>}
           {hydrationStatus === "ready" && messages.length === 0 && <Welcome onPrompt={(prompt) => { setInput(prompt); }} />}
-          {hydrationStatus === "ready" && messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
+          {hydrationStatus === "ready" && messages.map((message) => <ChatMessage key={message.id} message={message} onApprove={approveAction} onCancel={cancelAction} onApproveWorkspace={approveWorkspaceAction} onCancelWorkspace={cancelWorkspaceAction} onApproveFolder={approveFolderAction} onCancelFolder={cancelFolderAction} onRescanFolder={rescanFolderAction} onPrepareJob={prepareProjectJob} onValidateJob={validateProjectJob} onCancelJob={cancelProjectJob} onApproveDeliveryPlan={approveDeliveryPlan} onPrepareDelivery={prepareProjectDelivery} onVerifyDelivery={verifyProjectDelivery} onGenerateDeliveryHandoff={generateDeliveryHandoff} onCancelDelivery={cancelProjectDelivery} onCanonicalProjectAction={performCanonicalProjectAction} onAnswerEngagement={answerEngagement} onApproveEngagement={approveEngagementScope} onRejectEngagement={rejectEngagementScope} onLaunchEngagement={launchEngagement} onChangeEngagement={changeEngagementScope} onCancelEngagement={cancelEngagement} onStartValidation={startProjectValidation} onValidationOperation={operateProjectValidation} onValidationReview={reviewProjectValidation} onOption={(option) => updateAction(message.id, (action) => ({ ...action, selectedOption: option }))} onContinue={continueConversation} />)}
           {hydrationStatus === "ready" && loading && <div className="message assistant"><Avatar role="assistant" /><div className="bubble loading"><Activity className="spin" size={17} />Astra is working…</div></div>}
           <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
         </section>
@@ -1335,6 +1371,7 @@ function ChatMessage({
   onVerifyDelivery,
   onGenerateDeliveryHandoff,
   onCancelDelivery,
+  onCanonicalProjectAction,
   onAnswerEngagement,
   onApproveEngagement,
   onRejectEngagement,
@@ -1363,6 +1400,7 @@ function ChatMessage({
   onVerifyDelivery: (action: ProjectDeliveryAction) => Promise<void>;
   onGenerateDeliveryHandoff: (action: ProjectDeliveryAction) => Promise<void>;
   onCancelDelivery: (action: ProjectDeliveryAction) => Promise<void>;
+  onCanonicalProjectAction: (project: CanonicalProjectAction, action: CanonicalProjectActionDescriptor) => Promise<void>;
   onAnswerEngagement: (action: ClientEngagementAction, answers: Record<string, string>, useAssumptions?: boolean) => Promise<void>;
   onApproveEngagement: (action: ClientEngagementAction) => Promise<void>;
   onRejectEngagement: (action: ClientEngagementAction) => Promise<void>;
@@ -1382,11 +1420,12 @@ function ChatMessage({
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
+    {message.canonicalProject && <ProjectControlCard project={message.canonicalProject} onAction={(action) => void onCanonicalProjectAction(message.canonicalProject!, action)} />}
     {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} onStartValidation={() => onStartValidation(message.engagementAction!)} />}
     {message.validationAction && <ProjectValidationCard action={message.validationAction} onOperation={(operation) => onValidationOperation(message.validationAction!, operation)} onReview={(reviewAction, notes) => onValidationReview(message.validationAction!, reviewAction, notes)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
     {message.info && <InfoCardView card={message.info} onContinue={onContinue} />}
-    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && !message.engagementAction && !message.validationAction && <RunDetails run={message.run} />}
+    {message.run && !message.action && !message.folderAction && !message.jobAction && !message.deliveryAction && !message.canonicalProject && !message.engagementAction && !message.validationAction && <RunDetails run={message.run} />}
   </div></article>;
 }
 
@@ -1516,7 +1555,7 @@ function ProjectDeliveryCard({
     </section>}
     {action.repair && <div className="result failed"><CircleAlert size={17} /><div><strong>Stage 8 diagnosis</strong><p>The failed verification is linked to a bounded diagnosis and repair cycle. Repair patch and rerun approvals remain separate.</p></div></div>}
     {action.coordinatorIntent && ["pending", "claimed"].includes(action.coordinatorIntent.status) && <div className="progress-line"><Activity className={action.coordinatorIntent.status === "claimed" ? "spin" : ""} size={16} /><span>Coordinator: {action.coordinatorIntent.type.replace(/_/g, " ")} · {action.coordinatorIntent.status}</span></div>}
-    {action.execution && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts"><span><strong>Attempt</strong>{(action.execution.attemptType ?? "project work").replace(/_/g, " ")}</span><span><strong>Queue</strong>{(action.execution.workerStatus ?? action.execution.dispatchStatus ?? action.execution.attemptStatus ?? "pending").replace(/_/g, " ")}</span><span><strong>Identity</strong>{action.execution.workerRequestId ?? action.execution.dispatchId ?? action.execution.attemptId ?? "persisting"}</span></div>{action.execution.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Execution paused safely</strong><p>{action.execution.failureClassification.replace(/_/g, " ")}</p></div></div>}</section>}
+    {action.execution && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts"><span><strong>Attempt</strong>{(action.execution.attemptType ?? "project work").replace(/_/g, " ")}</span><span><strong>Queue</strong>{(action.execution.cancellationStatus === "pending" || action.execution.cancellationStatus === "dispatched" ? "cancelling" : action.execution.workerStatus ?? action.execution.dispatchStatus ?? action.execution.attemptStatus ?? "pending").replace(/_/g, " ")}</span><span><strong>Identity</strong>{action.execution.workerRequestId ?? action.execution.dispatchId ?? action.execution.attemptId ?? "persisting"}</span><span><strong>Projection</strong>{action.execution.projectionStatus ?? "pending"}{action.execution.projectionLag ? ` · ${action.execution.projectionLag} event${action.execution.projectionLag === 1 ? "" : "s"} behind` : ""}</span></div>{action.execution.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Execution paused safely</strong><p>{action.execution.failureClassification.replace(/_/g, " ")}</p></div></div>}{action.execution.recoveryClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Card recovery pending</strong><p>{action.execution.recoveryClassification.replace(/_/g, " ")}</p></div></div>}</section>}
     {action.scopeChanges.length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Scope change detected</strong><p>{action.scopeChanges[action.scopeChanges.length - 1]?.explanation}</p><small>The previous plan approval is invalid. Review the revised scope before continuing.</small></div></div>}
     {!action.manifest.complete && <div className="result failed"><CircleAlert size={17} /><div><strong>Project evidence is incomplete</strong><p>{action.manifest.error ?? "Rescan the project before approving or verifying work."}</p></div></div>}
     {action.error && <div className="result failed"><CircleAlert size={17} /><div><strong>Delivery paused</strong><p>{action.error}</p></div></div>}
@@ -1526,7 +1565,7 @@ function ProjectDeliveryCard({
       {action.lifecycleState === "ready_for_work" && <button className="primary-button" onClick={onPrepare}><FileText size={16} />Prepare next patch</button>}
       {action.pendingUserAction === "request_verification" && <button className="primary-button" onClick={onVerify}><ShieldCheck size={16} />Verify next criterion</button>}
       {!action.handoff && action.handoffEligible && <button className="secondary-button" onClick={onHandoff}><FileText size={16} />Prepare handoff</button>}
-      {!terminal && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel delivery</button>}
+      {!terminal && action.execution?.cancellationStatus !== "pending" && action.execution?.cancellationStatus !== "dispatched" && <button className="secondary-button danger" onClick={onCancel}><X size={16} />Cancel delivery</button>}
     </div>
     <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Specification source: {action.specificationSource}</span><span>Plan revision: {action.plan?.revisionId ?? action.plan?.revision ?? "not ready"}</span><span>Approval: {action.plan?.approvalFresh ? "fresh" : "not active"}</span><JsonBlock value={action.technical} /></div></details>
   </div>;
@@ -1747,8 +1786,13 @@ function restoreConversationMessages(
   const runs = canonicalConversationTurns(detail.turns);
   const latestJobs = new Map<string, ProjectJobAction>();
   const latestDeliveries = new Map<string, ProjectDeliveryAction>();
+  const canonicalProjects = new Map<string, CanonicalProjectAction>();
   const latestEngagements = new Map<string, ClientEngagementAction>();
   const latestValidations = new Map<string, ProjectValidationAction>();
+  for (const response of detail.projects) {
+    const project = canonicalProjectActionFromResponse(response);
+    if (project && project.conversationId === detail.conversation_id) canonicalProjects.set(project.projectRunId, project);
+  }
   for (const run of runs) {
     const job = run.action ? projectJobActionFromPayload(run.action) : null;
     if (job) latestJobs.set(job.jobId, job);
@@ -1764,6 +1808,7 @@ function restoreConversationMessages(
     if (job) latestJobs.set(job.jobId, job);
   }
   for (const rawDelivery of detail.project_deliveries) {
+    if (rawDelivery.record_generation !== "legacy") continue;
     const delivery = projectDeliveryActionFromPayload({ action_type: "project_delivery", technical_details: { project_delivery: rawDelivery } });
     if (delivery) latestDeliveries.set(delivery.deliveryJobId, delivery);
   }
@@ -1836,7 +1881,18 @@ function restoreConversationMessages(
       jobAction,
     });
   }
-  return restoredMessages;
+  const canonicalIds = new Set(canonicalProjects.keys());
+  const result = restoredMessages.filter((message) =>
+    !message.deliveryAction || !canonicalIds.has(message.deliveryAction.projectRunId),
+  );
+  for (const [projectRunId, canonicalProject] of canonicalProjects) {
+    result.push({
+      ...makeMessage("assistant", ""),
+      id: `canonical-project:${projectRunId}`,
+      canonicalProject,
+    });
+  }
+  return result;
 }
 
 function requestRecoveryMessage(

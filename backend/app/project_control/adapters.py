@@ -38,8 +38,24 @@ class ProjectDeliveryControlAdapter:
         )
 
     def decorate(self, job: dict[str, Any], root: str | Path, *, migrated: bool = True) -> dict[str, Any]:
-        read_model = self.ensure(job, root, migrated=migrated)
-        return {**job, "project_control": read_model.model_dump(mode="json")}
+        del root, migrated
+        try:
+            read_model = self.control.get_read_model(str(job["delivery_job_id"]))
+        except ProjectControlError as error:
+            if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
+                raise
+            return {
+                **job,
+                "record_generation": "legacy",
+                "historical_read_only": True,
+                "project_control": None,
+            }
+        return {
+            **job,
+            "record_generation": "canonical",
+            "historical_read_only": False,
+            "project_control": read_model.model_dump(mode="json"),
+        }
 
     def apply_transition(
         self,
@@ -50,6 +66,11 @@ class ProjectDeliveryControlAdapter:
         metadata: dict[str, Any] | None = None,
     ) -> ProjectReadModel:
         metadata = dict(metadata or {})
+        if current.get("historical_read_only") is True:
+            raise ProjectControlError(
+                ProjectControlErrorCode.HISTORICAL_RECORD_READ_ONLY,
+                "Historical project delivery records are read-only; explicitly import and reapprove them before mutation.",
+            )
         self.ensure(current, root, migrated=True)
         run = self.control.get_project(str(current["delivery_job_id"]))
         prefix = str(metadata.get("idempotency_key") or f"legacy:{operation}:{content_hash(metadata)[:20]}")

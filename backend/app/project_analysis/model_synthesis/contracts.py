@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -42,6 +44,16 @@ class EvidencePackage(StrictModel):
     manifests: list[str]
     uncertainties: list[str]
     limits: dict[str, int]
+    approved_requirements: list[str] = Field(default_factory=list, max_length=50)
+    criterion_hashes: dict[str, str] = Field(default_factory=dict)
+    plan_revision_id: str | None = None
+    scope_revision_id: str | None = None
+    work_unit_id: str | None = None
+    manifest_hash: str | None = None
+    config_excerpts: list[EvidenceExcerpt] = Field(default_factory=list, max_length=12)
+    missing_evidence: list[str] = Field(default_factory=list, max_length=30)
+    byte_accounting: dict[str, int] = Field(default_factory=dict)
+    project_rag_enabled: Literal[False] = False
 
 
 class RepairContext(StrictModel):
@@ -84,11 +96,11 @@ class ExactReplacement(StrictModel):
 class ModifyOperation(StrictModel):
     operation: Literal["modify"]
     path: str
-    expected_sha256: str
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     strategy: Literal["exact_replacements", "complete_content"]
     replacements: list[ExactReplacement] = Field(default_factory=list, max_length=40)
     content: str | None = None
-    rationale: str = Field(max_length=1000)
+    rationale: str = Field(min_length=1, max_length=1000)
     affected_symbols: list[str] = Field(default_factory=list, max_length=40)
     evidence_references: list[str] = Field(default_factory=list, max_length=40)
 
@@ -98,6 +110,8 @@ class ModifyOperation(StrictModel):
             raise ValueError("exact_replacements requires replacements and forbids content")
         if self.strategy == "complete_content" and (self.content is None or self.replacements):
             raise ValueError("complete_content requires content and forbids replacements")
+        _validate_operation_path(self.path)
+        _validate_generated_text(self.content or "" if self.strategy == "complete_content" else "".join(item.replacement_text for item in self.replacements))
         return self
 
 
@@ -106,18 +120,29 @@ class CreateOperation(StrictModel):
     path: str
     expected_sha256: Literal["missing"]
     content: str
-    rationale: str = Field(max_length=1000)
+    rationale: str = Field(min_length=1, max_length=1000)
     affected_symbols: list[str] = Field(default_factory=list, max_length=40)
     evidence_references: list[str] = Field(default_factory=list, max_length=40)
+
+    @model_validator(mode="after")
+    def valid_create(self) -> "CreateOperation":
+        _validate_operation_path(self.path)
+        _validate_generated_text(self.content)
+        return self
 
 
 class DeleteOperation(StrictModel):
     operation: Literal["delete"]
     path: str
-    expected_sha256: str
-    rationale: str = Field(max_length=1000)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rationale: str = Field(min_length=1, max_length=1000)
     affected_symbols: list[str] = Field(default_factory=list, max_length=40)
     evidence_references: list[str] = Field(default_factory=list, max_length=40)
+
+    @model_validator(mode="after")
+    def valid_delete(self) -> "DeleteOperation":
+        _validate_operation_path(self.path)
+        return self
 
 
 Operation = Annotated[Union[ModifyOperation, CreateOperation, DeleteOperation], Field(discriminator="operation")]
@@ -189,6 +214,21 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ProjectAnalysisError(f"The coding model response contains duplicate JSON key: {key}.")
         output[key] = value
     return output
+
+
+def _validate_operation_path(path: str) -> None:
+    normalized = path.replace("\\", "/")
+    candidate = PurePosixPath(normalized)
+    if not path or normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized) or ".." in candidate.parts or candidate.as_posix() != normalized:
+        raise ValueError("operation path must be one normalized relative path")
+
+
+def _validate_generated_text(content: str) -> None:
+    lowered = content.lower()
+    if any(phrase in lowered for phrase in ("approve patch", "approve command", "auto approve")):
+        raise ValueError("generated content contains a forbidden approval phrase")
+    if re.search(r"\bsk-[A-Za-z0-9_-]{12,}\b", content):
+        raise ValueError("generated content appears to contain a secret")
 
 
 __all__ = [

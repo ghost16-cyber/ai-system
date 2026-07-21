@@ -3,6 +3,8 @@ import type {
   CanonicalArtifactSummary,
   CanonicalProjectCollection,
   CanonicalProjectCreateRequest,
+  CanonicalProjectActionDescriptor,
+  CanonicalProjectActionRequest,
   CanonicalProjectResponse,
   ExecutionProfile,
   RuntimeContext,
@@ -233,7 +235,7 @@ export interface ChatConversationDetail {
   requests: ChatRequestRecord[];
   project_jobs: Array<Record<string, unknown>>;
   project_deliveries: Array<Record<string, unknown>>;
-  projects: CanonicalProjectResponse["project"][];
+  projects: CanonicalProjectResponse[];
 }
 
 export class AstraHttpError extends Error {
@@ -1192,6 +1194,17 @@ export class HttpAstraClient implements AstraClient {
   async listCanonicalProjectArtifacts(projectRunId: string) {
     return this.getJson<CanonicalArtifactSummary[]>(
       `/chat/projects/${encodeURIComponent(projectRunId)}/artifacts`,
+    );
+  }
+
+  async performCanonicalProjectAction(
+    projectRunId: string,
+    action: CanonicalProjectActionDescriptor["action"],
+    request: CanonicalProjectActionRequest,
+  ) {
+    return this.postJson<CanonicalProjectResponse>(
+      `/chat/projects/${encodeURIComponent(projectRunId)}/actions/${encodeURIComponent(action)}`,
+      request,
     );
   }
 

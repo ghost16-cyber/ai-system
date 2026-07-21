@@ -30,6 +30,12 @@ Missing Docker, an unavailable or mismatched image, containment failure,
 corrupt evidence, or cleanup failure blocks the attempt. There is no
 unsandboxed fallback for canonical project execution.
 
+Stage 3H retires the old `ProjectSubprocessExecutor` runtime selection and all
+reachable compatibility-route calls to direct host patch/rollback helpers.
+`ASTRA_ALLOW_LEGACY_PROJECT_EXECUTION` is ignored. Canonical mutation remains a
+separately approved, journaled `FileMutationSpec`; arbitrary compatibility
+records cannot invoke it.
+
 ## Patch and rollback recovery
 
 Patch and rollback approvals bind an immutable `FileMutationSpec` to the exact
@@ -83,6 +89,10 @@ workspace settings:
 ```bash
 python -m backend.app.project_workers
 ```
+
+Alternatively, `scripts/run_local_astra.sh` validates the already provisioned
+runtime and pinned image, records explicit PID/log files, and stops all three
+local processes through one signal trap. It never installs, builds, or pulls.
 
 Useful bounded modes are:
 

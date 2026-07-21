@@ -162,6 +162,114 @@ class ChatConversationsResponse(BaseModel):
     items: list[ChatConversationSummary]
 
 
+class CanonicalHydrationArtifactSummary(BaseModel):
+    schema_version: Literal["astra.project-api.artifact-summary.v1"]
+    artifact_id: str
+    artifact_type: str
+    revision_number: int | None = None
+    binding_hash: str
+    content_hash: str
+    created_at: str
+
+
+class CanonicalHydrationCoordinatorSummary(BaseModel):
+    schema_version: Literal["astra.project-api.coordinator-summary.v1"]
+    coordinator_intent_id: str
+    intent_type: str
+    status: str
+    attempt_count: int
+    failure_classification: str | None = None
+    updated_at: str
+
+
+class CanonicalHydrationActionDescriptor(BaseModel):
+    schema_version: Literal["astra.project-api.action-descriptor.v1"]
+    action: str
+    label: str
+    requires_approval: bool
+    expected_state_version: int
+    plan_revision_id: str | None = None
+    scope_revision_id: str | None = None
+    manifest_hash: str | None = None
+    artifact_id: str | None = None
+    artifact_type: str | None = None
+    artifact_hash: str | None = None
+    artifact_binding_hash: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanonicalHydrationProjectReadModel(BaseModel):
+    """Typed hydration projection; the canonical endpoint remains the source schema."""
+
+    schema_version: Literal["astra.project-control.read-model.v1"]
+    project_run_id: str
+    conversation_id: str
+    workspace_id: str
+    actor_id: str
+    repository_root_fingerprint: str
+    lifecycle_state: str
+    plan_revision_id: str | None
+    scope_revision_id: str | None
+    manifest_hash: str | None
+    manifest_complete: bool
+    approval_state: str
+    approval_fresh: bool
+    current_work_unit: str | None
+    progress: dict[str, int]
+    pending_user_action: str | None
+    verification_summary: dict[str, int]
+    criterion_states: dict[str, dict[str, Any]]
+    repair_state: dict[str, Any] = Field(default_factory=dict)
+    blocked_reason: str | None
+    handoff_eligible: bool
+    state_version: int
+    terminal: bool
+    active_execution_attempt_id: str | None = None
+    active_execution_attempt_type: str | None = None
+    active_execution_attempt_status: str | None = None
+    execution_dispatch_id: str | None = None
+    execution_dispatch_status: str | None = None
+    worker_request_id: str | None = None
+    worker_request_status: str | None = None
+    execution_failure_classification: str | None = None
+    execution_cancellation_id: str | None = None
+    execution_cancellation_status: str | None = None
+    execution_evidence_references: dict[str, Any] = Field(default_factory=dict)
+    projection_status: str | None = None
+    projection_lag: int = 0
+    projection_failure_classification: str | None = None
+    artifact_references: dict[str, str] = Field(default_factory=dict)
+    artifact_hashes: dict[str, str] = Field(default_factory=dict)
+    current_specification_artifact_id: str | None = None
+    current_specification_artifact_hash: str | None = None
+    current_manifest_artifact_id: str | None = None
+    current_manifest_artifact_hash: str | None = None
+    current_plan_artifact_id: str | None = None
+    current_plan_artifact_hash: str | None = None
+    current_patch_preview_artifact_id: str | None = None
+    current_patch_preview_artifact_hash: str | None = None
+    current_command_preview_artifact_id: str | None = None
+    current_command_preview_artifact_hash: str | None = None
+    current_verifier_result_artifact_id: str | None = None
+    current_verifier_result_artifact_hash: str | None = None
+    current_repair_preview_artifact_id: str | None = None
+    current_repair_preview_artifact_hash: str | None = None
+    current_handoff_artifact_id: str | None = None
+    current_handoff_artifact_hash: str | None = None
+    current_execution_result_artifact_id: str | None = None
+    current_execution_result_artifact_hash: str | None = None
+    execution_timestamps: dict[str, str | None] = Field(default_factory=dict)
+    next_permitted_action: str | None = None
+
+
+class CanonicalProjectHydrationResponse(BaseModel):
+    schema_version: Literal["astra.project-api.project.v1"]
+    project: CanonicalHydrationProjectReadModel
+    artifacts: list[CanonicalHydrationArtifactSummary] = Field(default_factory=list)
+    coordinator: CanonicalHydrationCoordinatorSummary | None = None
+    next_permitted_actions: list[CanonicalHydrationActionDescriptor] = Field(default_factory=list)
+
+
 class ChatConversationDetail(BaseModel):
     hydration_version: Literal["astra.chat-hydration.v2"] = "astra.chat-hydration.v2"
     conversation_id: str
@@ -171,7 +279,7 @@ class ChatConversationDetail(BaseModel):
     requests: list[ChatRequestRecord] = Field(default_factory=list)
     project_jobs: list[dict[str, Any]] = Field(default_factory=list)
     project_deliveries: list[dict[str, Any]] = Field(default_factory=list)
-    projects: list[dict[str, Any]] = Field(default_factory=list)
+    projects: list[CanonicalProjectHydrationResponse] = Field(default_factory=list)
 
 
 class ChatConversationDeleteResponse(BaseModel):

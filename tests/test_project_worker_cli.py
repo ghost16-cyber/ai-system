@@ -43,7 +43,7 @@ class FakeExecutor:
         return True
 
 
-def test_worker_cycle_recovers_dispatches_then_executes() -> None:
+def test_worker_cycle_recovers_outbox_then_terminal_results_before_execution() -> None:
     service = FakeService()
     report = worker_cycle(
         service,
@@ -51,7 +51,7 @@ def test_worker_cycle_recovers_dispatches_then_executes() -> None:
         executor=FakeExecutor(service.calls),
     )
 
-    assert service.calls == ["recover", "dispatch", "execute:worker-one"]
+    assert service.calls == ["dispatch", "recover", "execute:worker-one"]
     assert report["dispatched_request_ids"] == ["request-dispatched"]
     assert report["recovered_dispatch_ids"] == ["dispatch-recovered"]
     assert report["executed"] is True
@@ -81,9 +81,9 @@ def test_docker_selection_fails_closed_without_host_fallback(tmp_path: Path, mon
         )
 
 
-def test_legacy_backend_requires_explicit_compatibility_opt_in(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("ASTRA_ALLOW_LEGACY_PROJECT_EXECUTION", raising=False)
-    with pytest.raises(RuntimeError, match="requires ASTRA_ALLOW_LEGACY_PROJECT_EXECUTION=1"):
+def test_legacy_host_backend_is_retired_even_if_old_opt_in_is_set(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ASTRA_ALLOW_LEGACY_PROJECT_EXECUTION", "1")
+    with pytest.raises(RuntimeError, match="has been retired"):
         build_runtime(
             database_path=tmp_path / "control.db",
             workspace_root=tmp_path,

@@ -243,6 +243,22 @@ def _table_snapshot(database: Path, tables: tuple[str, ...]) -> dict[str, object
         }
 
 
+def _assert_existing_state_preserved(
+    before: dict[str, object], after: dict[str, object]
+) -> None:
+    for table, original_value in before.items():
+        original = dict(original_value)
+        current = dict(after[table])
+        original_columns = tuple(original["columns"])
+        current_columns = tuple(current["columns"])
+        assert current_columns[: len(original_columns)] == original_columns
+        original_rows = tuple(original["rows"])
+        current_rows = tuple(current["rows"])
+        assert tuple(
+            tuple(row[: len(original_columns)]) for row in current_rows
+        ) == original_rows
+
+
 @pytest.mark.parametrize("checkpoint", _CHECKPOINT_ORDER)
 def test_representative_checkpoint_upgrades_without_rewriting_existing_state(
     tmp_path: Path, checkpoint: str
@@ -256,7 +272,10 @@ def test_representative_checkpoint_upgrades_without_rewriting_existing_state(
     assert result.applied_versions == tuple(range(1, LATEST_SCHEMA_VERSION + 1))
     assert current_schema_version(database) == LATEST_SCHEMA_VERSION
     assert assert_schema_compatible(database) == LATEST_SCHEMA_VERSION
-    assert _table_snapshot(database, existing_tables) == before
+    _assert_existing_state_preserved(
+        before,
+        _table_snapshot(database, existing_tables),
+    )
     with sqlite3.connect(database) as connection:
         tables = {
             row[0]
@@ -283,6 +302,23 @@ def test_rerun_is_idempotent_and_concurrent_initializers_serialize(
     assert _sqlite_schema_snapshot(database) == schema_before
     assert _migration_ledger(database) == ledger_before
     assert len(ledger_before) == LATEST_SCHEMA_VERSION
+
+
+def test_existing_database_is_backed_up_before_stage3h_data_tagging(tmp_path: Path) -> None:
+    database = tmp_path / "pre-stage3h.db"
+    _build_checkpoint_fixture(database, "stage2c")
+    apply_schema_migrations(database)
+    backup = database.with_name(f"{database.name}.pre-stage3h-v8.bak")
+    assert backup.is_file()
+    with sqlite3.connect(backup) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_runs'"
+        ).fetchone() is not None
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT value FROM project_compatibility_state WHERE key = 'compatibility_removal_version'"
+        ).fetchone()[0] == "stage3h-v1"
 
 
 _MIGRATION_BOUNDARIES = tuple(
@@ -435,6 +471,7 @@ def test_stage2c_project_records_remain_readable_without_emitting_work(
     events_before = control.list_events("existing-project")
     with sqlite3.connect(database) as connection:
         for table in (
+            "project_repair_cycles_v2",
             "project_projection_checkpoints",
             "project_execution_cancellations",
             "project_model_invocations",

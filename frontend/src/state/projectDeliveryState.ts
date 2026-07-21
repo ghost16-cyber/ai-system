@@ -52,6 +52,11 @@ export interface ProjectDeliveryAction {
     dispatchStatus?: string;
     workerRequestId?: string;
     workerStatus?: string;
+    cancellationId?: string;
+    cancellationStatus?: string;
+    projectionStatus?: string;
+    projectionLag: number;
+    recoveryClassification?: string;
     failureClassification?: string;
     evidence: Record<string, unknown>;
   };
@@ -208,6 +213,11 @@ export function projectDeliveryActionFromPayload(payload: unknown): ProjectDeliv
         dispatchStatus: string(control.execution_dispatch_status) || undefined,
         workerRequestId: string(control.worker_request_id) || undefined,
         workerStatus: string(control.worker_request_status) || undefined,
+        cancellationId: string(control.execution_cancellation_id) || undefined,
+        cancellationStatus: string(control.execution_cancellation_status) || undefined,
+        projectionStatus: string(control.projection_status) || undefined,
+        projectionLag: number(control.projection_lag),
+        recoveryClassification: string(control.projection_failure_classification) || undefined,
         failureClassification: string(control.execution_failure_classification) || undefined,
         evidence: object(control.execution_evidence_references),
       } : undefined,

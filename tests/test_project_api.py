@@ -101,3 +101,59 @@ def test_duplicate_api_create_returns_same_backend_identity_without_duplicates(t
     assert second.status_code == 201
     assert second.json()["project"]["project_run_id"] == first.json()["project"]["project_run_id"]
     assert _database_snapshot(database) == before
+
+
+def test_canonical_action_requires_and_echoes_exact_backend_bindings(tmp_path):
+    _database, client = _client(tmp_path)
+    created = client.post("/chat/projects", json=_request(tmp_path)).json()
+    project = created["project"]
+    action = next(item for item in created["next_permitted_actions"] if item["action"] == "approve_plan")
+    request = {
+        "schema_version": "astra.project-api.action.v1",
+        "conversation_id": project["conversation_id"],
+        "workspace_id": project["workspace_id"],
+        "actor_id": project["actor_id"],
+        "repository_root_fingerprint": project["repository_root_fingerprint"],
+        "expected_state_version": action["expected_state_version"],
+        "idempotency_key": "approve-api-plan",
+        "plan_revision_id": action["plan_revision_id"],
+        "scope_revision_id": action["scope_revision_id"],
+        "manifest_hash": action["manifest_hash"],
+        "artifact_id": action["artifact_id"],
+        "artifact_type": action["artifact_type"],
+        "artifact_hash": action["artifact_hash"],
+        "artifact_binding_hash": action["artifact_binding_hash"],
+        "payload": action["payload"],
+    }
+    approved = client.post(
+        f"/chat/projects/{project['project_run_id']}/actions/approve_plan",
+        json=request,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["project"]["lifecycle_state"] == "ready_for_work"
+    assert [item["action"] for item in approved.json()["next_permitted_actions"]] == ["cancel_project"]
+
+
+def test_canonical_action_fails_closed_for_stale_state_and_wrong_identity(tmp_path):
+    _database, client = _client(tmp_path)
+    created = client.post("/chat/projects", json=_request(tmp_path)).json()
+    project = created["project"]
+    action = next(item for item in created["next_permitted_actions"] if item["action"] == "approve_plan")
+    base = {
+        "schema_version": "astra.project-api.action.v1",
+        "conversation_id": project["conversation_id"], "workspace_id": project["workspace_id"],
+        "actor_id": project["actor_id"],
+        "repository_root_fingerprint": project["repository_root_fingerprint"],
+        "expected_state_version": action["expected_state_version"] - 1,
+        "idempotency_key": "stale-api-plan", "plan_revision_id": action["plan_revision_id"],
+        "scope_revision_id": action["scope_revision_id"], "manifest_hash": action["manifest_hash"],
+        "artifact_id": action["artifact_id"], "artifact_type": action["artifact_type"],
+        "artifact_hash": action["artifact_hash"], "artifact_binding_hash": action["artifact_binding_hash"], "payload": {},
+    }
+    stale = client.post(f"/chat/projects/{project['project_run_id']}/actions/approve_plan", json=base)
+    assert stale.status_code == 409
+    wrong_identity = client.post(
+        f"/chat/projects/{project['project_run_id']}/actions/approve_plan",
+        json={**base, "expected_state_version": action["expected_state_version"], "workspace_id": "other"},
+    )
+    assert wrong_identity.status_code == 409

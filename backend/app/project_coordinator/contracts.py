@@ -44,6 +44,8 @@ class CoordinatorIntent(StrictModel):
     lease_owner: str | None = None
     lease_token: str | None = None
     lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    attempt_count: int = Field(default=0, ge=0, le=100)
     result_reference: dict[str, Any] | None = None
     failure_classification: str | None = None
     created_at: datetime

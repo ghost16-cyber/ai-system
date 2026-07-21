@@ -10,10 +10,14 @@ from backend.app.project_api.contracts import (
     CanonicalProjectCollection,
     CanonicalProjectCreateRequest,
     CanonicalProjectResponse,
+    CanonicalProjectActionRequest,
+    CanonicalProjectActionDescriptor,
+    CanonicalCoordinatorSummary,
 )
 from backend.app.project_artifacts import ProjectArtifact
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode
 from backend.app.project_control.project_service import CanonicalProjectService
+from backend.app.project_coordinator import ProjectCoordinatorService
 
 
 FolderAuthorityResolver = Callable[[str], dict[str, Any]]
@@ -23,6 +27,7 @@ def create_project_router(
     service: CanonicalProjectService,
     *,
     folder_authority_resolver: FolderAuthorityResolver | None = None,
+    coordinator: ProjectCoordinatorService | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["canonical-projects"])
 
@@ -50,7 +55,7 @@ def create_project_router(
                 manifest=request.manifest,
                 plan=request.plan,
             )
-            return _response(service, project.project_run_id)
+            return build_canonical_project_response(service, project.project_run_id, coordinator=coordinator)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -60,7 +65,7 @@ def create_project_router(
     )
     def get_project(project_run_id: str) -> CanonicalProjectResponse:
         try:
-            return _response(service, project_run_id)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -71,7 +76,7 @@ def create_project_router(
     def list_projects(conversation_id: str) -> CanonicalProjectCollection:
         try:
             items = tuple(
-                _response(service, project.project_run_id)
+                build_canonical_project_response(service, project.project_run_id, coordinator=coordinator)
                 for project in service.list_projects(conversation_id)
             )
             return CanonicalProjectCollection(items=items, count=len(items))
@@ -91,13 +96,102 @@ def create_project_router(
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
+    @router.post(
+        "/chat/projects/{project_run_id}/actions/{action}",
+        response_model=CanonicalProjectResponse,
+    )
+    def perform_action(
+        project_run_id: str,
+        action: str,
+        request: CanonicalProjectActionRequest,
+    ) -> CanonicalProjectResponse:
+        try:
+            service.execute_action(project_run_id, action=action, request=request)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+
     return router
 
 
-def _response(service: CanonicalProjectService, project_run_id: str) -> CanonicalProjectResponse:
+def build_canonical_project_response(
+    service: CanonicalProjectService,
+    project_run_id: str,
+    *,
+    coordinator: ProjectCoordinatorService | None = None,
+) -> CanonicalProjectResponse:
     project = service.get_project(project_run_id)
     artifacts = tuple(_summary(item) for item in service.list_artifacts(project_run_id))
-    return CanonicalProjectResponse(project=project, artifacts=artifacts)
+    coordinator_summary = None
+    if coordinator is not None:
+        intents = coordinator.list_for_project(project_run_id)
+        if intents:
+            latest = intents[-1]
+            coordinator_summary = CanonicalCoordinatorSummary(
+                coordinator_intent_id=latest.coordinator_intent_id,
+                intent_type=latest.intent_type.value,
+                status=latest.status.value,
+                attempt_count=latest.attempt_count,
+                failure_classification=latest.failure_classification,
+                updated_at=latest.updated_at.isoformat(),
+            )
+    return CanonicalProjectResponse(
+        project=project,
+        artifacts=artifacts,
+        coordinator=coordinator_summary,
+        next_permitted_actions=_next_actions(project, artifacts),
+    )
+
+
+def _next_actions(project, artifacts) -> tuple[CanonicalProjectActionDescriptor, ...]:
+    if project.terminal:
+        return ()
+    pending = str(project.next_permitted_action or "")
+    base = pending.split(":", 1)[0]
+    labels = {
+        "approve_plan": "Approve exact plan",
+        "approve_patch": "Approve exact patch",
+        "approve_command": "Approve exact command",
+        "approve_rollback": "Approve exact rollback",
+        "approve_manual_verification": "Approve manual verification",
+    }
+    artifact_types = {
+        "approve_plan": "plan",
+        "approve_patch": "patch_preview",
+        "approve_command": "command_preview",
+        "approve_rollback": "rollback_preview",
+        "approve_manual_verification": "verifier_result",
+    }
+    values: list[CanonicalProjectActionDescriptor] = []
+    if base in labels:
+        artifact = next((item for item in reversed(artifacts) if item.artifact_type == artifact_types[base]), None)
+        values.append(CanonicalProjectActionDescriptor(
+            action=base,
+            label=labels[base],
+            expected_state_version=project.state_version,
+            plan_revision_id=project.plan_revision_id,
+            scope_revision_id=project.scope_revision_id,
+            manifest_hash=project.manifest_hash,
+            artifact_id=artifact.artifact_id if artifact else None,
+            artifact_type=artifact.artifact_type if artifact else None,
+            artifact_hash=artifact.content_hash if artifact else None,
+            artifact_binding_hash=artifact.binding_hash if artifact else None,
+            payload={
+                ({"approve_patch": "patch_id", "approve_command": "command_id", "approve_rollback": "rollback_id"}.get(base) or "pending_id"):
+                pending.split(":", 1)[1] if ":" in pending else base
+            } if base != "approve_plan" else {},
+        ))
+    if project.next_permitted_action != "cancelling":
+        values.append(CanonicalProjectActionDescriptor(
+            action="cancel_project",
+            label="Cancel project",
+            expected_state_version=project.state_version,
+            plan_revision_id=project.plan_revision_id,
+            scope_revision_id=project.scope_revision_id,
+            manifest_hash=project.manifest_hash,
+            payload={"reason": "Cancelled by the user."},
+        ))
+    return tuple(values)
 
 
 def _summary(artifact: ProjectArtifact) -> CanonicalArtifactSummary:

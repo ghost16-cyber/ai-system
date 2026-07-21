@@ -138,6 +138,8 @@ def _normalize_response(root: str | Path, job: dict[str, Any], evidence: Any, re
             raise ProjectAnalysisError(f"The coding model proposed an unapproved created path: {path}")
         if kind == "delete" and path not in allowed_delete:
             raise ProjectAnalysisError(f"The coding model proposed an unapproved deletion: {path}")
+        if not proposed.evidence_references:
+            raise ProjectAnalysisError(f"The coding model proposed an unexplained file operation: {path}")
         expected = hashes.get(path, "missing")
         if proposed.expected_sha256 != expected:
             raise ProjectAnalysisError(f"The coding model proposal is stale or incorrectly bound for {path}.")

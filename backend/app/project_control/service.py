@@ -39,6 +39,11 @@ from backend.app.project_control.contracts import (
     content_hash,
 )
 from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
+from backend.app.project_control.cancellation import (
+    ExecutionCancellation,
+    ExecutionCancellationStatus,
+    build_execution_cancellation,
+)
 from backend.app.project_control.transitions import validate_command_source, validate_transition
 
 if TYPE_CHECKING:
@@ -328,6 +333,83 @@ class ProjectControlPlane:
                 (project_run_id,),
             ).fetchall()
             return [self._stored_model(ProjectEvent, row["event_json"], "event") for row in rows]
+
+    def get_execution_cancellation(self, cancellation_id: str) -> ExecutionCancellation:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT cancellation_json FROM project_execution_cancellations WHERE cancellation_id = ?",
+                (cancellation_id,),
+            ).fetchone()
+        if row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Execution cancellation not found.",
+            )
+        return self._stored_model(
+            ExecutionCancellation, row["cancellation_json"], "execution cancellation"
+        )
+
+    def get_execution_cancellation_for_attempt(
+        self, execution_attempt_id: str
+    ) -> ExecutionCancellation | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT cancellation_json FROM project_execution_cancellations "
+                "WHERE execution_attempt_id = ?",
+                (execution_attempt_id,),
+            ).fetchone()
+        return (
+            self._stored_model(
+                ExecutionCancellation,
+                row["cancellation_json"],
+                "execution cancellation",
+            )
+            if row is not None else None
+        )
+
+    def list_execution_cancellations(
+        self,
+        *,
+        statuses: tuple[ExecutionCancellationStatus, ...] | None = None,
+        limit: int = 100,
+    ) -> list[ExecutionCancellation]:
+        bounded = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                rows = connection.execute(
+                    f"SELECT cancellation_json FROM project_execution_cancellations "
+                    f"WHERE status IN ({placeholders}) ORDER BY created_at, cancellation_id LIMIT ?",
+                    (*[item.value for item in statuses], bounded),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT cancellation_json FROM project_execution_cancellations "
+                    "ORDER BY created_at, cancellation_id LIMIT ?",
+                    (bounded,),
+                ).fetchall()
+        return [
+            self._stored_model(
+                ExecutionCancellation, row["cancellation_json"], "execution cancellation"
+            )
+            for row in rows
+        ]
+
+    def mark_execution_cancellation_dispatched(
+        self, cancellation_id: str
+    ) -> ExecutionCancellation:
+        return self._update_cancellation_delivery(
+            cancellation_id, status=ExecutionCancellationStatus.DISPATCHED
+        )
+
+    def mark_execution_cancellation_failed(
+        self, cancellation_id: str, *, failure_classification: str
+    ) -> ExecutionCancellation:
+        return self._update_cancellation_delivery(
+            cancellation_id,
+            status=ExecutionCancellationStatus.FAILED,
+            failure_classification=failure_classification,
+        )
 
     def list_approvals(self, project_run_id: str, *, active_only: bool = False) -> list[ApprovalGrant]:
         with self._connect() as connection:
@@ -700,6 +782,7 @@ class ProjectControlPlane:
                 "active_approval_grant_ids": (),
                 "work_unit_state": work_state,
                 "verification_state": {},
+                "repair_state": {},
                 "handoff_eligible": False,
                 "lifecycle_status": ProjectLifecycle.AWAITING_PLAN_APPROVAL,
                 "pending_user_action": "approve_plan",
@@ -723,10 +806,17 @@ class ProjectControlPlane:
             state[work_unit_id] = {**state[work_unit_id], "status": "in_progress", "attempts": int(state[work_unit_id].get("attempts", 0)) + 1}
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.WORK_UNIT)
             created.append(attempt.execution_attempt_id)
-            return self._with_attempt(run, attempt).model_copy(update={
+            updated = self._with_attempt(run, attempt).model_copy(update={
                 "work_unit_state": state, "lifecycle_status": ProjectLifecycle.WORK_IN_PROGRESS,
                 "pending_user_action": "record_patch_preview",
-            }), tuple(created)
+            })
+            if artifact is not None:
+                patch_id = _required(payload, "patch_id")
+                updated = self._with_artifact(updated, artifact).model_copy(update={
+                    "lifecycle_status": ProjectLifecycle.AWAITING_PATCH_APPROVAL,
+                    "pending_user_action": f"approve_patch:{patch_id}",
+                })
+            return updated, tuple(created)
         if kind == ProjectCommandType.RECORD_PATCH_PREVIEW:
             patch_id = _required(payload, "patch_id")
             return self._with_artifact(run.model_copy(update={
@@ -753,13 +843,16 @@ class ProjectControlPlane:
             created.append(attempt.execution_attempt_id)
             manifest_hash = _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash
             status = ProjectLifecycle.WORK_IN_PROGRESS if succeeded else ProjectLifecycle.REPAIR_REQUIRED
-            return self._with_attempt(run, attempt).model_copy(update={
+            updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "current_manifest_hash": manifest_hash,
                 "lifecycle_status": status,
                 "pending_user_action": "request_verification" if succeeded else "initiate_repair",
                 "verification_state": {} if manifest_hash != run.current_manifest_hash else run.verification_state,
                 "handoff_eligible": False,
-            }), tuple(created)
+            }), artifact)
+            if not succeeded:
+                updated = self._with_failure_artifact(updated, payload)
+            return updated, tuple(created)
         if kind == ProjectCommandType.RECORD_COMMAND_PREVIEW:
             _required(payload, "command_id")
             return self._with_artifact(run.model_copy(update={
@@ -802,10 +895,18 @@ class ProjectControlPlane:
             succeeded = bool(payload.get("succeeded"))
             attempt = self._finish_or_create_attempt(connection, run, command, ExecutionAttemptType.COMMAND, succeeded=succeeded)
             created.append(attempt.execution_attempt_id)
-            return self._with_attempt(run, attempt).model_copy(update={
+            next_action = (
+                "request_verification"
+                if succeeded and run.canonical_generation == "canonical"
+                else ("record_verifier_result" if succeeded else "initiate_repair")
+            )
+            updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING if succeeded else ProjectLifecycle.REPAIR_REQUIRED,
-                "pending_user_action": "record_verifier_result" if succeeded else "initiate_repair",
-            }), tuple(created)
+                "pending_user_action": next_action,
+            }), artifact)
+            if not succeeded:
+                updated = self._with_failure_artifact(updated, payload)
+            return updated, tuple(created)
         if kind == ProjectCommandType.REQUEST_VERIFICATION:
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.VERIFICATION)
             created.append(attempt.execution_attempt_id)
@@ -829,12 +930,31 @@ class ProjectControlPlane:
             succeeded = outcome == "passed"
             attempt = self._finish_or_create_attempt(connection, run, command, ExecutionAttemptType.VERIFICATION, succeeded=succeeded)
             created.append(attempt.execution_attempt_id)
-            return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
+            updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "verification_state": verification,
                 "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING if succeeded or outcome == "manual_required" else ProjectLifecycle.REPAIR_REQUIRED,
                 "pending_user_action": "complete_work_unit" if succeeded else ("approve_manual_verification" if outcome == "manual_required" else "initiate_repair"),
                 "handoff_eligible": False,
-            }), artifact), tuple(created)
+            }), artifact)
+            if succeeded and run.canonical_generation == "canonical":
+                updated = self._advance_after_canonical_verification(
+                    connection, updated, criterion_id
+                )
+            elif not succeeded:
+                updated = self._with_failure_artifact(updated, payload)
+                if int(updated.repair_state.get("cycle_count") or 0) >= 1:
+                    updated = updated.model_copy(update={
+                        "lifecycle_status": ProjectLifecycle.BLOCKED,
+                        "pending_user_action": "review_failed_repair",
+                        "blocked_reason": (
+                            "The single approved repair did not pass fresh verification."
+                        ),
+                        "repair_state": {
+                            **updated.repair_state,
+                            "status": "failed",
+                        },
+                    })
+            return updated, tuple(created)
         if kind == ProjectCommandType.REQUEST_CLARIFICATION:
             return run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.CLARIFICATION_REQUIRED,
@@ -842,12 +962,12 @@ class ProjectControlPlane:
                 "blocked_reason": _text(payload.get("reason")) or "Clarification is required.",
             }), ()
         if kind == ProjectCommandType.MARK_BLOCKED:
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.BLOCKED,
                 "pending_user_action": _text(payload.get("pending_user_action")) or "review_block",
                 "blocked_reason": _text(payload.get("reason")) or "Project work is blocked.",
                 "handoff_eligible": False,
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.REVISE_SCOPE:
             specification_hash = _text(payload.get("specification_hash")) or run.specification_hash
             if not specification_hash:
@@ -860,18 +980,49 @@ class ProjectControlPlane:
                 "current_scope_revision_id": scope.scope_revision_id,
                 "current_plan_revision_id": None,
                 "active_approval_grant_ids": (),
-                "work_unit_state": {}, "verification_state": {}, "handoff_eligible": False,
+                "work_unit_state": {}, "verification_state": {}, "repair_state": {},
+                "handoff_eligible": False,
                 "lifecycle_status": ProjectLifecycle.PLANNING,
                 "pending_user_action": "propose_plan_revision",
                 "requires_reapproval": True,
             }), artifact), tuple(created)
         if kind == ProjectCommandType.INITIATE_REPAIR:
+            if int(run.repair_state.get("cycle_count") or 0) >= 1:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
+                    "The automatic one-repair budget has been exhausted.",
+                )
+            failure_artifact_id = _required(payload, "failure_artifact_id")
+            if run.current_artifact_ids.get("failure_evidence") != failure_artifact_id:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.STALE_VERIFICATION,
+                    "The repair is bound to stale failure evidence.",
+                )
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.REPAIR)
             created.append(attempt.execution_attempt_id)
-            return self._with_attempt(run, attempt).model_copy(update={
+            updated = self._with_attempt(run, attempt).model_copy(update={
                 "lifecycle_status": ProjectLifecycle.WORK_IN_PROGRESS,
                 "pending_user_action": "record_patch_preview",
-            }), tuple(created)
+                "repair_state": {
+                    **run.repair_state,
+                    "cycle_count": 1,
+                    "repair_cycle_id": _required(payload, "repair_cycle_id"),
+                    "failure_artifact_id": failure_artifact_id,
+                    "status": "preparing",
+                },
+            })
+            if artifact is not None:
+                patch_id = _required(payload, "patch_id")
+                updated = self._with_artifact(updated, artifact).model_copy(update={
+                    "lifecycle_status": ProjectLifecycle.AWAITING_PATCH_APPROVAL,
+                    "pending_user_action": f"approve_patch:{patch_id}",
+                    "repair_state": {
+                        **updated.repair_state,
+                        "repair_preview_artifact_id": artifact.artifact_id,
+                        "status": "awaiting_approval",
+                    },
+                })
+            return updated, tuple(created)
         if kind == ProjectCommandType.RECORD_ROLLBACK_PREVIEW:
             rollback_id = _required(payload, "rollback_id")
             return run.model_copy(update={
@@ -935,12 +1086,12 @@ class ProjectControlPlane:
             )
             created.append(attempt.execution_attempt_id)
             succeeded = bool(payload.get("succeeded"))
-            return self._with_attempt(run, attempt).model_copy(update={
+            return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "current_manifest_hash": _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash,
                 "verification_state": {}, "handoff_eligible": False,
                 "lifecycle_status": ProjectLifecycle.READY_FOR_WORK if succeeded else ProjectLifecycle.REPAIR_REQUIRED,
                 "pending_user_action": "begin_work_unit" if succeeded else "initiate_repair",
-            }), tuple(created)
+            }), artifact), tuple(created)
         if kind == ProjectCommandType.COMPLETE_WORK_UNIT:
             work_unit_id = _required(payload, "work_unit_id")
             if work_unit_id not in run.work_unit_state:
@@ -964,6 +1115,22 @@ class ProjectControlPlane:
                 "pending_user_action": "finalize_project",
             }), artifact), tuple(created)
         if kind == ProjectCommandType.FINALIZE_PROJECT:
+            if run.canonical_generation == "canonical":
+                if artifact is None:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.INVALID_COMMAND,
+                        "Canonical finalization requires the exact handoff artifact.",
+                    )
+                if run.current_artifact_ids.get("handoff") != artifact.artifact_id:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "The handoff artifact is stale or no longer current.",
+                    )
+                return self._with_artifact(run.model_copy(update={
+                    "lifecycle_status": ProjectLifecycle.COMPLETED,
+                    "pending_user_action": None,
+                    "terminal_reason": "Project handoff finalized.",
+                }), artifact), ()
             if run.lifecycle_status == ProjectLifecycle.HANDOFF_READY:
                 return run.model_copy(update={
                     "lifecycle_status": ProjectLifecycle.HANDED_OFF,
@@ -975,6 +1142,18 @@ class ProjectControlPlane:
                 "terminal_reason": "Project handoff finalized.",
             }), ()
         if kind == ProjectCommandType.CANCEL_PROJECT:
+            cancellation = self._begin_execution_cancellation(
+                connection,
+                run,
+                requested_by=command.actor_id,
+                reason=_text(payload.get("reason")) or "Cancelled by the authorized actor.",
+            )
+            if cancellation is not None:
+                created.append(cancellation.cancellation_id)
+                return run.model_copy(update={
+                    "pending_user_action": "cancelling",
+                    "handoff_eligible": False,
+                }), tuple(created)
             self._cancel_active_attempts(connection, run.project_run_id)
             self._cancel_pending_dispatches(connection, run.project_run_id)
             return run.model_copy(update={
@@ -983,14 +1162,72 @@ class ProjectControlPlane:
                 "handoff_eligible": False,
                 "terminal_reason": _text(payload.get("reason")) or "Cancelled by the authorized actor.",
             }), ()
+        if kind == ProjectCommandType.ACKNOWLEDGE_EXECUTION_CANCELLATION:
+            cancellation_id = _required(payload, "cancellation_id")
+            cancellation = self._load_execution_cancellation(connection, cancellation_id)
+            if cancellation.project_run_id != run.project_run_id:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "The cancellation belongs to another project.",
+                )
+            if cancellation.status == ExecutionCancellationStatus.ACKNOWLEDGED:
+                return run, ()
+            worker_status = self._terminal_worker_cancellation_status(
+                connection, cancellation
+            )
+            if worker_status is None:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
+                    "The worker has not durably acknowledged cancellation.",
+                )
+            attempt_status = (
+                ExecutionAttemptStatus.CANCELLED
+                if worker_status == "cancelled"
+                else ExecutionAttemptStatus.INTERRUPTED
+            )
+            failure = _text(payload.get("failure_classification")) or (
+                "execution_cancelled"
+                if attempt_status == ExecutionAttemptStatus.CANCELLED
+                else f"cancellation_acknowledged_after_{worker_status}"
+            )
+            self._finish_cancelled_attempt(
+                connection,
+                cancellation.execution_attempt_id,
+                status=attempt_status,
+                failure_classification=failure,
+            )
+            now = self._now()
+            acknowledged = cancellation.model_copy(update={
+                "status": ExecutionCancellationStatus.ACKNOWLEDGED,
+                "failure_classification": None,
+                "updated_at": now,
+                "acknowledged_at": now,
+            })
+            connection.execute(
+                "UPDATE project_execution_cancellations SET status = ?, cancellation_json = ?, "
+                "updated_at = ?, acknowledged_at = ? WHERE cancellation_id = ?",
+                (
+                    acknowledged.status.value,
+                    acknowledged.model_dump_json(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    cancellation_id,
+                ),
+            )
+            return self._with_artifact(run.model_copy(update={
+                "lifecycle_status": ProjectLifecycle.CANCELLED,
+                "pending_user_action": None,
+                "handoff_eligible": False,
+                "terminal_reason": cancellation.reason,
+            }), artifact), ()
         if kind == ProjectCommandType.RECOVER_ATTEMPT:
             attempt_id = _required(payload, "execution_attempt_id")
             self._interrupt_attempt(connection, run, attempt_id)
-            return run.model_copy(update={
+            return self._with_artifact(run.model_copy(update={
                 "lifecycle_status": ProjectLifecycle.BLOCKED,
                 "blocked_reason": "An active execution attempt was interrupted and requires review.",
                 "pending_user_action": "review_interrupted_attempt",
-            }), ()
+            }), artifact), ()
         if kind == ProjectCommandType.RECONCILE_LEGACY:
             return run.model_copy(update={
                 "requires_reapproval": True,
@@ -1420,6 +1657,93 @@ class ProjectControlPlane:
                 return grant
         raise ProjectControlError(ProjectControlErrorCode.MISSING_APPROVAL, f"No current approval grants authority for this {approval_type.value} action.")
 
+    def _advance_after_canonical_verification(
+        self,
+        connection: sqlite3.Connection,
+        run: ProjectRun,
+        criterion_id: str,
+    ) -> ProjectRun:
+        active_work_unit_id = next(
+            (
+                key for key, value in run.work_unit_state.items()
+                if value.get("status") == "in_progress"
+            ),
+            None,
+        )
+        if active_work_unit_id is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Canonical verification has no active work unit.",
+            )
+        plan = self._load_plan(connection, run.current_plan_revision_id)
+        work_unit = next(
+            (
+                item for item in plan.work_units
+                if str(item.get("work_unit_id") or item.get("id") or "")
+                == active_work_unit_id
+            ),
+            None,
+        )
+        if work_unit is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "The active work unit is not in the current plan.",
+            )
+        configured = (
+            work_unit.get("acceptance_criteria_ids")
+            or work_unit.get("criterion_references")
+            or work_unit.get("acceptance_criteria")
+        )
+        relevant = (
+            {str(item) for item in configured}
+            if isinstance(configured, (list, tuple))
+            else None
+        )
+        required_ids = [
+            str(item.get("criterion_id") or item.get("id") or "")
+            for item in plan.acceptance_criteria
+            if item.get("required", True) is not False
+            and (
+                relevant is None
+                or str(item.get("criterion_id") or item.get("id") or "") in relevant
+            )
+        ]
+        if criterion_id not in required_ids and required_ids:
+            return run.model_copy(update={"pending_user_action": "request_verification"})
+        if any(
+            (run.verification_state.get(item) or {}).get("outcome") != "passed"
+            for item in required_ids
+        ):
+            return run.model_copy(update={
+                "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING,
+                "pending_user_action": "request_verification",
+            })
+        state = _copy(run.work_unit_state)
+        state[active_work_unit_id] = {
+            **state[active_work_unit_id],
+            "status": "completed",
+        }
+        self._finish_active_attempt(
+            connection,
+            run,
+            ExecutionAttemptType.WORK_UNIT,
+            succeeded=True,
+        )
+        all_complete = bool(state) and all(
+            item.get("status") == "completed" for item in state.values()
+        )
+        return run.model_copy(update={
+            "work_unit_state": state,
+            "lifecycle_status": (
+                ProjectLifecycle.VERIFICATION_PENDING
+                if all_complete
+                else ProjectLifecycle.READY_FOR_WORK
+            ),
+            "pending_user_action": (
+                "request_handoff" if all_complete else "begin_work_unit"
+            ),
+        })
+
     def _validate_verifier_result(self, connection: sqlite3.Connection, run: ProjectRun,
                                   payload: dict[str, Any], criterion_id: str) -> None:
         self._require_manifest(run)
@@ -1479,6 +1803,8 @@ class ProjectControlPlane:
             ProjectCommandType.REVISE_SCOPE: frozenset({ProjectArtifactType.SPECIFICATION}),
             ProjectCommandType.REGISTER_MANIFEST: frozenset({ProjectArtifactType.MANIFEST}),
             ProjectCommandType.PROPOSE_PLAN_REVISION: frozenset({ProjectArtifactType.PLAN}),
+            ProjectCommandType.BEGIN_WORK_UNIT: frozenset({ProjectArtifactType.PATCH_PREVIEW}),
+            ProjectCommandType.INITIATE_REPAIR: frozenset({ProjectArtifactType.REPAIR_PREVIEW}),
             ProjectCommandType.RECORD_PATCH_PREVIEW: frozenset({
                 ProjectArtifactType.PATCH_PREVIEW,
                 ProjectArtifactType.REPAIR_PREVIEW,
@@ -1486,10 +1812,26 @@ class ProjectControlPlane:
             ProjectCommandType.RECORD_COMMAND_PREVIEW: frozenset({ProjectArtifactType.COMMAND_PREVIEW}),
             ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({ProjectArtifactType.VERIFIER_RESULT}),
             ProjectCommandType.REQUEST_HANDOFF: frozenset({ProjectArtifactType.HANDOFF}),
+            ProjectCommandType.FINALIZE_PROJECT: frozenset({ProjectArtifactType.HANDOFF}),
+            ProjectCommandType.MARK_BLOCKED: frozenset({ProjectArtifactType.COORDINATOR_DECISION}),
+            ProjectCommandType.RECORD_PATCH_RESULT: frozenset({ProjectArtifactType.EXECUTION_RESULT}),
+            ProjectCommandType.RECORD_COMMAND_RESULT: frozenset({ProjectArtifactType.EXECUTION_RESULT}),
+            ProjectCommandType.RECORD_ROLLBACK: frozenset({ProjectArtifactType.EXECUTION_RESULT}),
+            ProjectCommandType.ACKNOWLEDGE_EXECUTION_CANCELLATION: frozenset({
+                ProjectArtifactType.EXECUTION_RESULT
+            }),
+            ProjectCommandType.RECOVER_ATTEMPT: frozenset({ProjectArtifactType.EXECUTION_RESULT}),
         }
         allowed = expected.get(command.command_type)
         supplied = command.artifact_id is not None
-        required = run.canonical_generation == "canonical" and allowed is not None
+        required = (
+            run.canonical_generation == "canonical"
+            and allowed is not None
+            and command.command_type not in {
+                ProjectCommandType.BEGIN_WORK_UNIT,
+                ProjectCommandType.RECOVER_ATTEMPT,
+            }
+        )
         if not supplied:
             if required:
                 raise ProjectControlError(
@@ -1544,7 +1886,66 @@ class ProjectControlPlane:
         for actual, current, code in exact_bindings:
             if actual is not None and actual != current:
                 raise ProjectControlError(code, "The project artifact is bound to stale project state.")
+        expected_attempt = _text(command.payload.get("execution_attempt_id"))
+        if binding.execution_attempt_id is not None:
+            if not expected_attempt:
+                expected_attempt = _text(command.authority_scope.get("execution_attempt_id"))
+            if binding.execution_attempt_id != expected_attempt:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "The execution-result artifact is bound to a different attempt.",
+                )
         return artifact
+
+    def _with_failure_artifact(
+        self,
+        run: ProjectRun,
+        payload: dict[str, Any],
+    ) -> ProjectRun:
+        failure_artifact_id = _text(payload.get("failure_artifact_id"))
+        if not failure_artifact_id:
+            if run.canonical_generation == "canonical":
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "Canonical domain failures require bounded failure evidence.",
+                )
+            return run
+        if self.artifact_store is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Failure evidence storage is unavailable.",
+            )
+        from backend.app.project_artifacts.contracts import ProjectArtifactType
+        from backend.app.project_artifacts.store import ProjectArtifactStoreError
+
+        try:
+            failure = self.artifact_store.verify(failure_artifact_id)
+        except ProjectArtifactStoreError as exc:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The failure-evidence artifact is missing or corrupted.",
+            ) from exc
+        binding = failure.binding
+        if (
+            failure.artifact_type != ProjectArtifactType.FAILURE_EVIDENCE
+            or binding.project_run_id != run.project_run_id
+            or binding.plan_revision_id != run.current_plan_revision_id
+            or binding.scope_revision_id != run.current_scope_revision_id
+            or binding.manifest_hash != run.current_manifest_hash
+        ):
+            raise ProjectControlError(
+                ProjectControlErrorCode.STALE_VERIFICATION,
+                "Failure evidence is bound to stale project state.",
+            )
+        updated = self._with_artifact(run, failure)
+        return updated.model_copy(update={
+            "repair_state": {
+                **updated.repair_state,
+                "failure_artifact_id": failure.artifact_id,
+                "failure_artifact_hash": failure.content_hash,
+                "status": "repair_required",
+            }
+        })
 
     @staticmethod
     def _with_artifact(run: ProjectRun, artifact: ProjectArtifact | None) -> ProjectRun:
@@ -1580,7 +1981,7 @@ class ProjectControlPlane:
                 handoff_eligible = False
         attempt_row = connection.execute(
             "SELECT attempt_json FROM project_execution_attempts "
-            "WHERE project_run_id = ? AND status IN ('pending', 'active') "
+            "WHERE project_run_id = ? AND status IN ('pending', 'active', 'cancelling') "
             "ORDER BY started_at DESC, execution_attempt_id DESC LIMIT 1",
             (run.project_run_id,),
         ).fetchone()
@@ -1627,8 +2028,33 @@ class ProjectControlPlane:
                             worker_result = reference if isinstance(reference, dict) else {}
                     except (TypeError, ValueError, json.JSONDecodeError):
                         worker_result = {}
+        cancellation_row = connection.execute(
+            "SELECT cancellation_json FROM project_execution_cancellations "
+            "WHERE project_run_id = ? ORDER BY created_at DESC, cancellation_id DESC LIMIT 1",
+            (run.project_run_id,),
+        ).fetchone()
+        cancellation = (
+            self._stored_model(
+                ExecutionCancellation,
+                cancellation_row["cancellation_json"],
+                "execution cancellation",
+            )
+            if cancellation_row is not None else None
+        )
+        max_event_sequence = int(connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) FROM project_events WHERE project_run_id = ?",
+            (run.project_run_id,),
+        ).fetchone()[0])
+        projection_row = connection.execute(
+            "SELECT last_event_sequence, status, failure_message "
+            "FROM project_projection_checkpoints WHERE project_run_id = ?",
+            (run.project_run_id,),
+        ).fetchone()
+        projected_sequence = int(projection_row["last_event_sequence"]) if projection_row else 0
         return ProjectReadModel(
             project_run_id=run.project_run_id, conversation_id=run.conversation_id,
+            workspace_id=run.workspace_id, actor_id=run.actor_id,
+            repository_root_fingerprint=run.repository_root_fingerprint,
             lifecycle_state=run.lifecycle_status, plan_revision_id=run.current_plan_revision_id,
             scope_revision_id=run.current_scope_revision_id, manifest_hash=run.current_manifest_hash,
             manifest_complete=run.manifest_complete,
@@ -1647,6 +2073,7 @@ class ProjectControlPlane:
                 }
                 for criterion_id, evidence in run.verification_state.items()
             },
+            repair_state=_copy(run.repair_state),
             blocked_reason=run.blocked_reason, handoff_eligible=handoff_eligible,
             state_version=run.state_version,
             terminal=run.lifecycle_status in {ProjectLifecycle.CANCELLED, ProjectLifecycle.COMPLETED},
@@ -1666,6 +2093,14 @@ class ProjectControlPlane:
                 or (active_dispatch.failure_classification if active_dispatch else None)
                 or (active_attempt.failure_classification if active_attempt else None)
             ),
+            execution_cancellation_id=(cancellation.cancellation_id if cancellation else None),
+            execution_cancellation_status=(cancellation.status.value if cancellation else None),
+            projection_status=(str(projection_row["status"]) if projection_row else "pending"),
+            projection_lag=max(0, max_event_sequence - projected_sequence),
+            projection_failure_classification=(
+                _text(projection_row["failure_message"]) or None
+                if projection_row else None
+            ),
             artifact_references=run.current_artifact_ids,
             artifact_hashes=run.current_artifact_hashes,
             current_specification_artifact_id=run.current_artifact_ids.get("specification"),
@@ -1684,6 +2119,8 @@ class ProjectControlPlane:
             current_repair_preview_artifact_hash=run.current_artifact_hashes.get("repair_preview"),
             current_handoff_artifact_id=run.current_artifact_ids.get("handoff"),
             current_handoff_artifact_hash=run.current_artifact_hashes.get("handoff"),
+            current_execution_result_artifact_id=run.current_artifact_ids.get("execution_result"),
+            current_execution_result_artifact_hash=run.current_artifact_hashes.get("execution_result"),
             execution_evidence_references=worker_result,
             execution_timestamps={
                 "attempt_started_at": (
@@ -1728,6 +2165,214 @@ class ProjectControlPlane:
         if attempt.execution_attempt_id in run.execution_attempt_ids:
             return run
         return run.model_copy(update={"execution_attempt_ids": (*run.execution_attempt_ids, attempt.execution_attempt_id)})
+
+    def _load_execution_cancellation(
+        self, connection: sqlite3.Connection, cancellation_id: str
+    ) -> ExecutionCancellation:
+        row = connection.execute(
+            "SELECT cancellation_json FROM project_execution_cancellations WHERE cancellation_id = ?",
+            (cancellation_id,),
+        ).fetchone()
+        if row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "Execution cancellation not found.",
+            )
+        return self._stored_model(
+            ExecutionCancellation, row["cancellation_json"], "execution cancellation"
+        )
+
+    def _update_cancellation_delivery(
+        self,
+        cancellation_id: str,
+        *,
+        status: ExecutionCancellationStatus,
+        failure_classification: str | None = None,
+    ) -> ExecutionCancellation:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._load_execution_cancellation(connection, cancellation_id)
+            if current.status == ExecutionCancellationStatus.ACKNOWLEDGED:
+                connection.execute("COMMIT")
+                return current
+            now = self._now()
+            updated = current.model_copy(update={
+                "status": status,
+                "failure_classification": failure_classification,
+                "updated_at": now,
+                "acknowledged_at": None,
+            })
+            connection.execute(
+                "UPDATE project_execution_cancellations SET status = ?, cancellation_json = ?, "
+                "updated_at = ? WHERE cancellation_id = ?",
+                (status.value, updated.model_dump_json(), now.isoformat(), cancellation_id),
+            )
+            connection.execute("COMMIT")
+            return updated
+
+    def _begin_execution_cancellation(
+        self,
+        connection: sqlite3.Connection,
+        run: ProjectRun,
+        *,
+        requested_by: str,
+        reason: str,
+    ) -> ExecutionCancellation | None:
+        row = connection.execute(
+            "SELECT attempt_json FROM project_execution_attempts WHERE project_run_id = ? "
+            "AND status IN ('pending', 'active', 'cancelling') "
+            "ORDER BY started_at DESC, execution_attempt_id DESC LIMIT 1",
+            (run.project_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        attempt = self._stored_model(ExecutionAttempt, row["attempt_json"], "attempt")
+        existing = connection.execute(
+            "SELECT cancellation_json FROM project_execution_cancellations "
+            "WHERE project_run_id = ? AND execution_attempt_id = ?",
+            (run.project_run_id, attempt.execution_attempt_id),
+        ).fetchone()
+        if existing is not None:
+            return self._stored_model(
+                ExecutionCancellation,
+                existing["cancellation_json"],
+                "execution cancellation",
+            )
+        dispatch_row = connection.execute(
+            "SELECT dispatch_json, worker_request_id, status FROM project_execution_dispatches "
+            "WHERE execution_attempt_id = ?",
+            (attempt.execution_attempt_id,),
+        ).fetchone()
+        worker_request_id = (
+            _text(dispatch_row["worker_request_id"]) if dispatch_row is not None else None
+        ) or None
+        if worker_request_id is None:
+            worker_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_worker_requests'"
+            ).fetchone()
+            if worker_table is not None:
+                worker_row = connection.execute(
+                    "SELECT worker_request_id FROM project_worker_requests WHERE execution_attempt_id = ?",
+                    (attempt.execution_attempt_id,),
+                ).fetchone()
+                worker_request_id = (
+                    _text(worker_row["worker_request_id"]) if worker_row is not None else None
+                ) or None
+        if worker_request_id is None and (
+            dispatch_row is None or str(dispatch_row["status"]) == "pending"
+        ):
+            self._cancel_pending_dispatches(
+                connection,
+                run.project_run_id,
+                execution_attempt_id=attempt.execution_attempt_id,
+            )
+            self._finish_cancelled_attempt(
+                connection,
+                attempt.execution_attempt_id,
+                status=ExecutionAttemptStatus.CANCELLED,
+                failure_classification="cancelled_before_dispatch",
+            )
+            return None
+        cancellation = build_execution_cancellation(
+            project_run_id=run.project_run_id,
+            execution_attempt_id=attempt.execution_attempt_id,
+            worker_request_id=worker_request_id,
+            requested_by=requested_by,
+            reason=reason,
+            created_at=self._now(),
+        )
+        cancelling_attempt = attempt.model_copy(update={
+            "status": ExecutionAttemptStatus.CANCELLING,
+            "failure_classification": "cancellation_requested",
+        })
+        connection.execute(
+            "UPDATE project_execution_attempts SET status = ?, attempt_json = ? "
+            "WHERE execution_attempt_id = ? AND status IN ('pending', 'active')",
+            (
+                cancelling_attempt.status.value,
+                cancelling_attempt.model_dump_json(),
+                cancelling_attempt.execution_attempt_id,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO project_execution_cancellations "
+            "(cancellation_id, project_run_id, execution_attempt_id, worker_request_id, status, "
+            "request_hash, schema_version, cancellation_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                cancellation.cancellation_id,
+                cancellation.project_run_id,
+                cancellation.execution_attempt_id,
+                cancellation.worker_request_id,
+                cancellation.status.value,
+                cancellation.request_hash,
+                cancellation.schema_version,
+                cancellation.model_dump_json(),
+                cancellation.created_at.isoformat(),
+                cancellation.updated_at.isoformat(),
+            ),
+        )
+        return cancellation
+
+    def _terminal_worker_cancellation_status(
+        self, connection: sqlite3.Connection, cancellation: ExecutionCancellation
+    ) -> str | None:
+        if not cancellation.worker_request_id:
+            return "cancelled"
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_worker_requests'"
+        ).fetchone()
+        if table is None:
+            return None
+        row = connection.execute(
+            "SELECT status FROM project_worker_requests WHERE worker_request_id = ?",
+            (cancellation.worker_request_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        status = str(row["status"])
+        return status if status in {
+            "cancelled", "interrupted", "timed_out", "failed", "succeeded"
+        } else None
+
+    def _finish_cancelled_attempt(
+        self,
+        connection: sqlite3.Connection,
+        execution_attempt_id: str,
+        *,
+        status: ExecutionAttemptStatus,
+        failure_classification: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT attempt_json FROM project_execution_attempts WHERE execution_attempt_id = ?",
+            (execution_attempt_id,),
+        ).fetchone()
+        if row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND, "Execution attempt not found."
+            )
+        attempt = self._stored_model(ExecutionAttempt, row["attempt_json"], "attempt")
+        if attempt.status in {
+            ExecutionAttemptStatus.CANCELLED,
+            ExecutionAttemptStatus.INTERRUPTED,
+        }:
+            return
+        now = self._now()
+        finished = attempt.model_copy(update={
+            "status": status,
+            "failure_classification": failure_classification,
+            "finished_at": now,
+        })
+        connection.execute(
+            "UPDATE project_execution_attempts SET status = ?, attempt_json = ?, finished_at = ? "
+            "WHERE execution_attempt_id = ?",
+            (
+                finished.status.value,
+                finished.model_dump_json(),
+                now.isoformat(),
+                execution_attempt_id,
+            ),
+        )
 
     def _cancel_active_attempts(self, connection: sqlite3.Connection, project_run_id: str) -> None:
         rows = connection.execute(

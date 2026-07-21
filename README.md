@@ -2,13 +2,14 @@
 
 A local-first Python coding assistant backend built in working releases.
 
-## Current Checkpoint: Stage 2C — Docker Runtime and Durable Local Control
+## Current Checkpoint: Stage 3H — Reliable Canonical Local MVP
 
 The active system is a local FastAPI backend plus a single chat-native React
-interface. Stage 2C preserves the Stage 0 trust boundary while adding durable
-canonical dispatch, exact host-side mutations, and real Docker containment for
-approved Python and Node commands. It is a credible local execution checkpoint,
-not a claim of distributed or cloud production readiness.
+interface. `ProjectControlPlane` is the only project lifecycle authority. The
+canonical coordinator, durable model-invocation store, isolated worker,
+cancellation dispatcher, terminal reconciler, and read-only projector recover
+without browser or queue authority. Historical project records are read-only.
+This remains a local MVP, not a distributed or cloud production claim.
 
 ### Active Capabilities
 
@@ -27,8 +28,9 @@ not a claim of distributed or cloud production readiness.
 - Local Runtime Intelligence context for hardware, installed tools, capability planning, and task-specific execution settings.
 - Runtime-aware plan gating with trace audits and benchmark decision metrics.
 - Chat-native assignment parsing, planning, evidence, report, and workspace flows.
-- Stage 9 `project_delivery` as the canonical delivery aggregate, bridged to the
-  legacy project-job execution machinery.
+- Versioned canonical project APIs and hydration v2 with one reload-safe project card.
+- Durable provider-neutral bounded synthesis with strict multi-file validation;
+  project RAG is disabled by default.
 - Immutable approved plan revisions with separately persisted work-unit runtime state.
 - Complete, fail-closed project-state manifests and fresh typed verifier results.
 - Explicit plan, patch, command, scope, rollback, and human-validation approval boundaries.
@@ -41,6 +43,11 @@ mutation journals, and fail-closed Docker isolation with networking disabled.
 FastAPI initializes and reports queue state but does not own the execution loop.
 Distributed/cloud execution, team collaboration, request-time dependency
 installation, arbitrary user images, and automatic approval remain out of scope.
+Legacy host project execution and direct compatibility-route mutation are
+retired; setting the former opt-in environment variable has no effect.
+
+See [`docs/astra-local-operations.md`](docs/astra-local-operations.md) for the
+read-only doctor, prebuilt-image checks, startup, shutdown, and recovery guide.
 
 See [`docs/stage0-trust-integrity.md`](docs/stage0-trust-integrity.md) for the
 contracts, failure behavior, compatibility policy, and regression commands.
@@ -130,6 +137,22 @@ rejected validated suggestions, and suggestion acceptance rate.
 
 ## Run It
 
+For an already provisioned checkout, the supported local startup path performs
+no installation, image pull, or image build:
+
+```bash
+./scripts/astra_project_doctor.py --database-path data/app/ai_system.db
+./scripts/migrate_astra_database.py --database-path data/app/ai_system.db  # only if pending
+./scripts/astra_project_doctor.py --database-path data/app/ai_system.db
+./scripts/run_local_astra.sh
+```
+
+The migration command uses the reviewed additive registry and creates a
+SQLite-consistent pre-Stage-3H backup before historical record tagging.
+
+The setup commands below are provisioning steps and must only be run with
+explicit installation approval.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -198,6 +221,11 @@ export AI_SYSTEM_WORKSPACE_ROOT="$PWD"
 python -m backend.app.project_workers
 ```
 
+`ASTRA_PROJECT_RECONCILIATION_ENABLED=1` is the default. Set it to `0` only
+after stopping workers and settling all in-flight cancellation rows during a
+controlled rollback; disabled recovery fails closed and does not restore host
+execution.
+
 The currently validated local image ID is
 `sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c`.
 Rebuilds must use the reviewed context, inspect the newly built ID, and update
@@ -212,13 +240,15 @@ See [`docs/stage2c-container-isolation-and-control.md`](docs/stage2c-container-i
 for the ownership model, fail-closed isolation contract, worker startup, test
 commands, and current limitations. Exact stabilization evidence is recorded in
 [`docs/stabilization-checkpoint.md`](docs/stabilization-checkpoint.md).
+Stage 3C reconciliation ownership and recovery ordering are documented in
+[`docs/stage3c-terminal-reconciliation.md`](docs/stage3c-terminal-reconciliation.md).
 
 The `TMP=/tmp TEMP=/tmp` prefix prevents WSL pytest capture errors when the
 shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Complete coordinator artifact processing, one-repair orchestration, expanded
+Complete Stage 3D coordinator artifact processing, one-repair orchestration, expanded
 multi-file synthesis evidence, and the checked-in MVP benchmark gates. Model or
 classifier output remains non-authoritative for approval and verification
 decisions.

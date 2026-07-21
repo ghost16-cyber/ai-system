@@ -336,6 +336,7 @@ def test_model_diagnosis_rejects_unbound_or_unsafe_claims(tmp_path: Path, unsafe
     assert {path.name: path.read_bytes() for path in project.iterdir()} == before
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host mutation; canonical stale-evidence tests supersede this journey.")
 def test_external_edit_makes_failure_evidence_stale_before_diagnosis(tmp_path: Path) -> None:
     project = _project(tmp_path)
     app = create_app(tmp_path / "stale.db", tmp_path)
@@ -353,6 +354,7 @@ def test_external_edit_makes_failure_evidence_stale_before_diagnosis(tmp_path: P
         assert len(app.state.analysis_repository.list_project_patches_for_job(job["job_id"])) == 1
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host mutation; canonical one-repair concurrency tests supersede this journey.")
 def test_concurrent_diagnosis_requests_create_one_repair_proposal(tmp_path: Path) -> None:
     project = _project(tmp_path)
     app = create_app(tmp_path / "concurrent.db", tmp_path)
@@ -375,6 +377,7 @@ def test_concurrent_diagnosis_requests_create_one_repair_proposal(tmp_path: Path
         assert client.get(f"/chat/projects/jobs/{job['job_id']}/diagnoses").json()["count"] == 1
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host mutation; canonical repair-exhaustion tests supersede this journey.")
 def test_repair_cycle_limit_blocks_diagnosis_patch_and_command(tmp_path: Path) -> None:
     project = _project(tmp_path)
     app = create_app(tmp_path / "limit.db", tmp_path)
@@ -397,6 +400,7 @@ def test_repair_cycle_limit_blocks_diagnosis_patch_and_command(tmp_path: Path) -
         assert len(client.get(f"/chat/projects/jobs/{job['job_id']}").json()["command_plan_ids"]) == before_commands
 
 
+@pytest.mark.skip(reason="Stage 3H retired legacy host mutation; canonical repair and rollback suites supersede this journey.")
 def test_full_failed_validation_repair_rerun_and_rollback_lifecycle(tmp_path: Path) -> None:
     project = _project(tmp_path)
     original = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in project.iterdir()}

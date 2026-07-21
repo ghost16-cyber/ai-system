@@ -1,5 +1,9 @@
 # Stage 2C Docker runtime validation checkpoint - 2026-07-20
 
+> Historical checkpoint. Stage 3H retains this exact pinned image but retires
+> legacy host execution and adds the canonical operator path documented in
+> [`astra-local-operations.md`](astra-local-operations.md).
+
 This report records verification of the uncommitted Stage 2C working tree on
 branch `feature/chat-native-approval`. Nothing was staged, committed, or pushed.
 

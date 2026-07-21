@@ -334,6 +334,120 @@ class CanonicalProjectService:
     def get_project(self, project_run_id: str) -> ProjectReadModel:
         return self.control.get_read_model(project_run_id)
 
+    def execute_action(
+        self,
+        project_run_id: str,
+        *,
+        action: str,
+        request: Any,
+    ) -> ProjectReadModel:
+        """Submit one exactly bound user action to the lifecycle authority."""
+        run = self.control.get_project(project_run_id)
+        identity = {
+            "conversation_id": request.conversation_id,
+            "workspace_id": request.workspace_id,
+            "actor_id": request.actor_id,
+            "repository_root_fingerprint": request.repository_root_fingerprint,
+        }
+        expected_identity = {
+            "conversation_id": run.conversation_id,
+            "workspace_id": run.workspace_id,
+            "actor_id": run.actor_id,
+            "repository_root_fingerprint": run.repository_root_fingerprint,
+        }
+        if identity != expected_identity:
+            raise ProjectControlError(
+                ProjectControlErrorCode.WORKSPACE_MISMATCH,
+                "The canonical action identity does not match this project.",
+            )
+        pending = str(run.pending_user_action or "")
+        command_types = {
+            "approve_plan": ProjectCommandType.APPROVE_PLAN,
+            "approve_patch": ProjectCommandType.APPROVE_PATCH,
+            "approve_command": ProjectCommandType.APPROVE_COMMAND,
+            "approve_rollback": ProjectCommandType.APPROVE_ROLLBACK,
+            "approve_manual_verification": ProjectCommandType.APPROVE_COMMAND,
+            "cancel_project": ProjectCommandType.CANCEL_PROJECT,
+        }
+        command_type = command_types.get(action)
+        if command_type is None:
+            raise ProjectControlError(ProjectControlErrorCode.INVALID_COMMAND, "This canonical action is not supported.")
+        if action != "cancel_project" and pending.split(":", 1)[0] != action:
+            raise ProjectControlError(ProjectControlErrorCode.ILLEGAL_TRANSITION, "This action is not currently permitted.")
+        if action == "cancel_project" and run.lifecycle_status.value in {"cancelled", "completed"}:
+            raise ProjectControlError(ProjectControlErrorCode.TERMINAL_PROJECT, "A terminal project cannot be cancelled again.")
+        if action != "cancel_project":
+            artifact = next((
+                item for item in self.artifact_store.list_for_project(project_run_id)
+                if item.artifact_id == request.artifact_id
+            ), None)
+            if artifact is None or (
+                artifact.artifact_type.value != request.artifact_type
+                or artifact.content_hash != request.artifact_hash
+                or artifact.binding_hash != request.artifact_binding_hash
+            ):
+                raise ProjectControlError(
+                    ProjectControlErrorCode.INVALID_COMMAND,
+                    "The approved artifact identity, type, content hash, or binding hash is not current.",
+                )
+        payload = dict(request.payload)
+        authority: dict[str, Any] = {"action": action}
+        if action != "cancel_project":
+            authority.update({
+                "artifact_id": request.artifact_id,
+                "artifact_type": request.artifact_type,
+                "artifact_hash": request.artifact_hash,
+                "artifact_binding_hash": request.artifact_binding_hash,
+            })
+        if ":" in pending and action != "cancel_project":
+            object_id = pending.split(":", 1)[1]
+            key = {
+                "approve_patch": "patch_id",
+                "approve_command": "command_id",
+                "approve_rollback": "rollback_id",
+            }.get(action)
+            if key:
+                if payload.get(key) not in (None, object_id):
+                    raise ProjectControlError(ProjectControlErrorCode.INVALID_COMMAND, "The action payload does not match the pending object.")
+                payload[key] = object_id
+                authority[key] = object_id
+        if action == "approve_plan":
+            authority.update({
+                "operation": "prepare_work_units",
+                "plan_artifact_id": request.artifact_id,
+                "plan_artifact_hash": request.artifact_hash,
+            })
+        elif action == "approve_patch":
+            authority["operation"] = "apply_exact_patch"
+        elif action == "approve_command":
+            authority["operation"] = "execute_exact_command"
+            if payload.get("execution_hash"):
+                authority["execution_hash"] = payload["execution_hash"]
+        elif action == "approve_rollback":
+            authority["operation"] = "apply_exact_rollback"
+        elif action == "approve_manual_verification":
+            payload["approval_type"] = "manual_verification"
+            authority["operation"] = "accept_manual_verification"
+        else:
+            payload.setdefault("reason", "Cancelled through the canonical project API.")
+        self.control.execute(ProjectCommand(
+            command_type=command_type,
+            project_run_id=run.project_run_id,
+            conversation_id=request.conversation_id,
+            workspace_id=request.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=request.repository_root_fingerprint,
+            actor_id=request.actor_id,
+            expected_state_version=request.expected_state_version,
+            idempotency_key=request.idempotency_key,
+            plan_revision_id=request.plan_revision_id,
+            scope_revision_id=request.scope_revision_id,
+            manifest_hash=request.manifest_hash,
+            authority_scope=authority,
+            payload=payload,
+        ))
+        return self.control.get_read_model(project_run_id)
+
     def list_projects(self, conversation_id: str) -> list[ProjectReadModel]:
         return self.control.list_projects_for_conversation(conversation_id)
 

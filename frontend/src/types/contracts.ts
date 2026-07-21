@@ -360,6 +360,9 @@ export interface CanonicalProjectReadModel {
   schema_version: "astra.project-control.read-model.v1";
   project_run_id: string;
   conversation_id: string;
+  workspace_id: string;
+  actor_id: string;
+  repository_root_fingerprint: string;
   lifecycle_state: string;
   plan_revision_id: string | null;
   scope_revision_id: string | null;
@@ -372,19 +375,80 @@ export interface CanonicalProjectReadModel {
   pending_user_action: string | null;
   verification_summary: Record<string, number>;
   criterion_states: Record<string, Record<string, unknown>>;
+  repair_state: Record<string, unknown>;
   blocked_reason: string | null;
   handoff_eligible: boolean;
   state_version: number;
   terminal: boolean;
+  active_execution_attempt_id: string | null;
+  active_execution_attempt_type: string | null;
+  active_execution_attempt_status: string | null;
+  execution_dispatch_id: string | null;
+  execution_dispatch_status: string | null;
+  worker_request_id: string | null;
+  worker_request_status: string | null;
+  execution_failure_classification: string | null;
+  execution_cancellation_id: string | null;
+  execution_cancellation_status: string | null;
+  execution_evidence_references: Record<string, unknown>;
+  projection_status: string | null;
+  projection_lag: number;
+  projection_failure_classification: string | null;
   artifact_references: Record<string, string>;
   artifact_hashes: Record<string, string>;
   next_permitted_action: string | null;
+}
+
+export interface CanonicalProjectActionDescriptor {
+  schema_version: "astra.project-api.action-descriptor.v1";
+  action: "approve_plan" | "approve_patch" | "approve_command" | "approve_rollback" | "approve_manual_verification" | "cancel_project";
+  label: string;
+  requires_approval: true;
+  expected_state_version: number;
+  plan_revision_id: string | null;
+  scope_revision_id: string | null;
+  manifest_hash: string | null;
+  artifact_id: string | null;
+  artifact_type: string | null;
+  artifact_hash: string | null;
+  artifact_binding_hash: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface CanonicalCoordinatorSummary {
+  schema_version: "astra.project-api.coordinator-summary.v1";
+  coordinator_intent_id: string;
+  intent_type: string;
+  status: string;
+  attempt_count: number;
+  failure_classification: string | null;
+  updated_at: string;
 }
 
 export interface CanonicalProjectResponse {
   schema_version: "astra.project-api.project.v1";
   project: CanonicalProjectReadModel;
   artifacts: CanonicalArtifactSummary[];
+  coordinator: CanonicalCoordinatorSummary | null;
+  next_permitted_actions: CanonicalProjectActionDescriptor[];
+}
+
+export interface CanonicalProjectActionRequest {
+  schema_version: "astra.project-api.action.v1";
+  conversation_id: string;
+  workspace_id: string;
+  actor_id: string;
+  repository_root_fingerprint: string;
+  expected_state_version: number;
+  idempotency_key: string;
+  plan_revision_id: string | null;
+  scope_revision_id: string | null;
+  manifest_hash: string | null;
+  artifact_id: string | null;
+  artifact_type: string | null;
+  artifact_hash: string | null;
+  artifact_binding_hash: string | null;
+  payload: Record<string, unknown>;
 }
 
 export interface CanonicalProjectCollection {

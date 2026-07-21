@@ -650,7 +650,9 @@ def test_conversation_hydration_returns_current_canonical_delivery_once(tmp_path
     hydrated = detail.json()
     assert hydrated["hydration_version"] == "astra.chat-hydration.v2"
     assert len(hydrated["projects"]) == 1
-    assert hydrated["projects"][0]["project_run_id"] == delivery["delivery_job_id"]
+    assert hydrated["projects"][0]["schema_version"] == "astra.project-api.project.v1"
+    assert hydrated["projects"][0]["project"]["project_run_id"] == delivery["delivery_job_id"]
+    assert "next_permitted_actions" in hydrated["projects"][0]
     assert [item["delivery_job_id"] for item in hydrated["project_deliveries"]] == [delivery["delivery_job_id"]]
     assert hydrated["project_deliveries"][0]["status"] == "plan_approved"
     assert hydrated["project_deliveries"][0]["plan_approval"]["plan_revision_id"]

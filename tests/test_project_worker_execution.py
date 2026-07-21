@@ -12,7 +12,6 @@ from backend.app.project_control import ProjectCommand, ProjectCommandType, Proj
 from backend.app.project_control.contracts import content_hash
 from backend.app.project_workers import (
     ExecutionInputArtifact,
-    ProjectSubprocessExecutor,
     ProjectWorkerQueue,
     ProjectWorkerService,
     WorkerCommandAction,
@@ -23,6 +22,7 @@ from backend.app.project_workers import (
     WorkerRequestStatus,
     build_execution_spec,
 )
+from backend.app.project_workers.execution import ProjectSubprocessExecutor
 
 
 def _project_command(kind: ProjectCommandType, run, key: str, *, payload=None, authority=None) -> ProjectCommand:

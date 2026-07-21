@@ -88,6 +88,7 @@ class ProjectCommandType(StrEnum):
     REQUEST_HANDOFF = "request_handoff"
     FINALIZE_PROJECT = "finalize_project"
     CANCEL_PROJECT = "cancel_project"
+    ACKNOWLEDGE_EXECUTION_CANCELLATION = "acknowledge_execution_cancellation"
     RECONCILE_LEGACY = "reconcile_legacy"
     RECOVER_ATTEMPT = "recover_attempt"
 
@@ -277,6 +278,7 @@ class ProjectRun(StrictModel):
     current_artifact_hashes: dict[str, str] = Field(default_factory=dict)
     work_unit_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
     verification_state: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    repair_state: dict[str, Any] = Field(default_factory=dict)
     handoff_eligible: bool = False
     lifecycle_status: ProjectLifecycle
     state_version: int = Field(ge=1)
@@ -344,6 +346,9 @@ class ProjectReadModel(StrictModel):
     schema_version: str = PROJECT_READ_MODEL_VERSION
     project_run_id: str
     conversation_id: str
+    workspace_id: str
+    actor_id: str
+    repository_root_fingerprint: str
     lifecycle_state: ProjectLifecycle
     plan_revision_id: str | None
     scope_revision_id: str | None
@@ -356,6 +361,7 @@ class ProjectReadModel(StrictModel):
     pending_user_action: str | None
     verification_summary: dict[str, int]
     criterion_states: dict[str, dict[str, Any]]
+    repair_state: dict[str, Any] = Field(default_factory=dict)
     blocked_reason: str | None
     handoff_eligible: bool
     state_version: int
@@ -368,7 +374,12 @@ class ProjectReadModel(StrictModel):
     worker_request_id: str | None = None
     worker_request_status: str | None = None
     execution_failure_classification: str | None = None
+    execution_cancellation_id: str | None = None
+    execution_cancellation_status: str | None = None
     execution_evidence_references: dict[str, Any] = Field(default_factory=dict)
+    projection_status: str | None = None
+    projection_lag: int = Field(default=0, ge=0)
+    projection_failure_classification: str | None = None
     artifact_references: dict[str, str] = Field(default_factory=dict)
     artifact_hashes: dict[str, str] = Field(default_factory=dict)
     current_specification_artifact_id: str | None = None
@@ -387,5 +398,7 @@ class ProjectReadModel(StrictModel):
     current_repair_preview_artifact_hash: str | None = None
     current_handoff_artifact_id: str | None = None
     current_handoff_artifact_hash: str | None = None
+    current_execution_result_artifact_id: str | None = None
+    current_execution_result_artifact_hash: str | None = None
     execution_timestamps: dict[str, str | None] = Field(default_factory=dict)
     next_permitted_action: str | None = None

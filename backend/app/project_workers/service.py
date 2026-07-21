@@ -15,12 +15,10 @@ from backend.app.project_control.contracts import (
     ExecutionAttemptStatus,
     ExecutionAttemptType,
     TERMINAL_LIFECYCLES,
-    content_hash,
 )
 from backend.app.project_workers.contracts import (
     ProjectWorkerRequest,
     WorkerCompletion,
-    WorkerCompletionOutcome,
     WorkerDispatchReport,
     WorkerEnqueueCommand,
     WorkerLease,
@@ -30,14 +28,28 @@ from backend.app.project_workers.contracts import (
 )
 from backend.app.project_workers.errors import ProjectWorkerError, ProjectWorkerErrorCode
 from backend.app.project_workers.queue import ProjectWorkerQueue
+from backend.app.project_workers.reconciliation import TerminalResultReconciler
+from backend.app.project_artifacts import ProjectArtifactStore
 
 
 class ProjectWorkerService:
     """Coordinates worker durability without becoming a lifecycle authority."""
 
-    def __init__(self, control: ProjectControlPlane, queue: ProjectWorkerQueue) -> None:
+    def __init__(
+        self,
+        control: ProjectControlPlane,
+        queue: ProjectWorkerQueue,
+        *,
+        terminal_reconciler: TerminalResultReconciler | None = None,
+    ) -> None:
         self.control = control
         self.queue = queue
+        artifact_store = control.artifact_store or ProjectArtifactStore(control.database_path)
+        if control.artifact_store is None:
+            control.artifact_store = artifact_store
+        self.terminal_reconciler = terminal_reconciler or TerminalResultReconciler(
+            control, queue, artifact_store
+        )
 
     def enqueue(self, command: WorkerEnqueueCommand | dict) -> ProjectWorkerRequest:
         return self.queue.enqueue(command)
@@ -161,15 +173,17 @@ class ProjectWorkerService:
         )
 
     def request_cancel(self, worker_request_id: str, *, requested_by: str = "local-user") -> ProjectWorkerRequest:
-        request = self.queue.request_cancel(worker_request_id, requested_by=requested_by)
+        request = self.queue.request_cancel(
+            worker_request_id, requested_by=requested_by
+        )
         if request.status.value == "cancelled" and self._reconcile_terminal(request):
-            request = self.queue.mark_canonical_reconciled(request.worker_request_id)
+            request = self.queue.get(worker_request_id)
         return request
 
     def complete(self, completion: WorkerCompletion | dict, *, now: datetime | None = None) -> ProjectWorkerRequest:
         request = self.queue.complete(completion, now=now)
         if self._reconcile_terminal(request):
-            request = self.queue.mark_canonical_reconciled(request.worker_request_id, now=now)
+            request = self.queue.get(request.worker_request_id)
         return request
 
     def recover_expired_leases(self, *, now: datetime | None = None) -> WorkerRecoveryReport:
@@ -178,7 +192,6 @@ class ProjectWorkerService:
         skipped: list[str] = []
         for request in self.queue.list_unreconciled_failures():
             if self._reconcile_terminal(request):
-                self.queue.mark_canonical_reconciled(request.worker_request_id, now=now)
                 canonical.append(request.worker_request_id)
             else:
                 skipped.append(request.worker_request_id)
@@ -263,197 +276,14 @@ class ProjectWorkerService:
         return False
 
     def _reconcile_terminal(self, request: ProjectWorkerRequest) -> bool:
-        if request.status.value == WorkerCompletionOutcome.SUCCEEDED.value:
-            return self._reconcile_result(request, succeeded=True)
-        if request.failure_classification == "process_exit_nonzero":
-            return self._reconcile_result(request, succeeded=False)
-        return self._recover_canonical_attempt(request)
+        return self.terminal_reconciler.reconcile(request.worker_request_id)
 
     def _reconcile_result(self, request: ProjectWorkerRequest, *, succeeded: bool) -> bool:
-        for retry in range(2):
-            run = self.control.get_project(request.project_run_id)
-            if run.lifecycle_status in TERMINAL_LIFECYCLES:
-                return True
-            if (
-                run.current_plan_revision_id != request.plan_revision_id
-                or run.current_scope_revision_id != request.scope_revision_id
-                or run.current_manifest_hash != request.manifest_hash
-            ):
-                return False
-            attempt = self._attempt(request)
-            if attempt is None:
-                return False
-            expected_status = (
-                ExecutionAttemptStatus.COMPLETED if succeeded else ExecutionAttemptStatus.FAILED
-            )
-            if attempt.status == expected_status:
-                return True
-            if attempt.status not in {
-                ExecutionAttemptStatus.PENDING,
-                ExecutionAttemptStatus.ACTIVE,
-            }:
-                return False
-
-            execution = request.payload.get("execution")
-            execution_spec = execution if isinstance(execution, dict) else {}
-            if request.attempt_type == ExecutionAttemptType.COMMAND:
-                command_id = str(request.authority.get("command_id") or execution_spec.get("command_id") or "")
-                if not command_id:
-                    return False
-                command_type = ProjectCommandType.RECORD_COMMAND_RESULT
-                payload = {
-                    "command_id": command_id,
-                    "succeeded": succeeded,
-                    "resulting_manifest_hash": request.resulting_manifest_hash or run.current_manifest_hash,
-                    "result_reference": request.result_reference or {},
-                }
-                authority = {"command_id": command_id}
-            elif request.attempt_type == ExecutionAttemptType.VERIFICATION:
-                criterion_id = str(request.authority.get("criterion_id") or execution_spec.get("criterion_id") or "")
-                criterion_hash = str(execution_spec.get("criterion_hash") or "")
-                if not criterion_id or len(criterion_hash) != 64:
-                    return False
-                reference = request.result_reference or {}
-                result_hash = str(reference.get("result_hash") or content_hash(reference))
-                command_type = ProjectCommandType.RECORD_VERIFIER_RESULT
-                payload = {
-                    "criterion_id": criterion_id,
-                    "outcome": "passed" if succeeded else "failed",
-                    "result_hash": result_hash,
-                    "criterion_hash": criterion_hash,
-                    "plan_revision_id": run.current_plan_revision_id,
-                    "scope_revision_id": run.current_scope_revision_id,
-                    "manifest_hash": run.current_manifest_hash,
-                    "result_reference": reference,
-                }
-                authority = {"criterion_id": criterion_id}
-            elif request.attempt_type == ExecutionAttemptType.PATCH:
-                mutation = request.payload.get("file_mutation")
-                mutation_spec = mutation if isinstance(mutation, dict) else {}
-                patch_id = str(
-                    request.authority.get("patch_id")
-                    or mutation_spec.get("authority_id")
-                    or ""
-                )
-                if not patch_id:
-                    return False
-                command_type = ProjectCommandType.RECORD_PATCH_RESULT
-                payload = {
-                    "patch_id": patch_id,
-                    "succeeded": succeeded,
-                    "resulting_manifest_hash": (
-                        request.resulting_manifest_hash or run.current_manifest_hash
-                    ),
-                    "result_reference": request.result_reference or {},
-                }
-                authority = {"patch_id": patch_id}
-            elif request.attempt_type == ExecutionAttemptType.ROLLBACK:
-                mutation = request.payload.get("file_mutation")
-                mutation_spec = mutation if isinstance(mutation, dict) else {}
-                rollback_id = str(
-                    request.authority.get("rollback_id")
-                    or mutation_spec.get("authority_id")
-                    or ""
-                )
-                if not rollback_id:
-                    return False
-                command_type = ProjectCommandType.RECORD_ROLLBACK
-                payload = {
-                    "rollback_id": rollback_id,
-                    "succeeded": succeeded,
-                    "resulting_manifest_hash": (
-                        request.resulting_manifest_hash or run.current_manifest_hash
-                    ),
-                    "result_reference": request.result_reference or {},
-                }
-                authority = {"rollback_id": rollback_id}
-            else:
-                return False
-
-            if not succeeded:
-                payload["failure_classification"] = (
-                    request.failure_classification or "process_exit_nonzero"
-                )
-
-            try:
-                self.control.execute(ProjectCommand(
-                    command_type=command_type,
-                    project_run_id=run.project_run_id,
-                    conversation_id=run.conversation_id,
-                    workspace_id=run.workspace_id,
-                    repository_root=run.repository_root,
-                    repository_root_fingerprint=run.repository_root_fingerprint,
-                    actor_id=run.actor_id,
-                    expected_state_version=run.state_version,
-                    idempotency_key=f"worker-result:{request.worker_request_id}:{request.status.value}",
-                    plan_revision_id=run.current_plan_revision_id,
-                    scope_revision_id=run.current_scope_revision_id,
-                    manifest_hash=run.current_manifest_hash,
-                    authority_scope=authority,
-                    payload=payload,
-                ))
-                return True
-            except ProjectControlError as error:
-                if error.code == ProjectControlErrorCode.STALE_STATE_VERSION and retry == 0:
-                    continue
-                if error.code in {
-                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
-                    ProjectControlErrorCode.TERMINAL_PROJECT,
-                }:
-                    refreshed = self._attempt(request)
-                    return refreshed is not None and refreshed.status == expected_status
-                raise
-        return False
+        del succeeded
+        return self.terminal_reconciler.reconcile(request.worker_request_id)
 
     def _recover_canonical_attempt(self, request: ProjectWorkerRequest) -> bool:
-        for retry in range(2):
-            run = self.control.get_project(request.project_run_id)
-            if run.lifecycle_status in TERMINAL_LIFECYCLES:
-                return True
-            attempt = self._attempt(request)
-            if attempt is None:
-                return False
-            if attempt.status not in {
-                ExecutionAttemptStatus.PENDING,
-                ExecutionAttemptStatus.ACTIVE,
-            }:
-                return True
-            try:
-                self.control.execute(
-                    ProjectCommand(
-                        command_type=ProjectCommandType.RECOVER_ATTEMPT,
-                        project_run_id=run.project_run_id,
-                        conversation_id=run.conversation_id,
-                        workspace_id=run.workspace_id,
-                        repository_root=run.repository_root,
-                        repository_root_fingerprint=run.repository_root_fingerprint,
-                        actor_id=run.actor_id,
-                        expected_state_version=run.state_version,
-                        idempotency_key=f"worker-recovery:{request.worker_request_id}:{request.status.value}",
-                        plan_revision_id=run.current_plan_revision_id,
-                        scope_revision_id=run.current_scope_revision_id,
-                        manifest_hash=run.current_manifest_hash,
-                        authority_scope={
-                            "worker_request_id": request.worker_request_id,
-                            "execution_attempt_id": request.execution_attempt_id,
-                        },
-                        payload={
-                            "execution_attempt_id": request.execution_attempt_id,
-                            "reason": request.failure_classification or request.status.value,
-                        },
-                    )
-                )
-                return True
-            except ProjectControlError as error:
-                if error.code == ProjectControlErrorCode.STALE_STATE_VERSION and retry == 0:
-                    continue
-                if error.code in {
-                    ProjectControlErrorCode.ILLEGAL_TRANSITION,
-                    ProjectControlErrorCode.TERMINAL_PROJECT,
-                }:
-                    return True
-                raise
-        return False
+        return self.terminal_reconciler.reconcile(request.worker_request_id)
 
     def _attempt(self, request: ProjectWorkerRequest):
         return next(

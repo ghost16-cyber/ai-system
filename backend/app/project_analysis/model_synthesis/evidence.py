@@ -9,6 +9,7 @@ from backend.app.folders.reader import ReadLimits, read_project_file
 from backend.app.folders.safety import safe_relative_path
 from backend.app.project_analysis.model_synthesis.contracts import EvidenceExcerpt, EvidencePackage
 from backend.app.project_analysis.models import ProjectAnalysisError
+from backend.app.project_control.contracts import content_hash
 
 
 MAX_EVIDENCE_FILES = 8
@@ -59,6 +60,40 @@ def build_evidence_package(root: str | Path, job: dict[str, Any]) -> EvidencePac
     excluded = [str(item.get("relative_path")) for item in impact_files if item.get("classification") == "unrelated"][:40]
     excluded.extend(str(item.get("relative_path")) for item in index.get("files", []) if item.get("parse_status") == "excluded")
     manifests = [path for path in known if Path(path).name.lower() in {"pyproject.toml", "package.json", "requirements.txt", "pytest.ini", "tsconfig.json"}][:12]
+    config_excerpts: list[EvidenceExcerpt] = []
+    for path in manifests:
+        if path in {item.path for item in excerpts}:
+            continue
+        record = read_project_file(root, path, limits=ReadLimits(max_bytes_per_file=64_000))
+        text = str(record.get("text") or "") if record.get("status") == "readable" else ""
+        content = text[: min(MAX_EXCERPT_CHARS, max(0, MAX_EVIDENCE_CHARS - used_chars))]
+        if content:
+            lines = content.splitlines()
+            config_excerpts.append(EvidenceExcerpt(
+                path=path, start_line=1, end_line=max(1, len(lines)),
+                sha256=str(known[path].get("file_hash") or ""), content=content,
+            ))
+            used_chars += len(content)
+    specification = dict(job.get("specification") or {})
+    plan = dict(job.get("plan") or {})
+    criteria = list(specification.get("acceptance_criteria") or plan.get("acceptance_criteria") or [])[:50]
+    approved_requirements = [
+        str(value)[:1000] for value in (
+            specification.get("in_scope_requirements") or job.get("requirements") or ()
+        ) if isinstance(value, str) and value
+    ][:50]
+    criterion_hashes = {
+        str(item.get("criterion_id") or item.get("id") or index): content_hash(item)
+        for index, item in enumerate(criteria) if isinstance(item, dict)
+    }
+    missing_evidence: list[str] = []
+    excerpt_paths = {item.path for item in excerpts}
+    for path in coherent:
+        if path not in excerpt_paths:
+            missing_evidence.append(f"No bounded source excerpt was available for {path}.")
+    for path in list(analysis.get("impacted_tests") or []):
+        if path not in known:
+            missing_evidence.append(f"Impacted test was not present in the current index: {path}.")
     return EvidencePackage(
         package_version="astra.project-evidence.v1", analysis_id=str(index["analysis_id"]),
         index_version=str(index["index_version"]), root_fingerprint=str(index["root_fingerprint"]),
@@ -71,6 +106,18 @@ def build_evidence_package(root: str | Path, job: dict[str, Any]) -> EvidencePac
         limits={"max_files": MAX_EVIDENCE_FILES, "max_excerpts_per_file": MAX_EXCERPTS_PER_FILE,
                 "max_excerpt_lines": MAX_EXCERPT_LINES, "max_excerpt_chars": MAX_EXCERPT_CHARS,
                 "max_global_chars": MAX_EVIDENCE_CHARS},
+        approved_requirements=approved_requirements, criterion_hashes=criterion_hashes,
+        plan_revision_id=str(job.get("plan_revision_id") or "") or None,
+        scope_revision_id=str(job.get("scope_revision_id") or "") or None,
+        work_unit_id=str(job.get("work_unit_id") or job.get("active_work_unit_id") or "") or None,
+        manifest_hash=str(job.get("manifest_hash") or job.get("project_state_hash") or "") or None,
+        config_excerpts=config_excerpts, missing_evidence=missing_evidence[:30],
+        byte_accounting={
+            "source_excerpt_bytes": sum(len(item.content.encode("utf-8")) for item in excerpts),
+            "config_excerpt_bytes": sum(len(item.content.encode("utf-8")) for item in config_excerpts),
+            "total_excerpt_bytes": sum(len(item.content.encode("utf-8")) for item in (*excerpts, *config_excerpts)),
+            "maximum_bytes": MAX_EVIDENCE_CHARS,
+        },
     )
 
 
@@ -84,6 +131,9 @@ def evidence_summary(evidence: EvidencePackage) -> dict[str, Any]:
         "allowed_delete_count": len(evidence.allowed_delete_paths),
         "relationship_count": len(evidence.relationships),
         "symbol_count": len(evidence.symbols),
+        "missing_evidence_count": len(evidence.missing_evidence),
+        "total_excerpt_bytes": evidence.byte_accounting.get("total_excerpt_bytes", 0),
+        "project_rag_enabled": evidence.project_rag_enabled,
     }
 
 

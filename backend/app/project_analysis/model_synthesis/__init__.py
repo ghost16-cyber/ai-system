@@ -5,10 +5,21 @@ from .gateway import (
     UnavailableSynthesisGateway, build_synthesis_gateway_from_environment,
 )
 from .service import MAX_CLARIFICATION_CYCLES, ModelSynthesisError, synthesize_model_patch
+from .orchestrator import (
+    CanonicalProviderProfile, CanonicalSynthesisBlocked, CanonicalSynthesisOrchestrator,
+    CanonicalSynthesisOutcome,
+)
+from .toolchain import (
+    ProjectToolchainPreflight, ProjectToolchainProfile, ToolchainSupport,
+    check_runtime_compatibility, detect_toolchain_requirements,
+)
 
 __all__ = [
     "FakeSynthesisGateway", "MAX_CLARIFICATION_CYCLES", "ModelSynthesisError",
     "OllamaSynthesisGateway", "REQUEST_VERSION", "RESPONSE_VERSION", "SynthesisGateway",
     "UnavailableSynthesisGateway", "build_evidence_package", "build_synthesis_gateway_from_environment",
     "evidence_summary", "parse_synthesis_response", "synthesize_model_patch",
+    "CanonicalProviderProfile", "CanonicalSynthesisBlocked", "CanonicalSynthesisOrchestrator",
+    "CanonicalSynthesisOutcome", "ProjectToolchainPreflight", "ProjectToolchainProfile",
+    "ToolchainSupport", "check_runtime_compatibility", "detect_toolchain_requirements",
 ]

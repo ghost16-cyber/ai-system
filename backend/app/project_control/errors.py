@@ -29,6 +29,7 @@ class ProjectControlErrorCode(StrEnum):
     CORRUPTED_STORED_STATE = "corrupted_stored_state"
     UNSUPPORTED_STORED_STATE = "unsupported_stored_state"
     INVALID_COMMAND = "invalid_command"
+    HISTORICAL_RECORD_READ_ONLY = "historical_record_read_only"
 
 
 class ProjectControlError(RuntimeError):

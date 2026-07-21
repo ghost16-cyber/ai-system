@@ -310,16 +310,25 @@ from backend.app.project_delivery import (
     record_scope_change as record_delivery_scope_change,
     run_deterministic_verifier,
 )
-from backend.app.project_control import ProjectControlError, ProjectControlErrorCode, ProjectControlPlane
+from backend.app.project_control import (
+    ProjectCommand,
+    ProjectCommandType,
+    ProjectControlError,
+    ProjectControlErrorCode,
+    ProjectControlPlane,
+)
 from backend.app.project_artifacts import ProjectArtifactStore
 from backend.app.project_control.project_service import CanonicalProjectService
-from backend.app.project_api import create_project_router
+from backend.app.project_api import build_canonical_project_response, create_project_router
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
 from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
 from backend.app.project_coordinator import (
     CoordinatorIntentError,
     ProjectCoordinatorService,
 )
+from backend.app.project_projection import ProjectProjectionService
+from backend.app.project_workers.cancellation import CancellationDispatcher
+from backend.app.project_workers.reconciliation import TerminalResultReconciler
 from backend.app.project_workers import (
     DockerIsolationBackend,
     ExecutionInputArtifact,
@@ -814,12 +823,33 @@ def create_app(
         project_control, project_artifact_store
     )
     project_worker_queue = ProjectWorkerQueue(configured_path)
-    project_worker_service = ProjectWorkerService(project_control, project_worker_queue)
     project_mutation_engine = FileMutationEngine(
         configured_path,
         configured_workspace_root / "data" / "project_mutation_journals",
     )
     project_coordinator = ProjectCoordinatorService(configured_path, project_control)
+    project_projection = ProjectProjectionService(configured_path, project_control)
+    phase3c_recovery_enabled = (
+        os.getenv("ASTRA_PROJECT_RECONCILIATION_ENABLED", "1").strip() != "0"
+    )
+    terminal_reconciler = TerminalResultReconciler(
+        project_control,
+        project_worker_queue,
+        project_artifact_store,
+        projector=project_projection if phase3c_recovery_enabled else None,
+        coordinator=project_coordinator if phase3c_recovery_enabled else None,
+    )
+    project_worker_service = ProjectWorkerService(
+        project_control,
+        project_worker_queue,
+        terminal_reconciler=terminal_reconciler,
+    )
+    cancellation_dispatcher = (
+        CancellationDispatcher(
+            project_control, project_worker_service, project_artifact_store
+        )
+        if phase3c_recovery_enabled else None
+    )
     job_queue = JobQueue(configured_path)
     synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
@@ -838,7 +868,6 @@ def create_app(
         project_mutation_engine.initialize()
         project_coordinator.initialize()
         project_coordinator.recover_expired_leases()
-        project_worker_service.recover_expired_leases()
         job_queue.initialize()
         yield
 
@@ -869,6 +898,8 @@ def create_app(
     application.state.project_worker_service = project_worker_service
     application.state.project_mutation_engine = project_mutation_engine
     application.state.project_coordinator = project_coordinator
+    application.state.project_projection = project_projection
+    application.state.cancellation_dispatcher = cancellation_dispatcher
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
     application.include_router(specialists_router)
@@ -2191,8 +2222,16 @@ def create_app(
             project_scope = dict(run.action["technical_details"].get("project_scope") or {})
             run.action["technical_details"]["project_scope"] = {**project_scope, "delivery_job_id": delivery_job_id}
         plan_id = str(plan.get("plan_id") or "")
+        if shadow.get("status") == "patch_approved":
+            implementing = {**shadow, "status": "implementing", "updated_at": datetime.now(timezone.utc).isoformat()}
+            if not repository.transition_project_job(implementing, expected_statuses={"patch_approved"}):
+                raise HTTPException(status_code=409, detail={"code": "conflict", "message": "The canonical patch projection changed concurrently."})
+            shadow = implementing
         shadow_updated = {**shadow, "status": "validating", "command_plan_ids": [*shadow.get("command_plan_ids", []), plan_id], "updated_at": datetime.now(timezone.utc).isoformat()}
-        if not repository.transition_project_job(shadow_updated, expected_statuses={"implementing"}):
+        if not repository.transition_project_job(
+            shadow_updated,
+            expected_statuses={"implementing"},
+        ):
             raise HTTPException(status_code=409, detail={"code": "conflict", "message": "Verification planning was already started."})
         updated = json.loads(json.dumps(current))
         updated["command_references"] = [*updated.get("command_references", []), {
@@ -2245,17 +2284,44 @@ def create_app(
 
     @application.post("/chat/projects/deliveries/{delivery_job_id}/cancel")
     def chat_project_delivery_cancel(delivery_job_id: str, request: ProjectJobActionRequest) -> dict:
+        if cancellation_dispatcher is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "project_reconciliation_disabled",
+                    "message": "Canonical cancellation recovery is disabled; no cancellation was submitted.",
+                },
+            )
         current, _access = _validated_project_delivery(delivery_job_id, conversation_id=request.conversation_id)
         _validate_delivery_action_binding(current, request)
+        run = project_control.get_project(delivery_job_id)
         try:
-            updated = cancel_delivery(current)
-        except ProjectDeliveryError as error:
-            raise _delivery_http_error(error) from error
-        if updated is current:
-            return public_delivery_job(current)
-        stored = _save_delivery_transition(current, updated, "cancellation", "cancelled", {"idempotency_key": request.idempotency_key})
-        _sync_delivery_action(stored)
-        return public_delivery_job(stored)
+            result = project_control.execute(ProjectCommand(
+                command_type=ProjectCommandType.CANCEL_PROJECT,
+                project_run_id=run.project_run_id,
+                conversation_id=run.conversation_id,
+                workspace_id=run.workspace_id,
+                repository_root=run.repository_root,
+                repository_root_fingerprint=run.repository_root_fingerprint,
+                actor_id=run.actor_id,
+                expected_state_version=request.expected_state_version or run.state_version,
+                idempotency_key=request.idempotency_key or f"cancel-project:{run.project_run_id}",
+                plan_revision_id=run.current_plan_revision_id,
+                scope_revision_id=run.current_scope_revision_id,
+                manifest_hash=run.current_manifest_hash,
+                authority_scope={"project_run_id": run.project_run_id},
+                payload={"reason": "Cancelled through the project delivery endpoint."},
+            ))
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
+        try:
+            project_projection.rebuild_project(delivery_job_id)
+        except (LookupError, RuntimeError, ValueError):
+            pass
+        payload = public_delivery_job(repository.get_project_delivery_job(delivery_job_id))
+        payload["project_control"] = result.read_model
+        payload["canonical_project"] = result.read_model
+        return payload
 
     @application.post("/chat/projects/patches/propose", response_model=ChatRunResponse)
     def chat_project_patch_propose(request: ProjectPatchProposalRequest) -> ChatRunResponse:
@@ -2773,6 +2839,14 @@ def create_app(
                 },
             )
             return repository.get_chat_run(request.chat_run_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "schema_version": "astra.project-control.error.v1",
+                "code": "historical_record_read_only",
+                "message": "This historical project patch is read-only and has no canonical isolated execution binding.",
+            },
+        )
         claimed = {**proposal, "status": "applying"}
         if not repository.transition_project_patch(claimed, expected_status="approved"):
             raise HTTPException(status_code=409, detail="Patch application was already started or completed.")
@@ -2873,11 +2947,28 @@ def create_app(
             request.conversation_id
         )
         if active_delivery is not None:
-            _reconcile_completed_delivery_mutation(active_delivery, access)
+            project_projection.rebuild_project(
+                str(active_delivery["delivery_job_id"])
+            )
         try:
             proposal, _snapshot = repository.latest_applied_project_patch(request.conversation_id)
         except LookupError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            projected_delivery = (
+                repository.get_project_delivery_job(
+                    str(active_delivery["delivery_job_id"])
+                )
+                if active_delivery is not None else {}
+            )
+            applied_reference = next((
+                item
+                for item in reversed(projected_delivery.get("patch_references") or [])
+                if item.get("status") == "applied" and item.get("patch_id")
+            ), None)
+            if applied_reference is None:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            proposal, _snapshot = _get_project_patch(
+                str(applied_reference["patch_id"])
+            )
         if proposal.get("folder_access_id") != access["action_id"]:
             raise HTTPException(status_code=409, detail="The patch belongs to a different folder access.")
         run = _project_rollback_run(proposal, request.user_message)
@@ -2904,9 +2995,13 @@ def create_app(
         proposal, snapshot = _get_project_patch(patch_id)
         if request.confirmation != f"APPROVE ROLLBACK {patch_id}":
             raise HTTPException(status_code=400, detail=f"Explicit confirmation must exactly match: APPROVE ROLLBACK {patch_id}")
-        if proposal.get("status") != "applied" or proposal.get("folder_access_id") != access["action_id"]:
+        if proposal.get("folder_access_id") != access["action_id"]:
             raise HTTPException(status_code=409, detail="Rollback is unavailable or belongs to another folder access.")
         delivery_relation = _delivery_for_patch(proposal)
+        if proposal.get("status") != "applied" and not (
+            delivery_relation is not None and proposal.get("status") == "applying"
+        ):
+            raise HTTPException(status_code=409, detail="Rollback is unavailable or belongs to another folder access.")
         if delivery_relation is not None:
             delivery, delivery_access = delivery_relation
             canonical_run = project_control.get_project(str(delivery["delivery_job_id"]))
@@ -2988,7 +3083,7 @@ def create_app(
                 raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
             approved = {**proposal, "status": "rollback_approved"}
             if not repository.transition_project_patch(
-                approved, expected_status="applied", snapshot=snapshot
+                approved, expected_status=str(proposal["status"]), snapshot=snapshot
             ):
                 raise HTTPException(status_code=409, detail="Rollback was already started or completed.")
             repository.update_chat_run_action_for_id(
@@ -3024,6 +3119,14 @@ def create_app(
                 },
             )
             return repository.get_chat_run(request.chat_run_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "schema_version": "astra.project-control.error.v1",
+                "code": "historical_record_read_only",
+                "message": "This historical rollback is read-only and cannot mutate project files on the host.",
+            },
+        )
         approved = {**proposal, "status": "rollback_approved"}
         if not repository.transition_project_patch(approved, expected_status="applied", snapshot=snapshot):
             raise HTTPException(status_code=409, detail="Rollback was already started or completed.")
@@ -3209,6 +3312,14 @@ def create_app(
                     "the canonical project delivery and retry when the Docker worker is available."
                 ),
             )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "schema_version": "astra.project-control.error.v1",
+                "code": "historical_record_read_only",
+                "message": "This historical project command has no canonical isolated execution binding and cannot run on the host.",
+            },
+        )
         try:
             result = execute_assignment_command(
                 assignment_command_store, access["approved_root"], plan_id,
@@ -4620,45 +4731,7 @@ def create_app(
         return job, access
 
     def _public_read_delivery(job: dict) -> dict:
-        projected = job
-        try:
-            attempts = project_control.list_attempts(str(job["delivery_job_id"]))
-        except ProjectControlError as error:
-            if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
-                raise _control_http_error(error) from error
-            attempts = []
-        completed_rollback = next((
-            attempt for attempt in reversed(attempts)
-            if attempt.attempt_type == ExecutionAttemptType.ROLLBACK
-            and attempt.status.value == "completed"
-            and attempt.resulting_manifest_hash
-        ), None)
-        if completed_rollback is not None:
-            patch_id = str(completed_rollback.authority.get("rollback_id") or "").removeprefix("rollback:")
-            reference = next((item for item in job.get("patch_references") or [] if item.get("patch_id") == patch_id), None)
-            if reference is not None and reference.get("status") == "applied":
-                projected = record_delivery_rollback(
-                    job,
-                    patch_id=patch_id,
-                    restored_state_hash=str(completed_rollback.resulting_manifest_hash),
-                )
-        else:
-            completed_patch = next((
-                attempt for attempt in reversed(attempts)
-                if attempt.attempt_type == ExecutionAttemptType.PATCH
-                and attempt.status.value == "completed"
-                and attempt.resulting_manifest_hash
-            ), None)
-            if completed_patch is not None:
-                patch_id = str(completed_patch.authority.get("patch_id") or "")
-                reference = next((item for item in job.get("patch_references") or [] if item.get("patch_id") == patch_id), None)
-                if reference is not None and reference.get("status") != "applied":
-                    projected = record_delivery_patch_applied(
-                        job,
-                        patch_id=patch_id,
-                        current_state_hash=str(completed_patch.resulting_manifest_hash),
-                    )
-        payload = public_delivery_job(projected)
+        payload = public_delivery_job(job)
         try:
             payload["project_control"] = canonical_project_service.get_project(
                 str(job["delivery_job_id"])
@@ -4698,11 +4771,6 @@ def create_app(
             job = delivery_control.decorate(job, access["approved_root"], migrated=True)
         except ProjectControlError as error:
             raise _control_http_error(error) from error
-        job = _reconcile_completed_delivery_mutation(job, access)
-        try:
-            project_coordinator.reconcile(delivery_job_id)
-        except CoordinatorIntentError:
-            pass
         return job, access
 
     def _save_delivery_transition(
@@ -4734,161 +4802,6 @@ def create_app(
             return delivery_control.decorate(stored, access["approved_root"], migrated=False)
         except ProjectControlError as error:
             raise _control_http_error(error) from error
-
-    def _reconcile_completed_delivery_mutation(job: dict, access: dict) -> dict:
-        attempts = project_control.list_attempts(str(job["delivery_job_id"]))
-        completed_rollback = next(
-            (
-                attempt
-                for attempt in reversed(attempts)
-                if attempt.attempt_type == ExecutionAttemptType.ROLLBACK
-                and attempt.status.value == "completed"
-                and attempt.resulting_manifest_hash
-            ),
-            None,
-        )
-        if completed_rollback is not None:
-            rollback_id = str(completed_rollback.authority.get("rollback_id") or "")
-            patch_id = rollback_id.removeprefix("rollback:")
-            live_manifest = build_project_state_manifest(
-                access["approved_root"], workspace_id=str(job["folder_access_id"])
-            )
-            if live_manifest.manifest_hash != completed_rollback.resulting_manifest_hash:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "canonical_projection_manifest_mismatch",
-                        "message": "The live repository no longer matches the completed canonical rollback.",
-                    },
-                )
-            stored = job
-            reference = next(
-                (
-                    item
-                    for item in stored.get("patch_references") or []
-                    if item.get("patch_id") == patch_id
-                ),
-                None,
-            )
-            if reference is not None and reference.get("status") == "applied":
-                updated = record_delivery_rollback(
-                    stored,
-                    patch_id=patch_id,
-                    restored_state_hash=live_manifest.manifest_hash,
-                )
-                updated["project_state_manifest"] = live_manifest.model_dump(mode="json")
-                stored = _save_delivery_transition(
-                    stored,
-                    updated,
-                    "canonical_rollback_projection",
-                    "rolled_back",
-                    {
-                        "patch_id": patch_id,
-                        "rollback_id": rollback_id,
-                        "execution_attempt_id": completed_rollback.execution_attempt_id,
-                        "canonical_preapplied": True,
-                    },
-                )
-                _sync_delivery_action(stored)
-            try:
-                proposal, snapshot = _get_project_patch(patch_id)
-            except (LookupError, HTTPException):
-                return stored
-            if proposal.get("status") == "rollback_approved":
-                repository.update_project_patch(
-                    {
-                        **proposal,
-                        "status": "rolled_back",
-                        "rolled_back_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    snapshot,
-                )
-            return stored
-
-        completed_patch = next(
-            (
-                attempt
-                for attempt in reversed(attempts)
-                if attempt.attempt_type == ExecutionAttemptType.PATCH
-                and attempt.status.value == "completed"
-                and attempt.resulting_manifest_hash
-            ),
-            None,
-        )
-        if completed_patch is None:
-            return job
-        patch_id = str(completed_patch.authority.get("patch_id") or "")
-        if not patch_id:
-            return job
-
-        live_manifest = build_project_state_manifest(
-            access["approved_root"], workspace_id=str(job["folder_access_id"])
-        )
-        if live_manifest.manifest_hash != completed_patch.resulting_manifest_hash:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "canonical_projection_manifest_mismatch",
-                    "message": "The live repository no longer matches the completed canonical mutation.",
-                },
-            )
-
-        stored = job
-        reference = next(
-            (item for item in stored.get("patch_references") or [] if item.get("patch_id") == patch_id),
-            None,
-        )
-        if reference is not None and reference.get("status") != "applied":
-            updated = record_delivery_patch_applied(
-                stored,
-                patch_id=patch_id,
-                current_state_hash=live_manifest.manifest_hash,
-            )
-            updated["project_state_manifest"] = live_manifest.model_dump(mode="json")
-            stored = _save_delivery_transition(
-                stored,
-                updated,
-                "canonical_patch_projection",
-                "applied",
-                {
-                    "patch_id": patch_id,
-                    "execution_attempt_id": completed_patch.execution_attempt_id,
-                    "canonical_preapplied": True,
-                },
-            )
-            _sync_delivery_action(stored)
-
-        try:
-            proposal, snapshot = _get_project_patch(patch_id)
-        except (LookupError, HTTPException):
-            return stored
-        evidence = dict(completed_patch.result_reference or {})
-        if proposal.get("status") == "applying":
-            projected = {
-                **proposal,
-                "status": "applied",
-                "after_hashes": dict(evidence.get("resulting_file_hashes") or {}),
-                "project_state_hash_after": live_manifest.manifest_hash,
-                "applied_at": datetime.now(timezone.utc).isoformat(),
-            }
-            repository.update_project_patch(projected, snapshot)
-            proposal = projected
-        if proposal.get("job_id"):
-            try:
-                shadow = repository.get_project_job(str(proposal["job_id"]))
-            except LookupError:
-                return stored
-            if shadow.get("status") == "patch_approved":
-                implementing = {
-                    **shadow,
-                    "status": "implementing",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-                if repository.transition_project_job(
-                    implementing, expected_statuses={"patch_approved"}
-                ):
-                    _sync_project_job_action(implementing)
-        return stored
 
     def _validate_delivery_action_binding(job: dict, request: ProjectJobActionRequest) -> None:
         control = dict(job.get("project_control") or {})
@@ -6584,10 +6497,15 @@ def create_app(
             for job in repository.list_project_delivery_jobs_for_conversation(conversation_id)
         ]
         projects = [
-            item.model_dump(mode="json")
+            build_canonical_project_response(
+                canonical_project_service,
+                item.project_run_id,
+                coordinator=project_coordinator,
+            ).model_dump(mode="json")
             for item in canonical_project_service.list_projects(conversation_id)
         ]
-        return detail.model_copy(update={
+        return ChatConversationDetail.model_validate({
+            **detail.model_dump(mode="json"),
             "project_jobs": jobs,
             "project_deliveries": deliveries,
             "projects": projects,
@@ -7079,6 +6997,7 @@ def create_app(
         create_project_router(
             canonical_project_service,
             folder_authority_resolver=_canonical_folder_authority,
+            coordinator=project_coordinator,
         )
     )
     return application

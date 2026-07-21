@@ -17,8 +17,10 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from backend.app.main import create_app
+from backend.app.project_control import ProjectCommandType, ProjectLifecycle
 from backend.app.project_control.contracts import ExecutionAttemptType
 from backend.app.project_workers import (
+    CancellationDispatcher,
     DockerIsolationBackend,
     IsolationProfile,
     ProjectIsolatedExecutor,
@@ -32,7 +34,7 @@ from backend.app.project_workers import (
     create_workspace_snapshot,
 )
 from backend.app.project_workers.policy import PreparedExecution
-from tests.test_project_worker_execution import _runtime
+from tests.test_project_worker_execution import _project_command, _runtime
 
 
 pytestmark = pytest.mark.docker_integration
@@ -650,12 +652,23 @@ def test_real_cancellation_has_one_request_and_no_restart_reexecution(
     while queue.get(request.worker_request_id).status == WorkerRequestStatus.QUEUED:
         assert time.monotonic() < deadline
         time.sleep(0.05)
-    service.request_cancel(request.worker_request_id)
+    run = control.get_project(request.project_run_id)
+    control.execute(_project_command(
+        ProjectCommandType.CANCEL_PROJECT,
+        run,
+        "real-canonical-cancel",
+        payload={"reason": "docker cancellation test"},
+    ))
+    dispatcher = CancellationDispatcher(control, service, control.artifact_store)
+    dispatcher.dispatch_pending()
     thread.join(timeout=10)
     assert not thread.is_alive()
+    acknowledgement = dispatcher.recover()
+    assert len(acknowledgement.acknowledged_cancellation_ids) == 1
     finished = queue.get(request.worker_request_id)
     assert finished.status == WorkerRequestStatus.CANCELLED
     assert finished.canonical_reconciled_at is not None
+    assert control.get_project(request.project_run_id).lifecycle_status == ProjectLifecycle.CANCELLED
 
     restarted_queue = ProjectWorkerQueue(queue.database_path)
     restarted_queue.initialize()

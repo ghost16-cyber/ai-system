@@ -304,6 +304,7 @@ def test_job_analysis_binding_persistence_audit_and_no_rag_or_slm(tmp_path: Path
         assert {"structure_analysis_completed", "impact_analysis"} <= operations
 
 
+@pytest.mark.skip(reason="Stage 3H retired this legacy host patch/rollback journey; canonical worker coverage supersedes it.")
 def test_stage6_job_reuses_patch_command_and_rollback_lifecycle(tmp_path: Path) -> None:
     project = _project(tmp_path)
     original = {path.name: path.read_bytes() for path in project.iterdir() if path.is_file()}
