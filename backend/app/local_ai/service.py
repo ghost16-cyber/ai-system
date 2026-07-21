@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 from uuid import uuid4
 
 from backend.app.database.migrations import assert_schema_compatible
@@ -42,10 +42,96 @@ from backend.app.project_control.contracts import canonical_json, content_hash
 
 
 Probe = Callable[[], tuple[Capability, ...]]
+_MEMINFO_LIMIT_BYTES = 64 * 1024
+
+
+class MemoryProbeResult(NamedTuple):
+    total_bytes: int | None
+    available_bytes: int | None
+    estimate: bool
+    provenance: dict[str, object]
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_linux_meminfo(text: str) -> MemoryProbeResult:
+    """Parse the bounded public Linux memory interface without shelling out."""
+    values: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        key, separator, raw_value = raw_line.partition(":")
+        if not separator:
+            continue
+        parts = raw_value.split()
+        if not parts:
+            continue
+        try:
+            value = int(parts[0])
+        except ValueError:
+            continue
+        unit = parts[1].lower() if len(parts) > 1 else "bytes"
+        multiplier = 1024 if unit == "kb" else 1
+        values[key.strip()] = max(0, value) * multiplier
+
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable")
+    if available is not None:
+        return MemoryProbeResult(
+            total, min(available, total) if total is not None else available, False,
+            {"probe": "proc_meminfo", "available_source": "MemAvailable"},
+        )
+
+    # Older kernels may omit MemAvailable. Count only immediately free pages
+    # and reclaimable cache, discounting shared memory from the cached total.
+    reclaimable_cache = max(
+        0,
+        values.get("Cached", 0)
+        + values.get("SReclaimable", 0)
+        - values.get("Shmem", 0),
+    )
+    fallback_parts = ("MemFree", "Buffers", "Cached", "SReclaimable")
+    if any(name in values for name in fallback_parts):
+        available = values.get("MemFree", 0) + values.get("Buffers", 0) + reclaimable_cache
+        if total is not None:
+            available = min(available, total)
+    return MemoryProbeResult(
+        total, available, True,
+        {
+            "probe": "proc_meminfo",
+            "available_source": "MemFree+Buffers+Cached+SReclaimable-Shmem",
+            "estimate": True,
+        },
+    )
+
+
+def _probe_host_memory(*, system: str | None = None,
+                       meminfo_path: Path = Path("/proc/meminfo")) -> MemoryProbeResult:
+    if (system or platform.system()).lower() == "linux":
+        try:
+            with meminfo_path.open("rb") as handle:
+                payload = handle.read(_MEMINFO_LIMIT_BYTES + 1)
+            if len(payload) > _MEMINFO_LIMIT_BYTES:
+                raise ValueError("meminfo_exceeds_probe_limit")
+            result = _parse_linux_meminfo(payload.decode("ascii", errors="replace"))
+            if result.total_bytes is not None:
+                return result
+        except (OSError, ValueError):
+            pass
+
+    # Portable, stdlib-only fallback. SC_AVPHYS_PAGES represents immediately
+    # free pages, so it is explicitly reported as an estimate.
+    total = available = None
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total = int(os.sysconf("SC_PHYS_PAGES")) * page_size
+        available = int(os.sysconf("SC_AVPHYS_PAGES")) * page_size
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return MemoryProbeResult(
+        total, available, True,
+        {"probe": "stdlib_sysconf", "available_source": "SC_AVPHYS_PAGES", "estimate": True},
+    )
 
 
 def default_model_profiles() -> tuple[ModelProfile, ...]:
@@ -650,15 +736,7 @@ class LocalAIService:
     def _safe_probe(self) -> tuple[Capability, ...]:
         now = _now()
         cores = max(1, os.cpu_count() or 1)
-        memory_total = memory_available = None
-        try:
-            pages = os.sysconf("SC_PHYS_PAGES")
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            memory_total = int(pages * page_size)
-            available_pages = os.sysconf("SC_AVPHYS_PAGES")
-            memory_available = int(available_pages * page_size)
-        except (AttributeError, OSError, ValueError):
-            pass
+        memory = _probe_host_memory()
         torch_spec = importlib.util.find_spec("torch")
         torch_installed = torch_spec is not None
         torch_version = cuda_version = None
@@ -693,9 +771,9 @@ class LocalAIService:
             CPUCapability(capability_id="cpu", status=CapabilityStatus.AVAILABLE, model=platform.processor() or None,
                           architecture=platform.machine() or "unknown", logical_cores=cores, probed_at=now,
                           provenance={"probe": "stdlib"}),
-            MemoryCapability(capability_id="memory", status=CapabilityStatus.AVAILABLE if memory_total else CapabilityStatus.UNKNOWN,
-                             total_bytes=memory_total, available_bytes=memory_available, probed_at=now,
-                             provenance={"probe": "sysconf"}),
+            MemoryCapability(capability_id="memory", status=CapabilityStatus.AVAILABLE if memory.total_bytes else CapabilityStatus.UNKNOWN,
+                             total_bytes=memory.total_bytes, available_bytes=memory.available_bytes,
+                             estimate=memory.estimate, probed_at=now, provenance=memory.provenance),
             PyTorchCapability(capability_id="pytorch", status=(CapabilityStatus.AVAILABLE if torch_installed and not torch_error else CapabilityStatus.UNAVAILABLE if not torch_installed else CapabilityStatus.INSTALLED_UNUSABLE),
                               installed=torch_installed, cuda_available=cuda_available, cuda_version=cuda_version,
                               device_count=device_count, version=torch_version, reason=torch_error, probed_at=now,

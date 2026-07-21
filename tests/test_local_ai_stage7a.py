@@ -18,7 +18,7 @@ from backend.app.local_ai.contracts import (
     SchedulerStatus,
     VRAMCapability,
 )
-from backend.app.local_ai.service import LocalAIService
+from backend.app.local_ai.service import LocalAIService, _parse_linux_meminfo, _probe_host_memory
 from backend.app.main import create_app
 
 
@@ -40,6 +40,64 @@ def _service(tmp_path: Path, probe):
     service = LocalAIService(database, probe=probe)
     service.initialize()
     return service
+
+
+def test_linux_meminfo_uses_memavailable_exactly(tmp_path: Path) -> None:
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       16384000 kB\n"
+        "MemFree:          156000 kB\n"
+        "MemAvailable:    6710886 kB\n"
+        "Buffers:          120000 kB\n"
+        "Cached:          2400000 kB\n",
+        encoding="ascii",
+    )
+    result = _probe_host_memory(system="Linux", meminfo_path=meminfo)
+    assert result.total_bytes == 16384000 * 1024
+    assert result.available_bytes == 6710886 * 1024
+    assert result.estimate is False
+    assert result.provenance["available_source"] == "MemAvailable"
+
+
+def test_linux_meminfo_without_memavailable_uses_marked_conservative_estimate() -> None:
+    result = _parse_linux_meminfo(
+        "MemTotal:       8388608 kB\n"
+        "MemFree:         100000 kB\n"
+        "Buffers:          20000 kB\n"
+        "Cached:          600000 kB\n"
+        "SReclaimable:    100000 kB\n"
+        "Shmem:            50000 kB\n"
+    )
+    assert result.total_bytes == 8388608 * 1024
+    assert result.available_bytes == (100000 + 20000 + 600000 + 100000 - 50000) * 1024
+    assert result.estimate is True
+    assert result.provenance["estimate"] is True
+
+
+def test_doctor_and_capabilities_expose_memavailable(monkeypatch, tmp_path: Path) -> None:
+    total = 16 * 1024**3
+    available = 6400 * 1024**2
+
+    def probe(_self):
+        now = datetime.now(timezone.utc)
+        return (
+            MemoryCapability(
+                capability_id="memory", status=CapabilityStatus.AVAILABLE,
+                total_bytes=total, available_bytes=available, estimate=False,
+                probed_at=now, provenance={"probe": "proc_meminfo", "available_source": "MemAvailable"},
+            ),
+        )
+
+    monkeypatch.setattr(LocalAIService, "_safe_probe", probe)
+    with TestClient(create_app(tmp_path / "memory-api.db", tmp_path)) as client:
+        for endpoint in ("/runtime/local-ai/doctor", "/runtime/local-ai/capabilities"):
+            response = client.get(endpoint)
+            assert response.status_code == 200
+            memory = next(item for item in response.json()["capabilities"] if item["capability_id"] == "memory")
+            assert memory["total_bytes"] == total
+            assert memory["available_bytes"] == available
+            assert memory["estimate"] is False
+            assert memory["provenance"]["available_source"] == "MemAvailable"
 
 
 def test_capability_registry_caches_and_explicitly_refreshes(tmp_path: Path) -> None:

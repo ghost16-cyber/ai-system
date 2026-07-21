@@ -67,6 +67,7 @@ class CPUCapability(Capability):
 class MemoryCapability(Capability):
     total_bytes: int | None = Field(default=None, ge=0)
     available_bytes: int | None = Field(default=None, ge=0)
+    estimate: bool = False
 
 
 class CUDACapability(Capability):
