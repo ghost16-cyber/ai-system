@@ -4,12 +4,12 @@ import json
 import socket
 import time
 from typing import Any
-from urllib import request, error
 
 from pydantic import BaseModel, Field
 
 from backend.app.local_runtime.task_optimizer import classify_task
 from backend.app.local_ai.config import load_local_ai_configuration
+from backend.app.local_ai.provider import OllamaProviderClient, ProviderClientError
 from backend.app.slm.action_parser import ActionParseError, extract_json_object
 from backend.app.slm.runtime_config import get_selected_slm_profile
 from backend.app.slm.model_registry import build_ollama_client
@@ -35,10 +35,8 @@ class SLMIntentRequest(BaseModel):
 
 def _load_gateway_config() -> dict[str, Any]:
     configuration = load_local_ai_configuration()
-    import os
-
     return {
-        "enabled": os.getenv("ASTRA_SLM_ENABLED", "true").strip().lower() == "true",
+        "enabled": configuration.generation_enabled,
         "base_url": configuration.endpoint_identity,
         "model": configuration.coder_model,
         "timeout_seconds": configuration.generation_timeout_seconds,
@@ -50,14 +48,9 @@ def _load_gateway_config() -> dict[str, Any]:
 def _check_ollama_reachable(base_url: str, timeout: int) -> tuple[bool, list[str]]:
     """Check if Ollama is reachable and return a list of available models."""
     try:
-        http_req = request.Request(f"{base_url.rstrip('/')}/api/tags")
-        with request.urlopen(http_req, timeout=timeout) as response:
-            if response.status != 200:
-                return False, []
-            data = json.loads(response.read().decode("utf-8"))
-            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
-            return True, models
-    except (error.URLError, TimeoutError, Exception):
+        inspection = OllamaProviderClient(base_url).inspect(timeout_seconds=timeout)
+        return True, list(inspection.installed_models)
+    except ProviderClientError:
         return False, []
 
 

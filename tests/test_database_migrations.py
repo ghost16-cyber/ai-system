@@ -577,7 +577,7 @@ def test_migration_11_backfills_canonical_replay_and_retires_old_authority(
             (initialize.project_run_id, initialize.idempotency_key),
         )
 
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:11])
     assert result.applied_versions == (11,)
     with sqlite3.connect(database) as connection:
         tables = {
@@ -797,6 +797,7 @@ def test_stage2c_project_records_remain_readable_without_emitting_work(
             "project_execution_cancellations",
             "project_model_invocations",
             "project_artifacts",
+            "local_ai_generation_invocations",
             "schema_migrations",
         ):
             connection.execute(f"DROP TABLE {table}")

@@ -23,9 +23,10 @@ class LocalAIConfigurationError(ValueError):
 
 
 class LocalAIConfiguration(StrictModel):
-    schema_version: Literal["astra.local-ai.configuration.v1"] = (
-        "astra.local-ai.configuration.v1"
+    schema_version: Literal["astra.local-ai.configuration.v2"] = (
+        "astra.local-ai.configuration.v2"
     )
+    generation_enabled: bool = False
     provider_type: Literal["ollama", "unavailable", "fake"] = "ollama"
     endpoint_identity: str
     synthesis_model: str
@@ -111,6 +112,13 @@ def load_local_ai_configuration(
     reviewer_model = _optional_role(env, "ASTRA_LOCAL_AI_REVIEWER_MODEL", shared_model)
     try:
         return LocalAIConfiguration(
+            generation_enabled=_boolean(
+                env,
+                "ASTRA_LOCAL_AI_GENERATION_ENABLED"
+                if "ASTRA_LOCAL_AI_GENERATION_ENABLED" in env
+                else "ASTRA_SLM_ENABLED",
+                default=True,
+            ),
             provider_type=provider,
             endpoint_identity=endpoint,
             synthesis_model=synthesis_model,

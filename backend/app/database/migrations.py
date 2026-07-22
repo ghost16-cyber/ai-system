@@ -797,6 +797,94 @@ def _phase4a_manual_invalidation_and_replay_step() -> SchemaMigrationStep:
     )
 
 
+_PHASE5A_GENERATION_TABLE_SQL = """
+CREATE TABLE local_ai_generation_invocations (
+    generation_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_fingerprint TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    provider_identity TEXT NOT NULL,
+    endpoint_identity TEXT NOT NULL,
+    exact_model_tag TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    context_hash TEXT NOT NULL,
+    expected_schema_identity TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started', 'completed', 'failed', 'timed_out', 'cancelled')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    duration_ms INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
+    response_hash TEXT,
+    failure_classification TEXT,
+    result_json TEXT,
+    diagnostic_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+_PHASE5A_GENERATION_REQUEST_INDEX_SQL = """
+CREATE INDEX idx_local_ai_generation_request
+    ON local_ai_generation_invocations(request_id, started_at)
+"""
+_PHASE5A_GENERATION_STATUS_INDEX_SQL = """
+CREATE INDEX idx_local_ai_generation_status
+    ON local_ai_generation_invocations(status, started_at)
+"""
+_PHASE5A_GENERATION_IMMUTABILITY_TRIGGER_SQL = """
+CREATE TRIGGER local_ai_generation_terminal_immutable
+BEFORE UPDATE ON local_ai_generation_invocations
+WHEN OLD.status != 'started'
+  OR NEW.status NOT IN ('completed', 'failed', 'timed_out', 'cancelled')
+  OR NEW.generation_id IS NOT OLD.generation_id
+  OR NEW.request_id IS NOT OLD.request_id
+  OR NEW.idempotency_key IS NOT OLD.idempotency_key
+  OR NEW.request_fingerprint IS NOT OLD.request_fingerprint
+  OR NEW.purpose IS NOT OLD.purpose
+  OR NEW.provider_identity IS NOT OLD.provider_identity
+  OR NEW.endpoint_identity IS NOT OLD.endpoint_identity
+  OR NEW.exact_model_tag IS NOT OLD.exact_model_tag
+  OR NEW.input_hash IS NOT OLD.input_hash
+  OR NEW.context_hash IS NOT OLD.context_hash
+  OR NEW.expected_schema_identity IS NOT OLD.expected_schema_identity
+  OR NEW.started_at IS NOT OLD.started_at
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
+END
+"""
+_PHASE5A_GENERATION_NO_DELETE_TRIGGER_SQL = """
+CREATE TRIGGER local_ai_generation_records_no_delete
+BEFORE DELETE ON local_ai_generation_invocations
+BEGIN
+    SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
+END
+"""
+
+
+def _phase5a_generation_gateway_steps() -> tuple[SchemaMigrationStep, ...]:
+    return (
+        _sql_step(
+            "create_local_ai_generation_invocations",
+            _PHASE5A_GENERATION_TABLE_SQL,
+        ),
+        _sql_step(
+            "index_local_ai_generation_request",
+            _PHASE5A_GENERATION_REQUEST_INDEX_SQL,
+        ),
+        _sql_step(
+            "index_local_ai_generation_status",
+            _PHASE5A_GENERATION_STATUS_INDEX_SQL,
+        ),
+        _sql_step(
+            "protect_local_ai_generation_terminal_records",
+            _PHASE5A_GENERATION_IMMUTABILITY_TRIGGER_SQL,
+        ),
+        _sql_step(
+            "protect_local_ai_generation_records_from_deletion",
+            _PHASE5A_GENERATION_NO_DELETE_TRIGGER_SQL,
+        ),
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -887,6 +975,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "manual_evidence_invalidation_and_replay_authority",
             "astra-schema-migration:manual-evidence-invalidation-replay-authority:v1",
             (_phase4a_manual_invalidation_and_replay_step(),),
+        ),
+        SchemaMigration(
+            12,
+            "production_safe_local_generation_gateway",
+            "astra-schema-migration:production-safe-local-generation-gateway:v1",
+            _phase5a_generation_gateway_steps(),
         ),
     )
 
@@ -1720,6 +1814,30 @@ REQUIRED_SCHEMA_SHAPE[11] = {
         "foreign_keys": (
             ("project_run_id", "project_runs", "project_run_id"),
             ("evidence_id", "project_manual_evidence", "evidence_id"),
+        ),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[12] = {
+    **REQUIRED_SCHEMA_SHAPE[11],
+    "local_ai_generation_invocations": {
+        "present": True,
+        "columns": (
+            "generation_id", "request_id", "idempotency_key",
+            "request_fingerprint", "purpose", "provider_identity",
+            "endpoint_identity", "exact_model_tag", "input_hash",
+            "context_hash", "expected_schema_identity", "status",
+            "started_at", "completed_at", "duration_ms", "response_hash",
+            "failure_classification", "result_json", "diagnostic_json",
+            "created_at",
+        ),
+        "indexes": (
+            "idx_local_ai_generation_request",
+            "idx_local_ai_generation_status",
+        ),
+        "sql_contains": (
+            "idempotency_key TEXT NOT NULL UNIQUE",
+            "CHECK(status IN ('started', 'completed', 'failed', 'timed_out', 'cancelled'))",
         ),
     },
 }

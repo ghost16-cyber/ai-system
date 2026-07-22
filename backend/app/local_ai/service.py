@@ -8,8 +8,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
-from urllib import error as url_error
-from urllib import request as url_request
 from uuid import uuid4
 
 from backend.app.database.migrations import assert_schema_compatible
@@ -49,6 +47,7 @@ from backend.app.local_ai.hardware import (
     parse_linux_meminfo,
     probe_host_memory,
 )
+from backend.app.local_ai.provider import OllamaProviderClient, ProviderClientError
 from backend.app.project_control.contracts import canonical_json, content_hash
 
 
@@ -73,19 +72,13 @@ def _probe_ollama(
     if configuration.provider_type != "ollama":
         return False, (), (), "configured_provider_is_not_ollama"
     try:
-        installed = _ollama_model_names(
-            f"{configuration.endpoint_identity}/api/tags",
-            timeout=configuration.connection_timeout_seconds,
+        inspection = OllamaProviderClient(configuration.endpoint_identity).inspect(
+            timeout_seconds=configuration.connection_timeout_seconds
         )
-    except (OSError, TimeoutError, ValueError, url_error.URLError):
+    except ProviderClientError:
         return False, (), (), "provider_unreachable"
-    try:
-        loaded = _ollama_model_names(
-            f"{configuration.endpoint_identity}/api/ps",
-            timeout=configuration.connection_timeout_seconds,
-        )
-    except (OSError, TimeoutError, ValueError, url_error.URLError):
-        loaded = ()
+    installed = inspection.installed_models
+    loaded = inspection.loaded_models
     missing = tuple(
         model for model in configuration.configured_models if model not in installed
     )
@@ -95,27 +88,6 @@ def _probe_ollama(
         loaded,
         "configured_model_missing" if missing else None,
     )
-
-
-def _ollama_model_names(url: str, *, timeout: int) -> tuple[str, ...]:
-    request = url_request.Request(url, method="GET")
-    with url_request.urlopen(request, timeout=timeout) as response:
-        payload = response.read(1024 * 1024 + 1)
-    if len(payload) > 1024 * 1024:
-        raise ValueError("ollama_response_too_large")
-    parsed = json.loads(payload.decode("utf-8"))
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("models", []), list):
-        raise ValueError("ollama_response_malformed")
-    names: list[str] = []
-    for item in parsed.get("models", []):
-        if not isinstance(item, dict):
-            raise ValueError("ollama_response_malformed")
-        name = item.get("name") or item.get("model")
-        if isinstance(name, str) and name and len(name) <= 300:
-            names.append(name)
-    return tuple(dict.fromkeys(names))
-
-
 def default_model_profiles(
     configuration: LocalAIConfiguration | None = None,
 ) -> tuple[ModelProfile, ...]:

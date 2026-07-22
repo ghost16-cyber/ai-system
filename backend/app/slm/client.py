@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-from typing import Any
-from urllib import request
+
+from backend.app.local_ai.provider import (
+    OllamaProviderClient,
+    ProviderGenerationRequest,
+)
 
 
 @dataclass
@@ -15,26 +17,15 @@ class OllamaClient:
     num_predict: int = 600
 
     def generate(self, prompt: str) -> str:
-        url = f"{self.base_url.rstrip('/')}/api/generate"
-
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": self.temperature,
-                "num_predict": self.num_predict,
-            },
-        }
-
-        encoded = json.dumps(payload).encode("utf-8")
-        http_request = request.Request(
-            url,
-            data=encoded,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        response = OllamaProviderClient(self.base_url).generate(
+            ProviderGenerationRequest(
+                model=self.model,
+                system_instruction="",
+                prompt=prompt,
+                timeout_seconds=self.timeout_seconds,
+                maximum_output_tokens=self.num_predict,
+                temperature=self.temperature,
+                structured_json=False,
+            )
         )
-
-        with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return str(data.get("response", "")).strip()
+        return response.response.strip()
