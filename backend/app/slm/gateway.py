@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import socket
 import time
 from typing import Any
@@ -10,6 +9,7 @@ from urllib import request, error
 from pydantic import BaseModel, Field
 
 from backend.app.local_runtime.task_optimizer import classify_task
+from backend.app.local_ai.config import load_local_ai_configuration
 from backend.app.slm.action_parser import ActionParseError, extract_json_object
 from backend.app.slm.runtime_config import get_selected_slm_profile
 from backend.app.slm.model_registry import build_ollama_client
@@ -34,15 +34,16 @@ class SLMIntentRequest(BaseModel):
 
 
 def _load_gateway_config() -> dict[str, Any]:
-    try:
-        timeout_seconds = int(os.getenv("ASTRA_SLM_TIMEOUT_SECONDS", "30"))
-    except ValueError:
-        timeout_seconds = 30
+    configuration = load_local_ai_configuration()
+    import os
+
     return {
         "enabled": os.getenv("ASTRA_SLM_ENABLED", "true").strip().lower() == "true",
-        "base_url": os.getenv("ASTRA_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        "model": os.getenv("ASTRA_SLM_MODEL"),
-        "timeout_seconds": max(1, min(timeout_seconds, 120)),
+        "base_url": configuration.endpoint_identity,
+        "model": configuration.coder_model,
+        "timeout_seconds": configuration.generation_timeout_seconds,
+        "connection_timeout_seconds": configuration.connection_timeout_seconds,
+        "configuration_schema_version": configuration.schema_version,
     }
 
 
@@ -64,14 +65,14 @@ def get_slm_gateway_status() -> dict[str, Any]:
     config = _load_gateway_config()
     selected = get_selected_slm_profile()
     profile = selected["profile"]
-    selected_model = config["model"] or profile.get("model_name")
+    selected_model = profile.get("model_name") or config["model"]
     reachable, available_models = _check_ollama_reachable(
-        config["base_url"], timeout=min(config["timeout_seconds"], 5)
+        config["base_url"], timeout=config["connection_timeout_seconds"]
     )
     return {
         "enabled": config["enabled"],
         "base_url": config["base_url"],
-        "configured_model": config["model"],
+        "configured_model": selected_model,
         "selected_model": selected_model,
         "provider": profile.get("backend", "unknown"),
         "selected_profile_id": selected["selected_profile_id"],
@@ -95,7 +96,7 @@ def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[s
             compact_context,
             profile,
             reason=reason,
-            model=config["model"] or profile.get("model_name"),
+            model=profile.get("model_name") or config["model"],
         )
 
     if not config["enabled"]:
@@ -104,9 +105,9 @@ def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[s
     if profile.get("backend") != "ollama":
         return fallback("profile_backend_not_ollama")
 
-    target_model = config["model"] or profile.get("model_name")
+    target_model = profile.get("model_name") or config["model"]
     reachable, available_models = _check_ollama_reachable(
-        config["base_url"], timeout=5
+        config["base_url"], timeout=config["connection_timeout_seconds"]
     )
 
     if not reachable:
@@ -138,8 +139,8 @@ def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[s
         response_text = client.generate(prompt)
     except (TimeoutError, socket.timeout):
         return fallback("timeout")
-    except Exception as e:
-        return fallback(f"exception:{e}")
+    except Exception:
+        return fallback("provider_error")
 
     latency_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -162,13 +163,7 @@ def chat_with_slm(message: str, context: dict[str, Any] | None = None) -> dict[s
 
 
 def _model_available(target_model: str, available_models: list[str]) -> bool:
-    if target_model in available_models:
-        return True
-    if ":" not in target_model and f"{target_model}:latest" in available_models:
-        return True
-    if target_model.endswith(":latest") and target_model.removesuffix(":latest") in available_models:
-        return True
-    return False
+    return target_model in available_models
 
 
 def _fallback_response(

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from backend.app.slm.client import OllamaClient
-from backend.app.slm.runtime_config import get_selected_slm_profile
+from backend.app.local_ai.config import load_local_ai_configuration
 
 
 class SynthesisGatewayError(RuntimeError):
@@ -27,6 +27,7 @@ class GatewayResult:
 class SynthesisGateway(Protocol):
     provider: str
     model: str
+    endpoint_identity: str
 
     def generate(self, request_payload: str) -> GatewayResult: ...
 
@@ -35,6 +36,7 @@ class SynthesisGateway(Protocol):
 class UnavailableSynthesisGateway:
     provider: str = "unavailable"
     model: str = "none"
+    endpoint_identity: str = "none"
     reason: str = "Controlled model-assisted synthesis is not configured."
 
     def generate(self, request_payload: str) -> GatewayResult:
@@ -47,6 +49,7 @@ class FakeSynthesisGateway:
     response: str | Callable[[str], str]
     provider: str = "fake"
     model: str = "fake-project-synthesizer-v1"
+    endpoint_identity: str = "in-process"
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     call_count: int = 0
 
@@ -72,9 +75,11 @@ class OllamaSynthesisGateway:
     client: OllamaClient
     provider: str = "ollama"
     model: str = ""
+    endpoint_identity: str = ""
 
     def __post_init__(self) -> None:
         self.model = self.client.model
+        self.endpoint_identity = self.client.base_url.rstrip("/")
 
     def generate(self, request_payload: str) -> GatewayResult:
         prompt = (
@@ -105,14 +110,15 @@ def build_synthesis_gateway_from_environment() -> SynthesisGateway:
         return FakeSynthesisGateway(response=response)
     if mode != "ollama":
         return UnavailableSynthesisGateway()
-    selected = get_selected_slm_profile().get("profile") or {}
-    if selected.get("backend") != "ollama":
+    configuration = load_local_ai_configuration()
+    if configuration.provider_type != "ollama":
         return UnavailableSynthesisGateway(reason="The selected local model profile is not an Ollama coding profile.")
-    timeout = max(1, min(int(os.getenv("ASTRA_PROJECT_SYNTHESIS_TIMEOUT_SECONDS", "45")), 120))
     return OllamaSynthesisGateway(OllamaClient(
-        model=str(os.getenv("ASTRA_PROJECT_SYNTHESIS_MODEL") or selected.get("model_name") or "qwen2.5-coder:1.5b"),
-        base_url=os.getenv("ASTRA_SLM_BASE_URL", "http://localhost:11434"), timeout_seconds=timeout,
-        temperature=0.0, num_predict=4000,
+        model=configuration.synthesis_model,
+        base_url=configuration.endpoint_identity,
+        timeout_seconds=configuration.generation_timeout_seconds,
+        temperature=0.0,
+        num_predict=configuration.maximum_output_tokens,
     ))
 
 

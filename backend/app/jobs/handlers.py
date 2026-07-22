@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+from backend.app.local_ai.config import load_local_ai_configuration
+
 from backend.app.analyzer import analyze_python_code
 from backend.app.orchestrator import JsonlTraceStore, Orchestrator, OrchestratorConfig
 from backend.app.repo_scanner import scan_repository
@@ -123,8 +125,14 @@ def orchestrate_task_job(
             max_steps=int(payload.get("max_steps", 12)),
             proposer=str(payload.get("proposer", "scripted")),  # type: ignore[arg-type]
             advisor_runtime_mode=str(payload.get("advisor_runtime_mode", "off")),  # type: ignore[arg-type]
-            slm_model=str(payload.get("slm_model", "qwen2.5-coder:1.5b")),
-            slm_base_url=str(payload.get("slm_base_url", "http://localhost:11434")),
+            slm_model=str(
+                payload.get("slm_model")
+                or load_local_ai_configuration().coder_model
+            ),
+            slm_base_url=str(
+                payload.get("slm_base_url")
+                or load_local_ai_configuration().endpoint_identity
+            ),
             checkpoint_root=str(payload.get("checkpoint_root", "data/app/checkpoints")),
             approval_root=str(payload.get("approval_root", "data/app/pending_approvals")),
         ),

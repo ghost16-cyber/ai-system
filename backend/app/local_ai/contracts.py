@@ -62,6 +62,7 @@ class CPUCapability(Capability):
     model: str | None = None
     architecture: str
     logical_cores: int = Field(ge=1)
+    physical_cores: int | None = Field(default=None, ge=1)
 
 
 class MemoryCapability(Capability):
@@ -79,6 +80,9 @@ class CUDACapability(Capability):
 class GPUCapability(Capability):
     device_count: int = Field(default=0, ge=0)
     device_names: tuple[str, ...] = ()
+    device_identities: tuple[str, ...] = ()
+    devices: tuple[dict[str, Any], ...] = ()
+    driver_version: str | None = None
 
 
 class VRAMCapability(Capability):
@@ -96,7 +100,11 @@ class PyTorchCapability(Capability):
 
 class OllamaCapability(Capability):
     endpoint: str
+    configured_models: tuple[str, ...] = ()
     installed_models: tuple[str, ...] = ()
+    loaded_models: tuple[str, ...] = ()
+    provider_reachable: bool = False
+    configured_model_missing: bool = False
 
 
 class ONNXRuntimeCapability(Capability):
@@ -291,6 +299,7 @@ class ExecutionProvenance(StrictModel):
     conversation_id: str | None = None
     coordinator_intent_id: str | None = None
     provider_id: str
+    provider_endpoint_identity: str = "unspecified"
     model_profile_id: str
     provider_model_id: str
     prompt_template_version: str

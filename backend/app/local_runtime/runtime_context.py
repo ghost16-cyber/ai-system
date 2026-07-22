@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.app.hardware_ai_optimizer import probe_hardware
+from backend.app.local_ai.hardware import HardwareCapabilityRegistry
 from backend.app.local_runtime.capability_profile import (
     build_capability_profile,
     build_runtime_policy,
@@ -15,8 +16,10 @@ from backend.app.local_runtime.tool_detector import detect_toolchain
 def build_runtime_context(
     task: str | None = None,
     workspace_root: str | Path = ".",
+    *,
+    hardware_registry: HardwareCapabilityRegistry | None = None,
 ) -> RuntimeContext:
-    hardware = probe_hardware(workspace_root)
+    hardware = probe_hardware(workspace_root, registry=hardware_registry)
     tools = detect_toolchain()
     policy = build_runtime_policy(hardware, tools)
     capabilities = build_capability_profile(hardware, tools)

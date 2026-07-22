@@ -179,6 +179,7 @@ def build_runtime(
         provider_profile = CanonicalProviderProfile(
             provider=synthesis_gateway.provider,
             model_profile=synthesis_gateway.model,
+            endpoint_identity=synthesis_gateway.endpoint_identity,
             enabled=True,
         )
         service.coordinator_executor = ProjectCoordinatorExecutor(

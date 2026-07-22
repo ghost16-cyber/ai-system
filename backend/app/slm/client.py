@@ -8,8 +8,8 @@ from urllib import request
 
 @dataclass
 class OllamaClient:
-    model: str = "qwen2.5-coder:1.5b"
-    base_url: str = "http://localhost:11434"
+    model: str
+    base_url: str
     timeout_seconds: int = 90
     temperature: float = 0.1
     num_predict: int = 600

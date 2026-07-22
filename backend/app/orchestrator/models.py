@@ -6,6 +6,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from backend.app.local_ai.config import load_local_ai_configuration
+
+
+def _local_ai_configuration():
+    return load_local_ai_configuration()
+
 
 TaskStatus = Literal[
     "running",
@@ -145,8 +151,12 @@ class OrchestratorConfig(BaseModel):
     repair_trace_logging_enabled: bool = True
     repair_trace_events_dir: str = "benchmarks/.runs/traces"
     proposer: Literal["scripted", "slm"] = "scripted"
-    slm_model: str = "qwen2.5-coder:1.5b"
-    slm_base_url: str = "http://localhost:11434"
+    slm_model: str = Field(
+        default_factory=lambda: _local_ai_configuration().coder_model
+    )
+    slm_base_url: str = Field(
+        default_factory=lambda: _local_ai_configuration().endpoint_identity
+    )
     slm_timeout_seconds: int = Field(default=90, ge=1, le=300)
     checkpoint_root: str = "data/app/checkpoints"
     approval_root: str = "data/app/pending_approvals"

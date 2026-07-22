@@ -389,6 +389,8 @@ class ProjectModelInvocationStore:
             invocation.evidence_hash,
             invocation.provider,
             invocation.model_profile,
+            invocation.provider_endpoint_identity,
+            invocation.provider_model_id,
             invocation.request_hash,
             invocation.idempotency_key,
         )

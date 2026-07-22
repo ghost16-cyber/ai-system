@@ -33,9 +33,9 @@ class SLMRouter:
         cls,
         *,
         available_tools: list[dict[str, Any]],
-        model: str = "qwen2.5-coder:1.5b",
+        model: str | None = None,
         base_url: str | None = None,
-        timeout_seconds: int = 90,
+        timeout_seconds: int | None = None,
     ) -> "SLMRouter":
         return cls(
             client=build_ollama_client(

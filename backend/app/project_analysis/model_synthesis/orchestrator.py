@@ -26,6 +26,7 @@ class CanonicalProviderProfile(StrictModel):
     schema_version: Literal["astra.project-synthesis.provider-profile.v1"] = "astra.project-synthesis.provider-profile.v1"
     provider: str = Field(min_length=1, max_length=120)
     model_profile: str = Field(min_length=1, max_length=200)
+    endpoint_identity: str = Field(default="unspecified", min_length=1, max_length=2048)
     enabled: bool = True
 
 
@@ -92,7 +93,14 @@ class CanonicalSynthesisOrchestrator:
         self._validate_binding(intent, evidence_artifact)
         if not provider_profile.enabled:
             raise CanonicalSynthesisBlocked("The configured synthesis provider is disabled.", code="provider_disabled")
-        if provider_profile.provider != self.gateway.provider or provider_profile.model_profile != self.gateway.model:
+        if (
+            provider_profile.provider != self.gateway.provider
+            or provider_profile.model_profile != self.gateway.model
+            or (
+                provider_profile.endpoint_identity != "unspecified"
+                and provider_profile.endpoint_identity != self.gateway.endpoint_identity
+            )
+        ):
             raise CanonicalSynthesisBlocked("The gateway does not match the exact provider profile.", code="provider_profile_mismatch")
         evidence = evidence_artifact.payload.get("evidence", evidence_artifact.payload)
         if not isinstance(evidence, dict):
@@ -123,6 +131,8 @@ class CanonicalSynthesisOrchestrator:
             coordinator_intent_id=intent.coordinator_intent_id,
             purpose=f"prepare_{purpose}", evidence_hash=evidence_hash,
             provider=provider_profile.provider, model_profile=provider_profile.model_profile,
+            provider_endpoint_identity=self.gateway.endpoint_identity,
+            provider_model_id=self.gateway.model,
             request_payload=request_payload,
             idempotency_key=f"canonical-synthesis:{intent.coordinator_intent_id}:{purpose}:{evidence_hash}",
         )

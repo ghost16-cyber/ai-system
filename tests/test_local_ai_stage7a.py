@@ -144,12 +144,17 @@ def test_cpu_fallback_never_happens_silently(tmp_path: Path) -> None:
     assert service.admission_preview(request.model_copy(update={"allow_cpu_fallback": True})).outcome == AdmissionOutcome.CPU
 
 
-def test_profiles_do_not_assume_qwen3_is_installed(tmp_path: Path) -> None:
+def test_configured_profile_does_not_assume_model_is_installed(tmp_path: Path) -> None:
     service = _service(tmp_path, lambda: _capabilities(vram=None, free_vram=None))
-    qwen3 = next(item for item in service.models() if item.model_profile_id == "qwen3-4b-q4-k-m")
-    assert qwen3.local_available is False
-    assert qwen3.enabled is False
-    assert qwen3.source_metadata["install_command"] == "ollama pull qwen3:4b-q4_K_M"
+    configured = next(
+        item for item in service.models()
+        if item.model_profile_id == "configured-local-model"
+    )
+    assert configured.provider_model_id == "qwen2.5-coder:1.5b"
+    assert configured.local_available is False
+    assert configured.enabled is False
+    assert configured.source_metadata["no_auto_start"] is True
+    assert configured.source_metadata["no_auto_pull"] is True
 
 
 def test_future_rag_evaluation_and_training_are_disabled(tmp_path: Path) -> None:

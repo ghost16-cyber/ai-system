@@ -47,6 +47,10 @@ class ProjectModelInvocation(StrictModel):
     evidence_hash: str = Field(min_length=64, max_length=64)
     provider: str = Field(min_length=1, max_length=120)
     model_profile: str = Field(min_length=1, max_length=200)
+    provider_endpoint_identity: str = Field(
+        default="unspecified", min_length=1, max_length=2048
+    )
+    provider_model_id: str = Field(default="unspecified", min_length=1, max_length=300)
     request_payload: dict[str, Any]
     request_hash: str = Field(min_length=64, max_length=64)
     idempotency_key: str = Field(min_length=1, max_length=300)
@@ -128,6 +132,8 @@ def build_project_model_invocation(
     evidence_hash: str,
     provider: str,
     model_profile: str,
+    provider_endpoint_identity: str = "unspecified",
+    provider_model_id: str | None = None,
     request_payload: dict[str, Any],
     coordinator_intent_id: str | None = None,
     idempotency_key: str | None = None,
@@ -148,6 +154,8 @@ def build_project_model_invocation(
         evidence_hash=evidence_hash,
         provider=provider,
         model_profile=model_profile,
+        provider_endpoint_identity=provider_endpoint_identity,
+        provider_model_id=provider_model_id or model_profile,
         request_payload=request_payload,
         request_hash=request_hash,
         idempotency_key=key,

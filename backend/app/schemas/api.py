@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 from backend.app.rag.corpus_retrieval import CorpusSourceMetadata
 
 
+def _local_ai_configuration():
+    # Lazy import avoids making the broad legacy API schema graph depend on
+    # project-control/database initialization during module collection.
+    from backend.app.local_ai.config import load_local_ai_configuration
+
+    return load_local_ai_configuration()
+
+
 class FixValidationResponse(BaseModel):
     status: Literal["not_available", "passed", "failed"] = "not_available"
     checks: list[str] = Field(default_factory=list)
@@ -64,8 +72,12 @@ class OrchestrateRequest(BaseModel):
     max_steps: int = Field(default=12, ge=1, le=50)
     proposer: Literal["scripted", "slm"] = "scripted"
     advisor_runtime_mode: Literal["off", "shadow", "ranking_boost", "guarded_action"] = "off"
-    slm_model: str = "qwen2.5-coder:1.5b"
-    slm_base_url: str = "http://localhost:11434"
+    slm_model: str = Field(
+        default_factory=lambda: _local_ai_configuration().coder_model
+    )
+    slm_base_url: str = Field(
+        default_factory=lambda: _local_ai_configuration().endpoint_identity
+    )
 
 
 class RuntimePlanValidationRequest(BaseModel):

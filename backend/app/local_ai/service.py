@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import platform
 import shutil
 import sqlite3
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable
+from urllib import error as url_error
+from urllib import request as url_request
 from uuid import uuid4
 
 from backend.app.database.migrations import assert_schema_compatible
@@ -38,171 +38,121 @@ from backend.app.local_ai.contracts import (
     TrainingCapability,
     VRAMCapability,
 )
+from backend.app.local_ai.config import (
+    LocalAIConfiguration,
+    load_local_ai_configuration,
+)
+from backend.app.local_ai.hardware import (
+    HardwareCapabilityRegistry,
+    HardwareSnapshot,
+    MemoryProbeResult,
+    parse_linux_meminfo,
+    probe_host_memory,
+)
 from backend.app.project_control.contracts import canonical_json, content_hash
 
 
 Probe = Callable[[], tuple[Capability, ...]]
-_MEMINFO_LIMIT_BYTES = 64 * 1024
-
-
-class MemoryProbeResult(NamedTuple):
-    total_bytes: int | None
-    available_bytes: int | None
-    estimate: bool
-    provenance: dict[str, object]
+OllamaProbe = Callable[
+    [LocalAIConfiguration], tuple[bool, tuple[str, ...], tuple[str, ...], str | None]
+]
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_linux_meminfo(text: str) -> MemoryProbeResult:
-    """Parse the bounded public Linux memory interface without shelling out."""
-    values: dict[str, int] = {}
-    for raw_line in text.splitlines():
-        key, separator, raw_value = raw_line.partition(":")
-        if not separator:
-            continue
-        parts = raw_value.split()
-        if not parts:
-            continue
-        try:
-            value = int(parts[0])
-        except ValueError:
-            continue
-        unit = parts[1].lower() if len(parts) > 1 else "bytes"
-        multiplier = 1024 if unit == "kb" else 1
-        values[key.strip()] = max(0, value) * multiplier
-
-    total = values.get("MemTotal")
-    available = values.get("MemAvailable")
-    if available is not None:
-        return MemoryProbeResult(
-            total, min(available, total) if total is not None else available, False,
-            {"probe": "proc_meminfo", "available_source": "MemAvailable"},
-        )
-
-    # Older kernels may omit MemAvailable. Count only immediately free pages
-    # and reclaimable cache, discounting shared memory from the cached total.
-    reclaimable_cache = max(
-        0,
-        values.get("Cached", 0)
-        + values.get("SReclaimable", 0)
-        - values.get("Shmem", 0),
-    )
-    fallback_parts = ("MemFree", "Buffers", "Cached", "SReclaimable")
-    if any(name in values for name in fallback_parts):
-        available = values.get("MemFree", 0) + values.get("Buffers", 0) + reclaimable_cache
-        if total is not None:
-            available = min(available, total)
-    return MemoryProbeResult(
-        total, available, True,
-        {
-            "probe": "proc_meminfo",
-            "available_source": "MemFree+Buffers+Cached+SReclaimable-Shmem",
-            "estimate": True,
-        },
-    )
+_parse_linux_meminfo = parse_linux_meminfo
+_probe_host_memory = probe_host_memory
 
 
-def _probe_host_memory(*, system: str | None = None,
-                       meminfo_path: Path = Path("/proc/meminfo")) -> MemoryProbeResult:
-    if (system or platform.system()).lower() == "linux":
-        try:
-            with meminfo_path.open("rb") as handle:
-                payload = handle.read(_MEMINFO_LIMIT_BYTES + 1)
-            if len(payload) > _MEMINFO_LIMIT_BYTES:
-                raise ValueError("meminfo_exceeds_probe_limit")
-            result = _parse_linux_meminfo(payload.decode("ascii", errors="replace"))
-            if result.total_bytes is not None:
-                return result
-        except (OSError, ValueError):
-            pass
-
-    # Portable, stdlib-only fallback. SC_AVPHYS_PAGES represents immediately
-    # free pages, so it is explicitly reported as an estimate.
-    total = available = None
+def _probe_ollama(
+    configuration: LocalAIConfiguration,
+) -> tuple[bool, tuple[str, ...], tuple[str, ...], str | None]:
+    """Read bounded Ollama state; never starts the daemon or pulls a model."""
+    if configuration.provider_type != "ollama":
+        return False, (), (), "configured_provider_is_not_ollama"
     try:
-        page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        total = int(os.sysconf("SC_PHYS_PAGES")) * page_size
-        available = int(os.sysconf("SC_AVPHYS_PAGES")) * page_size
-    except (AttributeError, OSError, TypeError, ValueError):
-        pass
-    return MemoryProbeResult(
-        total, available, True,
-        {"probe": "stdlib_sysconf", "available_source": "SC_AVPHYS_PAGES", "estimate": True},
+        installed = _ollama_model_names(
+            f"{configuration.endpoint_identity}/api/tags",
+            timeout=configuration.connection_timeout_seconds,
+        )
+    except (OSError, TimeoutError, ValueError, url_error.URLError):
+        return False, (), (), "provider_unreachable"
+    try:
+        loaded = _ollama_model_names(
+            f"{configuration.endpoint_identity}/api/ps",
+            timeout=configuration.connection_timeout_seconds,
+        )
+    except (OSError, TimeoutError, ValueError, url_error.URLError):
+        loaded = ()
+    missing = tuple(
+        model for model in configuration.configured_models if model not in installed
+    )
+    return (
+        True,
+        installed,
+        loaded,
+        "configured_model_missing" if missing else None,
     )
 
 
-def default_model_profiles() -> tuple[ModelProfile, ...]:
+def _ollama_model_names(url: str, *, timeout: int) -> tuple[str, ...]:
+    request = url_request.Request(url, method="GET")
+    with url_request.urlopen(request, timeout=timeout) as response:
+        payload = response.read(1024 * 1024 + 1)
+    if len(payload) > 1024 * 1024:
+        raise ValueError("ollama_response_too_large")
+    parsed = json.loads(payload.decode("utf-8"))
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("models", []), list):
+        raise ValueError("ollama_response_malformed")
+    names: list[str] = []
+    for item in parsed.get("models", []):
+        if not isinstance(item, dict):
+            raise ValueError("ollama_response_malformed")
+        name = item.get("name") or item.get("model")
+        if isinstance(name, str) and name and len(name) <= 300:
+            names.append(name)
+    return tuple(dict.fromkeys(names))
+
+
+def default_model_profiles(
+    configuration: LocalAIConfiguration | None = None,
+) -> tuple[ModelProfile, ...]:
+    configuration = configuration or load_local_ai_configuration()
     gib = 1024**3
+    configured_roles = tuple(
+        role
+        for role in ("coding", "synthesis", "planning", "review")
+        if configuration.model_for_role(role) == configuration.synthesis_model
+    )
     return (
         ModelProfile(
-            model_profile_id="qwen2.5-coder-1.5b",
+            model_profile_id="configured-local-model",
             provider_id="ollama-local",
-            provider_model_id="qwen2.5-coder:1.5b",
-            display_name="Qwen 2.5 Coder 1.5B",
-            model_family="qwen2.5-coder",
-            parameter_scale="1.5B",
-            intended_roles=("coding", "synthesis"),
+            provider_model_id=configuration.synthesis_model,
+            display_name=f"Configured local model ({configuration.synthesis_model})",
+            model_family=configuration.synthesis_model.split(":", 1)[0],
+            parameter_scale="configured",
+            intended_roles=configured_roles,
             coding_support=True,
             structured_output=True,
-            context_window=32768,
-            operational_context=4096,
-            maximum_output_tokens=2048,
+            context_window=max(32768, configuration.maximum_context_tokens),
+            operational_context=configuration.maximum_context_tokens,
+            maximum_output_tokens=configuration.maximum_output_tokens,
             estimated_model_bytes=2 * gib,
             minimum_ram_bytes=4 * gib,
             minimum_vram_bytes=2 * gib,
-            prompt_template_profile="qwen2.5-coder-v1",
-            policy_status=CapabilityStatus.NOT_CONFIGURED,
-            source_metadata={"local_tag_must_be_verified": True},
-        ),
-        ModelProfile(
-            model_profile_id="qwen3-4b-q4-k-m",
-            provider_id="ollama-local",
-            provider_model_id="qwen3:4b-q4_K_M",
-            display_name="Qwen3 4B Q4_K_M",
-            model_family="qwen3",
-            parameter_scale="4B",
-            quantization="Q4_K_M",
-            intended_roles=("chat", "summary", "planning", "diagnosis", "synthesis"),
-            thinking_support=True,
-            non_thinking_support=True,
-            coding_support=True,
-            structured_output=True,
-            tool_calls=True,
-            context_window=32768,
-            operational_context=4096,
-            maximum_output_tokens=2048,
-            estimated_model_bytes=3 * gib,
-            minimum_ram_bytes=8 * gib,
-            minimum_vram_bytes=3500 * 1024**2,
-            prompt_template_profile="qwen3-ollama-v1",
+            prompt_template_profile="configured-local-coder-v1",
             policy_status=CapabilityStatus.NOT_CONFIGURED,
             source_metadata={
-                "install_command": "ollama pull qwen3:4b-q4_K_M",
-                "optional_context_requires_measurement": 8192,
+                "configuration_authority": configuration.schema_version,
                 "tag_is_configurable": True,
+                "local_tag_must_be_verified": True,
+                "no_auto_start": True,
+                "no_auto_pull": True,
             },
-        ),
-        ModelProfile(
-            model_profile_id="unavailable-qwen3",
-            provider_id="unavailable",
-            provider_model_id="qwen3:not-installed",
-            display_name="Qwen3 unavailable placeholder",
-            model_family="qwen3",
-            parameter_scale="unknown",
-            intended_roles=("blocked",),
-            context_window=4096,
-            operational_context=4096,
-            maximum_output_tokens=512,
-            estimated_model_bytes=0,
-            minimum_ram_bytes=0,
-            minimum_vram_bytes=0,
-            cpu_support=False,
-            gpu_support=False,
-            prompt_template_profile="unavailable-v1",
-            policy_status=CapabilityStatus.UNAVAILABLE,
+            default_roles=configured_roles,
         ),
         ModelProfile(
             model_profile_id="fake-deterministic",
@@ -227,8 +177,10 @@ def default_model_profiles() -> tuple[ModelProfile, ...]:
     )
 
 
-def default_provider_profiles() -> tuple[ProviderProfile, ...]:
-    endpoint = os.environ.get("ASTRA_OLLAMA_ENDPOINT", "http://127.0.0.1:11434")
+def default_provider_profiles(
+    configuration: LocalAIConfiguration | None = None,
+) -> tuple[ProviderProfile, ...]:
+    configuration = configuration or load_local_ai_configuration()
     return (
         ProviderProfile(
             provider_id="unavailable",
@@ -249,18 +201,24 @@ def default_provider_profiles() -> tuple[ProviderProfile, ...]:
         ),
         ProviderProfile(
             provider_id="ollama-local",
-            provider_type="ollama",
-            endpoint_identity=endpoint,
+            provider_type=configuration.provider_type,
+            endpoint_identity=configuration.endpoint_identity,
             health_status=CapabilityStatus.NOT_CONFIGURED,
-            supported_model_ids=("qwen2.5-coder:1.5b", "qwen3:4b-q4_K_M"),
-            context_limit=4096,
-            output_limit=2048,
+            supported_model_ids=configuration.configured_models,
+            context_limit=configuration.maximum_context_tokens,
+            output_limit=configuration.maximum_output_tokens,
             streaming=True,
             structured_output=True,
             tool_calls=True,
             execution_backend="ollama",
             enabled=False,
-            provenance={"no_auto_start": True, "no_auto_pull": True},
+            timeout_seconds=configuration.generation_timeout_seconds,
+            provenance={
+                "configuration_authority": configuration.schema_version,
+                "connection_timeout_seconds": configuration.connection_timeout_seconds,
+                "no_auto_start": True,
+                "no_auto_pull": True,
+            },
         ),
         ProviderProfile(
             provider_id="onnx-future",
@@ -282,24 +240,51 @@ def default_provider_profiles() -> tuple[ProviderProfile, ...]:
 class LocalAIService:
     """Install-free capability, policy, registry, scheduling and provenance boundary."""
 
-    def __init__(self, database_path: str | Path, *, probe: Probe | None = None) -> None:
+    def __init__(
+        self,
+        database_path: str | Path,
+        *,
+        probe: Probe | None = None,
+        configuration: LocalAIConfiguration | None = None,
+        hardware_registry: HardwareCapabilityRegistry | None = None,
+        ollama_probe: OllamaProbe | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
+        self.configuration = configuration or load_local_ai_configuration()
+        self._hardware_registry = hardware_registry or HardwareCapabilityRegistry()
+        self._ollama_probe = ollama_probe or _probe_ollama
         self._probe = probe or self._safe_probe
 
     def initialize(self) -> None:
         assert_schema_compatible(self.database_path)
         now = _now().isoformat()
         with self._connect() as connection:
-            for provider in default_provider_profiles():
-                connection.execute(
-                    "INSERT OR IGNORE INTO local_ai_providers (provider_id, config_version, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?)",
-                    (provider.provider_id, int(provider.enabled), provider.model_dump_json(), now, now),
-                )
-            for model in default_model_profiles():
-                connection.execute(
-                    "INSERT OR IGNORE INTO local_ai_models (model_profile_id, config_version, provider_id, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?)",
-                    (model.model_profile_id, model.provider_id, int(model.enabled), model.model_dump_json(), now, now),
-                )
+            for provider in default_provider_profiles(self.configuration):
+                if provider.provider_id == "ollama-local":
+                    connection.execute(
+                        "INSERT INTO local_ai_providers (provider_id, config_version, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?) "
+                        "ON CONFLICT(provider_id) DO UPDATE SET config_version = local_ai_providers.config_version + 1, enabled = excluded.enabled, profile_json = excluded.profile_json, updated_at = excluded.updated_at "
+                        "WHERE local_ai_providers.enabled != excluded.enabled OR local_ai_providers.profile_json != excluded.profile_json",
+                        (provider.provider_id, int(provider.enabled), provider.model_dump_json(), now, now),
+                    )
+                else:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO local_ai_providers (provider_id, config_version, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?)",
+                        (provider.provider_id, int(provider.enabled), provider.model_dump_json(), now, now),
+                    )
+            for model in default_model_profiles(self.configuration):
+                if model.model_profile_id == "configured-local-model":
+                    connection.execute(
+                        "INSERT INTO local_ai_models (model_profile_id, config_version, provider_id, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(model_profile_id) DO UPDATE SET config_version = local_ai_models.config_version + 1, provider_id = excluded.provider_id, enabled = excluded.enabled, profile_json = excluded.profile_json, updated_at = excluded.updated_at "
+                        "WHERE local_ai_models.provider_id != excluded.provider_id OR local_ai_models.enabled != excluded.enabled OR local_ai_models.profile_json != excluded.profile_json",
+                        (model.model_profile_id, model.provider_id, int(model.enabled), model.model_dump_json(), now, now),
+                    )
+                else:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO local_ai_models (model_profile_id, config_version, provider_id, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?)",
+                        (model.model_profile_id, model.provider_id, int(model.enabled), model.model_dump_json(), now, now),
+                    )
 
     def capability_report(self, *, refresh: bool = False, max_age_seconds: int = 60) -> HostCapabilityReport:
         if not refresh:
@@ -455,9 +440,37 @@ class LocalAIService:
         report = report or self.capability_report()
         vram = next((item for item in report.capabilities if item.capability_id == "vram"), None)
         memory = next((item for item in report.capabilities if item.capability_id == "memory"), None)
+        provider = next(
+            (item for item in report.capabilities if item.capability_id == "ollama"),
+            None,
+        )
         reserve = 768 * 1024**2
+        configured_profile = next(
+            (
+                profile
+                for profile in default_model_profiles(self.configuration)
+                if profile.model_profile_id == request.model_profile_id
+            ),
+            None,
+        )
+        model_bytes = max(
+            request.estimated_model_bytes,
+            configured_profile.estimated_model_bytes if configured_profile else 0,
+        )
         kv = request.requested_context * request.estimated_kv_bytes_per_token
-        required = request.estimated_model_bytes + kv + 256 * 1024**2
+        required = model_bytes + kv + 256 * 1024**2
+        if (
+            configured_profile is not None
+            and provider is not None
+            and provider.status != CapabilityStatus.AVAILABLE
+        ):
+            return self._decision(
+                AdmissionOutcome.BLOCKED_PROVIDER,
+                provider.reason or "The exact configured local model is unavailable.",
+                required,
+                None,
+                reserve,
+            )
         free_vram = getattr(vram, "free_bytes", None)
         total_vram = getattr(vram, "total_bytes", None)
         available_ram = getattr(memory, "available_bytes", None)
@@ -468,10 +481,10 @@ class LocalAIService:
             if required <= usable:
                 return self._decision(AdmissionOutcome.GPU, "Estimated workload fits conservative GPU policy.", required, usable, reserve, "cuda", "gpu:0", request.requested_context)
             reduced = min(4096, request.requested_context)
-            reduced_required = request.estimated_model_bytes + reduced * request.estimated_kv_bytes_per_token + 256 * 1024**2
+            reduced_required = model_bytes + reduced * request.estimated_kv_bytes_per_token + 256 * 1024**2
             if reduced < request.requested_context and reduced_required <= usable:
                 return self._decision(AdmissionOutcome.REDUCED_CONTEXT, "GPU admission requires a reduced operational context.", reduced_required, usable, reserve, "cuda", "gpu:0", reduced)
-        if request.allow_cpu_fallback:
+        if request.allow_cpu_fallback and self.configuration.allow_cpu_fallback:
             if available_ram is not None and required > int(available_ram):
                 return self._decision(AdmissionOutcome.BLOCKED_RAM, "Estimated model and context exceed available system RAM.", required, int(available_ram), reserve)
             return self._decision(AdmissionOutcome.CPU, "GPU admission unavailable; explicit CPU fallback was permitted.", required, available_ram, reserve, "cpu", "cpu", request.requested_context)
@@ -735,62 +748,113 @@ class LocalAIService:
 
     def _safe_probe(self) -> tuple[Capability, ...]:
         now = _now()
-        cores = max(1, os.cpu_count() or 1)
-        memory = _probe_host_memory()
-        torch_spec = importlib.util.find_spec("torch")
-        torch_installed = torch_spec is not None
-        torch_version = cuda_version = None
-        cuda_available = False
-        device_count = 0
-        device_names: tuple[str, ...] = ()
-        total_vram = free_vram = None
-        torch_error = None
-        if torch_installed:
-            try:
-                import torch  # type: ignore
-                torch_version = str(torch.__version__)
-                cuda_available = bool(torch.cuda.is_available())
-                cuda_version = str(torch.version.cuda) if torch.version.cuda else None
-                if cuda_available:
-                    device_count = int(torch.cuda.device_count())
-                    device_names = tuple(str(torch.cuda.get_device_name(i)) for i in range(device_count))
-                    if device_count:
-                        properties = torch.cuda.get_device_properties(0)
-                        total_vram = int(properties.total_memory)
-                        try:
-                            free_vram = int(torch.cuda.mem_get_info(0)[0])
-                        except Exception:
-                            free_vram = None
-            except Exception as exc:
-                torch_error = type(exc).__name__
+        snapshot = self._hardware_registry.snapshot(refresh=True)
+        reachable, installed_models, loaded_models, provider_reason = self._ollama_probe(
+            self.configuration
+        )
+        configured_missing = reachable and any(
+            model not in installed_models for model in self.configuration.configured_models
+        )
+        ollama_status = (
+            CapabilityStatus.UNAVAILABLE
+            if not reachable or configured_missing
+            else CapabilityStatus.AVAILABLE
+        )
+        import importlib.util
+
         onnx_installed = importlib.util.find_spec("onnxruntime") is not None
         tensorrt_installed = importlib.util.find_spec("tensorrt") is not None
-        endpoint = os.environ.get("ASTRA_OLLAMA_ENDPOINT", "http://127.0.0.1:11434")
-        ollama_binary = shutil.which("ollama")
+        device_names = tuple(item.name or "unknown" for item in snapshot.gpu_devices)
+        device_identities = tuple(
+            item.stable_identity or f"gpu:{item.index}" for item in snapshot.gpu_devices
+        )
         return (
-            CPUCapability(capability_id="cpu", status=CapabilityStatus.AVAILABLE, model=platform.processor() or None,
-                          architecture=platform.machine() or "unknown", logical_cores=cores, probed_at=now,
-                          provenance={"probe": "stdlib"}),
-            MemoryCapability(capability_id="memory", status=CapabilityStatus.AVAILABLE if memory.total_bytes else CapabilityStatus.UNKNOWN,
-                             total_bytes=memory.total_bytes, available_bytes=memory.available_bytes,
-                             estimate=memory.estimate, probed_at=now, provenance=memory.provenance),
-            PyTorchCapability(capability_id="pytorch", status=(CapabilityStatus.AVAILABLE if torch_installed and not torch_error else CapabilityStatus.UNAVAILABLE if not torch_installed else CapabilityStatus.INSTALLED_UNUSABLE),
-                              installed=torch_installed, cuda_available=cuda_available, cuda_version=cuda_version,
-                              device_count=device_count, version=torch_version, reason=torch_error, probed_at=now,
-                              provenance={"probe": "import", "heavy_inference": False}),
-            CUDACapability(capability_id="cuda", status=CapabilityStatus.AVAILABLE if cuda_available else CapabilityStatus.UNAVAILABLE,
-                           driver_visible=cuda_available, runtime_visible=bool(cuda_version), runtime_version=cuda_version,
-                           probed_at=now, provenance={"probe": "torch_once"}),
-            GPUCapability(capability_id="gpu", status=CapabilityStatus.AVAILABLE if device_count else CapabilityStatus.UNAVAILABLE,
-                          device_count=device_count, device_names=device_names, probed_at=now,
-                          provenance={"probe": "torch_once"}),
-            VRAMCapability(capability_id="vram", status=CapabilityStatus.AVAILABLE if total_vram else CapabilityStatus.UNAVAILABLE,
-                           total_bytes=total_vram, free_bytes=free_vram, estimate=free_vram is None,
-                           probed_at=now, provenance={"probe": "torch_once"}),
-            OllamaCapability(capability_id="ollama", status=CapabilityStatus.NOT_CONFIGURED if ollama_binary else CapabilityStatus.UNAVAILABLE,
-                             endpoint=endpoint, installed_models=(), probed_at=now,
-                             reason="Local endpoint is not contacted until explicit refresh/configuration.",
-                             remediation_commands=("ollama serve",), provenance={"binary": bool(ollama_binary), "network_probe": False}),
+            CPUCapability(
+                capability_id="cpu", status=CapabilityStatus.AVAILABLE,
+                model=snapshot.cpu_name, architecture=snapshot.architecture,
+                logical_cores=snapshot.cpu_logical_cores or 1,
+                physical_cores=snapshot.cpu_physical_cores, probed_at=now,
+                provenance={"registry": snapshot.schema_version, "sources": snapshot.probe_sources},
+            ),
+            MemoryCapability(
+                capability_id="memory",
+                status=CapabilityStatus.AVAILABLE if snapshot.total_memory_bytes else CapabilityStatus.UNKNOWN,
+                total_bytes=snapshot.total_memory_bytes,
+                available_bytes=snapshot.available_memory_bytes,
+                estimate=snapshot.available_memory_estimate, probed_at=now,
+                provenance={
+                    **snapshot.memory_provenance,
+                    "registry": snapshot.schema_version,
+                    "sources": snapshot.probe_sources,
+                },
+            ),
+            PyTorchCapability(
+                capability_id="pytorch",
+                status=CapabilityStatus.AVAILABLE if snapshot.pytorch_installed else CapabilityStatus.UNAVAILABLE,
+                installed=bool(snapshot.pytorch_installed),
+                cuda_available=bool(snapshot.cuda_available),
+                cuda_version=snapshot.runtime_cuda_version,
+                device_count=len(snapshot.gpu_devices), version=snapshot.pytorch_version,
+                probed_at=now, provenance={"registry": snapshot.schema_version},
+            ),
+            CUDACapability(
+                capability_id="cuda",
+                status=CapabilityStatus.AVAILABLE if snapshot.cuda_available else CapabilityStatus.UNAVAILABLE,
+                driver_visible=bool(snapshot.driver_version or snapshot.cuda_available),
+                runtime_visible=bool(snapshot.runtime_cuda_version),
+                runtime_version=snapshot.runtime_cuda_version, probed_at=now,
+                provenance={"registry": snapshot.schema_version},
+            ),
+            GPUCapability(
+                capability_id="gpu",
+                status=CapabilityStatus.AVAILABLE if snapshot.gpu_devices else CapabilityStatus.UNAVAILABLE,
+                device_count=len(snapshot.gpu_devices), device_names=device_names,
+                device_identities=device_identities,
+                devices=tuple(item.model_dump(mode="json") for item in snapshot.gpu_devices),
+                driver_version=snapshot.driver_version, probed_at=now,
+                provenance={"registry": snapshot.schema_version, "errors": snapshot.errors},
+            ),
+            VRAMCapability(
+                capability_id="vram",
+                status=CapabilityStatus.AVAILABLE if snapshot.total_vram_bytes is not None else CapabilityStatus.UNAVAILABLE,
+                total_bytes=max(
+                    (
+                        item.total_vram_bytes
+                        for item in snapshot.gpu_devices
+                        if item.total_vram_bytes is not None
+                    ),
+                    default=None,
+                ),
+                free_bytes=max(
+                    (
+                        item.free_vram_bytes
+                        for item in snapshot.gpu_devices
+                        if item.free_vram_bytes is not None
+                    ),
+                    default=None,
+                ),
+                estimate=not any(
+                    item.free_vram_bytes is not None for item in snapshot.gpu_devices
+                ),
+                probed_at=now,
+                provenance={
+                    "registry": snapshot.schema_version,
+                    "interpretation": "largest_single_device",
+                },
+            ),
+            OllamaCapability(
+                capability_id="ollama", status=ollama_status,
+                endpoint=self.configuration.endpoint_identity,
+                configured_models=self.configuration.configured_models,
+                installed_models=installed_models, loaded_models=loaded_models,
+                provider_reachable=reachable,
+                configured_model_missing=configured_missing,
+                probed_at=now, reason=provider_reason,
+                provenance={
+                    "configuration_authority": self.configuration.schema_version,
+                    "network_probe": True, "no_auto_start": True, "no_auto_pull": True,
+                },
+            ),
             ONNXRuntimeCapability(capability_id="onnxruntime", status=CapabilityStatus.AVAILABLE if onnx_installed else CapabilityStatus.UNAVAILABLE,
                                   installed=onnx_installed, probed_at=now, provenance={"probe": "importlib"}),
             TensorRTCapability(capability_id="tensorrt", status=CapabilityStatus.AVAILABLE if tensorrt_installed else CapabilityStatus.UNAVAILABLE,
