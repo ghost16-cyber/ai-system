@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -10,6 +13,7 @@ import pytest
 from backend.app.database.migrations import (
     LATEST_SCHEMA_VERSION,
     MigrationError,
+    MigrationBackupError,
     SCHEMA_MIGRATIONS,
     SchemaMigration,
     SchemaMigrationStep,
@@ -17,6 +21,7 @@ from backend.app.database.migrations import (
     assert_schema_compatible,
     build_schema_migrations,
     current_schema_version,
+    _sqlite_logical_sha256,
 )
 from backend.app.database.repository import AnalysisRepository
 from backend.app.project_control import (
@@ -307,9 +312,19 @@ def test_rerun_is_idempotent_and_concurrent_initializers_serialize(
 def test_existing_database_is_backed_up_before_stage3h_data_tagging(tmp_path: Path) -> None:
     database = tmp_path / "pre-stage3h.db"
     _build_checkpoint_fixture(database, "stage2c")
-    apply_schema_migrations(database)
-    backup = database.with_name(f"{database.name}.pre-stage3h-v8.bak")
+    result = apply_schema_migrations(database)
+    assert result.backup_manifest_path is not None
+    manifest_path = Path(result.backup_manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    backup = Path(manifest["backup_file_path"])
     assert backup.is_file()
+    assert manifest["manifest_schema_version"] == "astra.migration-backup-manifest.v1"
+    assert manifest["source_database_path"] == database.resolve().as_posix()
+    assert manifest["source_schema_version"] == 0
+    assert manifest["target_schema_version"] == LATEST_SCHEMA_VERSION
+    assert manifest["source_sha256"]
+    assert manifest["backup_sha256"] == hashlib.sha256(backup.read_bytes()).hexdigest()
+    assert manifest["source_logical_sha256"] == manifest["backup_logical_sha256"]
     with sqlite3.connect(backup) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute(
@@ -319,6 +334,191 @@ def test_existing_database_is_backed_up_before_stage3h_data_tagging(tmp_path: Pa
         assert connection.execute(
             "SELECT value FROM project_compatibility_state WHERE key = 'compatibility_removal_version'"
         ).fetchone()[0] == "stage3h-v1"
+
+
+def _build_v9_database(database: Path) -> None:
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:9])
+    assert result.current_version == 9
+
+
+def _single_backup_manifest(database: Path) -> Path:
+    manifests = tuple(database.parent.glob(f"{database.name}.migration-*.bak.manifest.json"))
+    assert len(manifests) == 1
+    return manifests[0]
+
+
+def _rewrite_manifest(manifest_path: Path, **updates: object) -> dict[str, object]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(updates)
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    return manifest
+
+
+def test_fresh_exact_v9_backup_permits_migration_10_and_records_binding(tmp_path: Path) -> None:
+    database = tmp_path / "fresh-v9.db"
+    _build_v9_database(database)
+    source_bytes = database.read_bytes()
+    source_stat = database.stat()
+
+    result = apply_schema_migrations(database)
+
+    assert result.applied_versions == (10,)
+    manifest_path = Path(result.backup_manifest_path or "")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source_schema_version"] == 9
+    assert manifest["target_schema_version"] == 10
+    assert manifest["source_file_size"] == len(source_bytes)
+    assert manifest["source_file_mtime_ns"] == source_stat.st_mtime_ns
+    assert manifest["source_sha256"] == hashlib.sha256(source_bytes).hexdigest()
+    assert manifest["migration_operation_id"] in manifest_path.name
+    assert current_schema_version(database) == 10
+    assert assert_schema_compatible(database) == 10
+
+
+def test_source_change_after_backup_is_rejected_and_safe_retry_works(tmp_path: Path) -> None:
+    database = tmp_path / "changed-after-backup.db"
+    _build_v9_database(database)
+
+    def mutate_after_manifest(event: str, _version: int, _step: str | None) -> None:
+        if event == "after_backup_manifest":
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE concurrent_source_change (value TEXT)")
+
+    with pytest.raises(MigrationBackupError) as error:
+        apply_schema_migrations(database, boundary=mutate_after_manifest)
+    assert error.value.code == "migration_backup_source_changed"
+    assert current_schema_version(database) == 9
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'concurrent_source_change'"
+        ).fetchone() is not None
+
+    assert apply_schema_migrations(database).applied_versions == (10,)
+    assert assert_schema_compatible(database) == 10
+
+
+def test_backup_from_another_database_is_rejected(tmp_path: Path) -> None:
+    database = tmp_path / "source.db"
+    other = tmp_path / "other.db"
+    _build_v9_database(database)
+    with sqlite3.connect(other) as connection:
+        connection.execute("CREATE TABLE unrelated (secretless_value TEXT)")
+
+    def substitute_backup(event: str, _version: int, _step: str | None) -> None:
+        if event != "after_backup_manifest":
+            return
+        manifest_path = _single_backup_manifest(database)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backup = Path(manifest["backup_file_path"])
+        shutil.copyfile(other, backup)
+        _rewrite_manifest(
+            manifest_path,
+            backup_file_size=backup.stat().st_size,
+            backup_sha256=hashlib.sha256(backup.read_bytes()).hexdigest(),
+            backup_logical_sha256=_sqlite_logical_sha256(backup),
+        )
+
+    with pytest.raises(MigrationBackupError) as error:
+        apply_schema_migrations(database, boundary=substitute_backup)
+    assert error.value.code == "migration_backup_source_mismatch"
+    assert current_schema_version(database) == 9
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed"])
+def test_missing_or_malformed_backup_manifest_is_rejected(
+    tmp_path: Path, failure: str
+) -> None:
+    database = tmp_path / f"manifest-{failure}.db"
+    _build_v9_database(database)
+
+    def damage_manifest(event: str, _version: int, _step: str | None) -> None:
+        if event != "after_backup_manifest":
+            return
+        manifest_path = _single_backup_manifest(database)
+        if failure == "missing":
+            manifest_path.unlink()
+        else:
+            manifest_path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(MigrationBackupError) as error:
+        apply_schema_migrations(database, boundary=damage_manifest)
+    assert error.value.code == (
+        "migration_backup_manifest_missing"
+        if failure == "missing"
+        else "migration_backup_manifest_malformed"
+    )
+    assert current_schema_version(database) == 9
+
+
+def test_corrupted_or_missing_backup_is_rejected(tmp_path: Path) -> None:
+    for failure in ("corrupt", "missing"):
+        database = tmp_path / f"backup-{failure}.db"
+        _build_v9_database(database)
+
+        def damage_backup(event: str, _version: int, _step: str | None) -> None:
+            if event != "after_backup_manifest":
+                return
+            manifest = json.loads(
+                _single_backup_manifest(database).read_text(encoding="utf-8")
+            )
+            backup = Path(manifest["backup_file_path"])
+            if failure == "corrupt":
+                backup.write_bytes(b"not-a-sqlite-database")
+            else:
+                backup.unlink()
+
+        with pytest.raises(MigrationBackupError) as error:
+            apply_schema_migrations(database, boundary=damage_backup)
+        assert error.value.code == (
+            "migration_backup_hash_mismatch"
+            if failure == "corrupt"
+            else "migration_backup_missing"
+        )
+        assert current_schema_version(database) == 9
+
+
+def test_wrong_backup_target_or_source_version_is_rejected(tmp_path: Path) -> None:
+    for field, value, expected_code in (
+        ("target_schema_version", 9, "migration_backup_target_mismatch"),
+        ("source_schema_version", 8, "migration_backup_source_version_mismatch"),
+    ):
+        database = tmp_path / f"wrong-{field}.db"
+        _build_v9_database(database)
+
+        def alter_binding(event: str, _version: int, _step: str | None) -> None:
+            if event == "after_backup_manifest":
+                _rewrite_manifest(_single_backup_manifest(database), **{field: value})
+
+        with pytest.raises(MigrationBackupError) as error:
+            apply_schema_migrations(database, boundary=alter_binding)
+        assert error.value.code == expected_code
+        assert current_schema_version(database) == 9
+
+
+def test_interrupted_backup_creation_blocks_migration_and_retains_identity(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "interrupted-backup.db"
+    _build_v9_database(database)
+
+    def interrupt(event: str, _version: int, _step: str | None) -> None:
+        if event == "after_backup":
+            raise RuntimeError("injected backup interruption")
+
+    with pytest.raises(MigrationBackupError) as error:
+        apply_schema_migrations(database, boundary=interrupt)
+    assert error.value.code == "migration_backup_interrupted"
+    assert current_schema_version(database) == 9
+    orphaned_backups = tuple(database.parent.glob(f"{database.name}.migration-*.bak"))
+    assert len(orphaned_backups) == 1
+    assert not Path(f"{orphaned_backups[0]}.manifest.json").exists()
+
+    result = apply_schema_migrations(database)
+    assert result.applied_versions == (10,)
+    assert Path(result.backup_manifest_path or "").is_file()
+    assert orphaned_backups[0].is_file()
 
 
 _MIGRATION_BOUNDARIES = tuple(

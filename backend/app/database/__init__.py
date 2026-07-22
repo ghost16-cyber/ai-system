@@ -4,6 +4,7 @@ from .repository import AnalysisRepository
 
 from .migrations import (
     LATEST_SCHEMA_VERSION,
+    MigrationBackupError,
     MigrationError,
     MigrationResult,
     SchemaMigration,
@@ -15,6 +16,7 @@ from .migrations import (
 __all__ = [
     "AnalysisRepository",
     "LATEST_SCHEMA_VERSION",
+    "MigrationBackupError",
     "MigrationError",
     "MigrationResult",
     "SchemaMigration",

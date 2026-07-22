@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote
+from uuid import uuid4
 
 from backend.app.database.canonical_schema import CANONICAL_PROJECT_SCHEMA_V9_SQL
 
@@ -18,6 +20,14 @@ MigrationBoundary = Callable[[str, int, str | None], None]
 
 class MigrationError(RuntimeError):
     """Raised when the durable schema ledger cannot be trusted or upgraded."""
+
+
+class MigrationBackupError(MigrationError):
+    """Typed fail-closed error for an untrusted pre-migration backup."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {message}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +88,34 @@ class MigrationResult:
     latest_version: int
     applied_versions: tuple[int, ...]
     status: str = "current"
+    backup_manifest_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationBackupManifest:
+    manifest_schema_version: str
+    migration_operation_id: str
+    source_database_path: str
+    source_database_identity: dict[str, int | str | None]
+    source_schema_version: int
+    target_schema_version: int
+    source_file_size: int
+    source_file_mtime_ns: int | None
+    source_file_ctime_ns: int | None
+    source_sha256: str
+    source_logical_sha256: str
+    source_wal: dict[str, int | str | None] | None
+    backup_file_path: str
+    backup_file_size: int
+    backup_sha256: str
+    backup_logical_sha256: str
+    backup_created_at: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+        }
 
 
 # Stage 3B or a later migration checkpoint must absorb all compatibility DDL into
@@ -769,19 +807,47 @@ def apply_schema_migrations(
 
     registry = _registry(SCHEMA_MIGRATIONS if migrations is None else migrations)
     path = Path(database_path)
-    existing_database_requires_backup = path.is_file() and path.stat().st_size > 0
     preflight_version = preflight_schema_compatibility(path, migrations=registry)
-    if existing_database_requires_backup and preflight_version < 8 <= registry[-1].version:
-        _backup_before_stage3h_tagging(path)
+    target_version = registry[-1].version
+    backup_manifest: MigrationBackupManifest | None = None
+    if (
+        path.is_file()
+        and path.stat().st_size > 0
+        and preflight_version < target_version
+    ):
+        backup_manifest = _prepare_migration_backup(
+            path,
+            source_version=preflight_version,
+            target_version=target_version,
+            registry=registry,
+            boundary=boundary,
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = _connect(path)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        _create_ledger(connection)
-        rows = connection.execute(
-            "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
-        ).fetchall()
+        ledger_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        rows = (
+            connection.execute(
+                "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            if ledger_exists is not None
+            else ()
+        )
         current = _validate_applied(rows, registry)
+        if backup_manifest is not None:
+            _notify(boundary, "before_backup_revalidation", target_version, None)
+            _validate_migration_backup(
+                path,
+                backup_manifest,
+                expected_source_version=current,
+                expected_target_version=target_version,
+                registry=registry,
+            )
+            _notify(boundary, "after_backup_revalidation", target_version, None)
+        _create_ledger(connection)
         applied: list[int] = []
         for migration in registry[current:]:
             _notify(boundary, "before_migration", migration.version, None)
@@ -799,7 +865,14 @@ def apply_schema_migrations(
             applied.append(migration.version)
         connection.commit()
         return MigrationResult(
-            registry[-1].version, registry[-1].version, tuple(applied)
+            target_version,
+            target_version,
+            tuple(applied),
+            backup_manifest_path=(
+                _manifest_path_for_backup(Path(backup_manifest.backup_file_path)).as_posix()
+                if backup_manifest is not None
+                else None
+            ),
         )
     except Exception as exc:
         connection.rollback()
@@ -810,24 +883,390 @@ def apply_schema_migrations(
         connection.close()
 
 
-def _backup_before_stage3h_tagging(path: Path) -> Path:
-    """Create one SQLite-consistent backup before the Stage 3H data tag."""
-    backup_path = path.with_name(f"{path.name}.pre-stage3h-v8.bak")
-    if backup_path.exists():
-        return backup_path
-    source = sqlite3.connect(path, timeout=30)
-    destination = sqlite3.connect(backup_path, timeout=30)
+_BACKUP_MANIFEST_SCHEMA_VERSION = "astra.migration-backup-manifest.v1"
+_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+def _notify_backup_boundary(
+    boundary: MigrationBoundary | None, event: str, target_version: int
+) -> None:
     try:
+        _notify(boundary, event, target_version, None)
+    except Exception as exc:
+        raise MigrationBackupError(
+            "migration_backup_interrupted",
+            "Migration backup preparation was interrupted before validation completed.",
+        ) from exc
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(_HASH_CHUNK_BYTES):
+                digest.update(chunk)
+    except OSError as exc:
+        raise MigrationBackupError(
+            "migration_backup_unreadable",
+            "A required migration file could not be read.",
+        ) from exc
+    return digest.hexdigest()
+
+
+def _sqlite_logical_sha256(path: Path) -> str:
+    """Hash the logical SQLite contents to bind a normalized backup to its source."""
+    digest = hashlib.sha256()
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = _connect_readonly(path)
+        for statement in connection.iterdump():
+            digest.update(statement.encode("utf-8"))
+            digest.update(b"\n")
+    except (sqlite3.DatabaseError, UnicodeError) as exc:
+        raise MigrationBackupError(
+            "migration_backup_logical_hash_failed",
+            "The database contents could not be fingerprinted safely.",
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    return digest.hexdigest()
+
+
+def _file_snapshot(path: Path) -> dict[str, int | str | None]:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise MigrationBackupError(
+            "migration_source_missing",
+            "The migration source database is missing or inaccessible.",
+        ) from exc
+    return {
+        "size": stat.st_size,
+        "mtime_ns": getattr(stat, "st_mtime_ns", None),
+        "ctime_ns": getattr(stat, "st_ctime_ns", None),
+        "device": getattr(stat, "st_dev", None),
+        "inode": getattr(stat, "st_ino", None),
+        "sha256": _sha256_file(path),
+    }
+
+
+def _wal_snapshot(path: Path) -> dict[str, int | str | None] | None:
+    wal_path = path.with_name(f"{path.name}-wal")
+    if not wal_path.exists():
+        return None
+    snapshot = _file_snapshot(wal_path)
+    return {
+        "size": snapshot["size"],
+        "mtime_ns": snapshot["mtime_ns"],
+        "sha256": snapshot["sha256"],
+    }
+
+
+def _checkpoint_database(path: Path) -> None:
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = _connect(path)
+        connection.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise MigrationBackupError(
+            "migration_backup_checkpoint_failed",
+            "The source database could not be checkpointed before backup.",
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _manifest_path_for_backup(backup_path: Path) -> Path:
+    return backup_path.with_name(f"{backup_path.name}.manifest.json")
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_manifest(path: Path, manifest: MigrationBackupManifest) -> None:
+    temporary = path.with_name(f".{path.name}.{manifest.migration_operation_id}.tmp")
+    payload = json.dumps(
+        manifest.as_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise MigrationBackupError(
+            "migration_backup_manifest_write_failed",
+            "The migration backup manifest could not be persisted atomically.",
+        ) from exc
+
+
+def _load_backup_manifest(path: Path) -> MigrationBackupManifest:
+    if not path.is_file():
+        raise MigrationBackupError(
+            "migration_backup_manifest_missing",
+            "The migration backup manifest is missing.",
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("manifest root must be an object")
+        expected_fields = set(MigrationBackupManifest.__dataclass_fields__)
+        if set(raw) != expected_fields:
+            raise ValueError("manifest fields do not match the versioned contract")
+        manifest = MigrationBackupManifest(**raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise MigrationBackupError(
+            "migration_backup_manifest_malformed",
+            "The migration backup manifest is malformed.",
+        ) from exc
+    if manifest.manifest_schema_version != _BACKUP_MANIFEST_SCHEMA_VERSION:
+        raise MigrationBackupError(
+            "migration_backup_manifest_version_unsupported",
+            "The migration backup manifest version is unsupported.",
+        )
+    string_fields = (
+        manifest.migration_operation_id,
+        manifest.source_database_path,
+        manifest.source_sha256,
+        manifest.source_logical_sha256,
+        manifest.backup_file_path,
+        manifest.backup_sha256,
+        manifest.backup_logical_sha256,
+        manifest.backup_created_at,
+    )
+    if (
+        any(not isinstance(value, str) or not value for value in string_fields)
+        or not isinstance(manifest.source_database_identity, dict)
+        or not isinstance(manifest.source_schema_version, int)
+        or not isinstance(manifest.target_schema_version, int)
+        or not isinstance(manifest.source_file_size, int)
+        or not isinstance(manifest.backup_file_size, int)
+        or manifest.source_file_size < 1
+        or manifest.backup_file_size < 1
+    ):
+        raise MigrationBackupError(
+            "migration_backup_manifest_malformed",
+            "The migration backup manifest contains invalid field types or values.",
+        )
+    return manifest
+
+
+def _validate_backup_database(
+    backup_path: Path,
+    *,
+    expected_source_version: int,
+    registry: tuple[SchemaMigration, ...],
+) -> None:
+    if not backup_path.is_file():
+        raise MigrationBackupError(
+            "migration_backup_missing", "The required migration backup is missing."
+        )
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = _connect_readonly(backup_path)
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or str(integrity[0]).lower() != "ok":
+            raise MigrationBackupError(
+                "migration_backup_integrity_failed",
+                "The migration backup failed SQLite integrity validation.",
+            )
+        connection.close()
+        connection = None
+        backup_version = preflight_schema_compatibility(backup_path, migrations=registry)
+        if backup_version != expected_source_version:
+            raise MigrationBackupError(
+                "migration_backup_schema_mismatch",
+                "The migration backup schema version does not match the source snapshot.",
+            )
+        validate_schema_shape(backup_path, backup_version)
+    except MigrationBackupError:
+        raise
+    except (MigrationError, sqlite3.DatabaseError) as exc:
+        raise MigrationBackupError(
+            "migration_backup_validation_failed",
+            "The migration backup could not be opened or schema-validated.",
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _prepare_migration_backup(
+    path: Path,
+    *,
+    source_version: int,
+    target_version: int,
+    registry: tuple[SchemaMigration, ...],
+    boundary: MigrationBoundary | None,
+) -> MigrationBackupManifest:
+    operation_id = uuid4().hex
+    resolved_source = path.resolve()
+    backup_path = path.with_name(
+        f"{path.name}.migration-v{source_version}-to-v{target_version}.{operation_id}.bak"
+    ).resolve()
+    temporary_backup = backup_path.with_name(f".{backup_path.name}.tmp")
+    manifest_path = _manifest_path_for_backup(backup_path)
+
+    _notify_backup_boundary(boundary, "before_backup", target_version)
+    _checkpoint_database(path)
+    source_snapshot = _file_snapshot(path)
+    source_logical_sha256 = _sqlite_logical_sha256(path)
+    source_wal = _wal_snapshot(path)
+    source = destination = None
+    try:
+        source = _connect_readonly(path)
+        destination = sqlite3.connect(temporary_backup, timeout=30)
         source.backup(destination)
         destination.commit()
-    except Exception:
         destination.close()
+        destination = None
         source.close()
-        backup_path.unlink(missing_ok=True)
-        raise
-    destination.close()
-    source.close()
-    return backup_path
+        source = None
+        with temporary_backup.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary_backup, backup_path)
+        _fsync_directory(path.parent)
+    except Exception as exc:
+        if destination is not None:
+            destination.close()
+        if source is not None:
+            source.close()
+        temporary_backup.unlink(missing_ok=True)
+        if isinstance(exc, MigrationBackupError):
+            raise
+        raise MigrationBackupError(
+            "migration_backup_creation_failed",
+            "The SQLite-consistent migration backup could not be created.",
+        ) from exc
+
+    _notify_backup_boundary(boundary, "after_backup", target_version)
+    backup_snapshot = _file_snapshot(backup_path)
+    backup_logical_sha256 = _sqlite_logical_sha256(backup_path)
+    if backup_logical_sha256 != source_logical_sha256:
+        raise MigrationBackupError(
+            "migration_backup_content_mismatch",
+            "The SQLite backup does not represent the source database snapshot.",
+        )
+    manifest = MigrationBackupManifest(
+        manifest_schema_version=_BACKUP_MANIFEST_SCHEMA_VERSION,
+        migration_operation_id=operation_id,
+        source_database_path=resolved_source.as_posix(),
+        source_database_identity={
+            "canonical_path": resolved_source.as_posix(),
+            "device": source_snapshot["device"],
+            "inode": source_snapshot["inode"],
+        },
+        source_schema_version=source_version,
+        target_schema_version=target_version,
+        source_file_size=int(source_snapshot["size"]),
+        source_file_mtime_ns=source_snapshot["mtime_ns"],
+        source_file_ctime_ns=source_snapshot["ctime_ns"],
+        source_sha256=str(source_snapshot["sha256"]),
+        source_logical_sha256=source_logical_sha256,
+        source_wal=source_wal,
+        backup_file_path=backup_path.as_posix(),
+        backup_file_size=int(backup_snapshot["size"]),
+        backup_sha256=str(backup_snapshot["sha256"]),
+        backup_logical_sha256=backup_logical_sha256,
+        backup_created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _validate_backup_database(
+        backup_path, expected_source_version=source_version, registry=registry
+    )
+    _atomic_write_manifest(manifest_path, manifest)
+    _notify_backup_boundary(boundary, "after_backup_manifest", target_version)
+    return manifest
+
+
+def _validate_migration_backup(
+    source_path: Path,
+    prepared_manifest: MigrationBackupManifest,
+    *,
+    expected_source_version: int,
+    expected_target_version: int,
+    registry: tuple[SchemaMigration, ...],
+) -> MigrationBackupManifest:
+    manifest_path = _manifest_path_for_backup(Path(prepared_manifest.backup_file_path))
+    manifest = _load_backup_manifest(manifest_path)
+    resolved_source = source_path.resolve().as_posix()
+    if (
+        manifest.source_database_path != resolved_source
+        or manifest.source_database_identity.get("canonical_path") != resolved_source
+    ):
+        raise MigrationBackupError(
+            "migration_backup_source_mismatch",
+            "The migration backup belongs to another source database.",
+        )
+    if manifest.source_schema_version != expected_source_version:
+        raise MigrationBackupError(
+            "migration_backup_source_version_mismatch",
+            "The migration backup source schema version is stale.",
+        )
+    if manifest.target_schema_version != expected_target_version:
+        raise MigrationBackupError(
+            "migration_backup_target_mismatch",
+            "The migration backup targets a different schema version.",
+        )
+    backup_path = Path(manifest.backup_file_path)
+    if backup_path.resolve().parent != source_path.resolve().parent:
+        raise MigrationBackupError(
+            "migration_backup_path_mismatch",
+            "The migration backup is not adjacent to its source database.",
+        )
+    if not backup_path.is_file():
+        raise MigrationBackupError(
+            "migration_backup_missing", "The required migration backup is missing."
+        )
+    backup_snapshot = _file_snapshot(backup_path)
+    if (
+        backup_snapshot["sha256"] != manifest.backup_sha256
+        or backup_snapshot["size"] != manifest.backup_file_size
+    ):
+        raise MigrationBackupError(
+            "migration_backup_hash_mismatch",
+            "The migration backup bytes do not match the manifest.",
+        )
+    if _sqlite_logical_sha256(backup_path) != manifest.backup_logical_sha256:
+        raise MigrationBackupError(
+            "migration_backup_hash_mismatch",
+            "The migration backup contents do not match the manifest.",
+        )
+    if manifest.backup_logical_sha256 != manifest.source_logical_sha256:
+        raise MigrationBackupError(
+            "migration_backup_source_mismatch",
+            "The migration backup belongs to another source database snapshot.",
+        )
+    _validate_backup_database(
+        backup_path, expected_source_version=expected_source_version, registry=registry
+    )
+    source_snapshot = _file_snapshot(source_path)
+    source_identity = manifest.source_database_identity
+    if (
+        source_snapshot["sha256"] != manifest.source_sha256
+        or source_snapshot["size"] != manifest.source_file_size
+        or source_snapshot["device"] != source_identity.get("device")
+        or source_snapshot["inode"] != source_identity.get("inode")
+        or _wal_snapshot(source_path) != manifest.source_wal
+        or _sqlite_logical_sha256(source_path) != manifest.source_logical_sha256
+    ):
+        raise MigrationBackupError(
+            "migration_backup_source_changed",
+            "The source database changed after backup capture.",
+        )
+    return manifest
 
 
 def initialize_stage3a_schema(database_path: str | Path) -> bool:
