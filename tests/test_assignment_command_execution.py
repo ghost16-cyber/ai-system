@@ -149,7 +149,11 @@ def test_exact_approval_is_required_and_token_is_not_persisted(tmp_path: Path) -
     assert stored["approval_token_hash"]
 
 
-def test_execute_requires_valid_approval_and_runs_once(tmp_path: Path) -> None:
+def test_execute_fails_closed_regardless_of_approval_validity(tmp_path: Path) -> None:
+    """R7: /assignments/commands/{id}/execute runs subprocess.Popen directly on
+    the host with no canonical-worker binding and has been retired. It must
+    fail closed unconditionally -- including for a valid, exact approval --
+    not just for invalid/missing approval tokens."""
     client, workspace = _client(tmp_path)
     (workspace / "safe.py").write_text("print('approved run')\n", encoding="utf-8")
     with client:
@@ -159,75 +163,53 @@ def test_execute_requires_valid_approval_and_runs_once(tmp_path: Path) -> None:
             json=_association(approval_token="not-approved"),
         )
         token = _approve(client, plan["plan_id"])
-        wrong_token = client.post(
-            f"/assignments/commands/{plan['plan_id']}/execute",
-            json=_association(approval_token="wrong-token"),
-        )
         executed = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
             json=_association(approval_token=token),
         )
-        logs = client.get(f"/assignments/commands/{plan['plan_id']}/logs", params=_association())
         repeated = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
             json=_association(approval_token=token),
         )
 
-    assert before_approval.status_code == 400
-    assert wrong_token.status_code == 400
-    assert executed.status_code == 200
-    assert executed.json()["status"] == "succeeded"
-    assert executed.json()["exit_code"] == 0
-    assert "approved run" in executed.json()["stdout"]
-    assert logs.status_code == 200
-    assert logs.json()["stdout"] == executed.json()["stdout"]
-    assert logs.json()["status"] == "succeeded"
-    assert repeated.status_code == 400
+    for response in (before_approval, executed, repeated):
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "legacy_host_execution_retired"
 
 
-def test_execution_strips_secret_environment_and_redacts_logs(tmp_path: Path, monkeypatch) -> None:
+def test_execute_never_invokes_subprocess_even_with_valid_approval(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Direct proof (not just a status code) that no project code runs on the
+    host: subprocess.Popen must never be called, and no side effect from the
+    approved script is observable."""
+    import subprocess
+
     client, workspace = _client(tmp_path)
-    monkeypatch.setenv("SNOWFLAKE_PASSWORD", "environment-secret")
+    marker = workspace / "marker.txt"
     (workspace / "safe.py").write_text(
-        "import os\n"
-        "print('env=' + str(os.getenv('SNOWFLAKE_PASSWORD')))\n"
-        "print('password=visible-secret')\n"
-        "print('token: sk-proj-abcdefghijklmnopqrstuvwxyz')\n",
+        "from pathlib import Path\nPath('marker.txt').write_text('executed')\n",
         encoding="utf-8",
     )
+
+    def _forbidden_popen(*args, **kwargs):
+        raise AssertionError(
+            "subprocess.Popen must never be invoked by the retired "
+            "/assignments/commands/execute route"
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", _forbidden_popen)
+
     with client:
         plan = _plan(client, workspace)
-        token = _approve(client, plan["plan_id"])
-        result = client.post(
-            f"/assignments/commands/{plan['plan_id']}/execute",
-            json=_association(approval_token=token),
-        ).json()
-
-    assert "environment-secret" not in result["stdout"]
-    assert "visible-secret" not in result["stdout"]
-    assert "sk-proj" not in result["stdout"]
-    assert "env=None" in result["stdout"]
-    assert "<redacted>" in result["stdout"]
-
-
-def test_timeout_terminates_command_and_captures_partial_log(tmp_path: Path) -> None:
-    client, workspace = _client(tmp_path)
-    (workspace / "slow.py").write_text(
-        "import time\nprint('started', flush=True)\ntime.sleep(30)\n",
-        encoding="utf-8",
-    )
-    with client:
-        plan = _plan(client, workspace, target="slow.py", timeout_seconds=1)
         token = _approve(client, plan["plan_id"])
         response = client.post(
             f"/assignments/commands/{plan['plan_id']}/execute",
             json=_association(approval_token=token),
         )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "timed_out"
-    assert response.json()["timed_out"] is True
-    assert "started" in response.json()["stdout"]
+    assert response.status_code == 503
+    assert not marker.exists()
 
 
 def test_plan_integrity_tampering_blocks_approval(tmp_path: Path) -> None:
@@ -265,8 +247,10 @@ def test_script_changed_after_approval_is_not_executed(tmp_path: Path) -> None:
             json=_association(approval_token=token),
         )
 
-    assert response.status_code == 400
-    assert "changed after planning" in response.json()["detail"]
+    # R7: execute is retired (fail-closed) before the tamper check would even
+    # run; the script-changed-after-approval scenario is now moot in practice
+    # since nothing executes regardless, but the non-execution property holds.
+    assert response.status_code == 503
     assert not marker.exists()
 
 

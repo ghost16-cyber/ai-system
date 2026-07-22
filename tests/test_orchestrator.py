@@ -576,7 +576,12 @@ def test_orchestrate_api_queues_worker_job(tmp_path: Path):
     ) as client:
         response = client.post(
             "/orchestrate",
-            json={"goal": "Explain this project", "path": ".", "max_steps": 3},
+            json={
+                "goal": "Explain this project", "path": ".", "max_steps": 3,
+                # R7: host-mutating orchestration (edits/tests) is retired;
+                # read-only orchestration remains queueable.
+                "allow_edits": False, "allow_tests": False,
+            },
         )
         assert response.status_code == 202
         queued = response.json()

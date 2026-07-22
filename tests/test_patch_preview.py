@@ -98,6 +98,13 @@ def test_patch_preview_reports_stale_file_without_mutating_proposal_status(tmp_p
 
 
 def test_patch_preview_rejects_applied_proposal(tmp_path):
+    # R7: /patch/apply is retired (fail-closed, host execution), so an
+    # "applied" proposal can no longer be produced through the live API. The
+    # preview-rejects-applied invariant is still a real data-layer contract,
+    # so the status transition is applied directly at the repository/DB layer
+    # here rather than through the retired route.
+    import sqlite3
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     database_path = tmp_path / "workspace-test.db"
@@ -111,10 +118,15 @@ def test_patch_preview_rejects_applied_proposal(tmp_path):
             "/analyze-file",
             json={"path": "bool_patch.py"},
         ).json()["patch_proposals"][0]["proposal_id"]
-        applied = test_client.post("/patch/apply", json={"proposal_id": proposal_id})
+
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                "UPDATE patch_proposals SET status = 'applied' WHERE proposal_id = ?",
+                (proposal_id,),
+            )
+
         preview = test_client.post("/patch/preview", json={"proposal_id": proposal_id})
 
-        assert applied.status_code == 200
         assert preview.status_code == 400
         assert preview.json()["detail"] == (
             "Patch proposal is not previewable in status: applied"

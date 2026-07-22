@@ -108,38 +108,32 @@ def test_suggestions_are_applicable_deterministic_and_never_execute(tmp_path: Pa
     assert not marker.exists()
 
 
-def test_success_and_failure_create_persistent_non_completion_evidence(tmp_path: Path) -> None:
+def test_execution_retirement_reports_honestly_with_no_fabricated_evidence(tmp_path: Path) -> None:
+    """R7: /assignments/commands/{id}/execute is retired (fail-closed). The
+    execution summary must not silently emulate completion evidence for a
+    command that never actually ran on the host -- it must honestly reflect
+    that no execution occurred."""
     client, workspace = _setup(tmp_path)
     (workspace / "success.py").write_text("print('password=hidden-value')\n", encoding="utf-8")
-    (workspace / "failure.py").write_text("raise SystemExit(7)\n", encoding="utf-8")
     with client:
-        results = []
-        for target in ("success.py", "failure.py"):
-            plan = _plan(client, target=target)
-            token = _approve(client, plan["plan_id"])
-            response = client.post(
-                f"/assignments/commands/{plan['plan_id']}/execute",
-                json=_association(approval_token=token),
-            )
-            assert response.status_code == 200, response.text
-            results.append(response.json())
+        plan = _plan(client, target="success.py")
+        token = _approve(client, plan["plan_id"])
+        response = client.post(
+            f"/assignments/commands/{plan['plan_id']}/execute",
+            json=_association(approval_token=token),
+        )
         summary = client.get(
             f"/assignments/{ASSIGNMENT_ID}/execution",
             params={"workspace_path": WORKSPACE_PATH},
         ).json()
-        logs = client.get(
-            f"/assignments/commands/{results[0]['plan_id']}/logs",
-            params=_association(),
-        ).json()
 
-    assert [result["status"] for result in results] == ["succeeded", "failed"]
-    assert sorted(evidence["exit_code"] for evidence in summary["evidence"]) == [0, 7]
-    assert all(evidence["academic_completion_inferred"] is False for evidence in summary["evidence"])
-    assert all(evidence["audit_record_reference"].startswith("assignment-command:") for evidence in summary["evidence"])
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "legacy_host_execution_retired"
+    # No fabricated exit codes/logs: the retired attempt produced no
+    # completion evidence at all.
+    assert summary["evidence"] == []
     assert summary["assignment_completion_inferred"] is False
-    assert "hidden-value" not in logs["stdout"]
-    assert "<redacted>" in logs["stdout"]
-    assert {command["display_state"] for command in summary["planned_commands"]} == {"completed", "failed"}
+    assert {command["display_state"] for command in summary["planned_commands"]} == {"approved"}
 
 
 def test_expired_approval_is_mapped_for_frontend_display(tmp_path: Path) -> None:

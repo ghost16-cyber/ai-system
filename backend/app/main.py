@@ -4026,6 +4026,18 @@ def create_app(
         request: AssignmentCommandExecuteRequest,
     ) -> dict:
         _require_chat_command_association(request.chat_run_id, plan_id)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "schema_version": "astra.legacy-execution-retired.v1",
+                "code": "legacy_host_execution_retired",
+                "message": (
+                    "Assignment command execution runs directly on the host and has "
+                    "been retired pending canonical Docker-isolated worker "
+                    "integration. No project code was executed on the host."
+                ),
+            },
+        )
         try:
             workspace = _resolve_workspace_path(request.workspace_path)
             result = execute_assignment_command(
@@ -6922,6 +6934,23 @@ def create_app(
                 detail="Task path must be a directory.",
             )
 
+        if request.allow_edits or request.allow_tests:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "schema_version": "astra.legacy-execution-retired.v1",
+                    "code": "legacy_host_execution_retired",
+                    "message": (
+                        "Orchestrator file edits and test execution run directly on the "
+                        "host and have been retired pending canonical Docker-isolated "
+                        "worker integration. No project code was executed on the host. "
+                        "Retry with allow_edits=false and allow_tests=false for "
+                        "read-only orchestration, or use the canonical project pipeline "
+                        "for isolated execution."
+                    ),
+                },
+            )
+
         queued = job_queue.enqueue(
             "orchestrate_task",
             {
@@ -7024,6 +7053,19 @@ def create_app(
                 detail="Job does not contain a pending orchestrator task id.",
             )
 
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "schema_version": "astra.legacy-execution-retired.v1",
+                "code": "legacy_host_execution_retired",
+                "message": (
+                    "Orchestrator patch approval applies changes and runs tests "
+                    "directly on the host and has been retired pending canonical "
+                    "Docker-isolated worker integration. No project code was executed "
+                    "on the host."
+                ),
+            },
+        )
         try:
             approval_result = approve_pending_patch(
                 approval_root="data/app/pending_approvals",
@@ -7068,6 +7110,19 @@ def create_app(
 
     @application.post("/patch/apply", response_model=PatchApplyResponse)
     def patch_apply(request: PatchApplyRequest) -> PatchApplyResponse:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "schema_version": "astra.legacy-execution-retired.v1",
+                "code": "legacy_host_execution_retired",
+                "message": (
+                    "Deterministic patch application writes directly to the host "
+                    "workspace and has been retired pending canonical Docker-isolated "
+                    "worker integration. No project code was executed on the host. The "
+                    "validated patch proposal remains available for manual review."
+                ),
+            },
+        )
         try:
             proposal = repository.get_patch_proposal(request.proposal_id)
             result = apply_patch_proposal(

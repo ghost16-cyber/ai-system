@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from pathlib import Path
 
@@ -883,20 +882,13 @@ def test_chat_command_execution_updates_same_run_with_result_summary(
         updated = _stored_run(client, created["run_id"])
         runs = _chat_runs(client)
 
-    assert execution.status_code == 200, execution.text
-    result = execution.json()
-    assert result["exit_code"] == 0
+    # R7: assignment command execution runs directly on the host and has been
+    # retired (fail-closed). Approval is still recorded, but execution never
+    # runs and never overwrites the chat run's action state.
+    assert execution.status_code == 503, execution.text
+    assert execution.json()["detail"]["code"] == "legacy_host_execution_retired"
     assert len(runs) == 1
-    assert updated["action"]["status"] == "completed"
-    assert re.fullmatch(
-        r"\d+ tests? passed in [0-9.]+ seconds\.",
-        updated["action"]["result_summary"],
-    )
-    persisted_plan = _command_plan(updated)
-    assert persisted_plan["plan_id"] == plan["plan_id"]
-    assert persisted_plan["exit_code"] == 0
-    assert persisted_plan["display_state"] == "completed"
-    assert "1 passed" in persisted_plan["stdout"]
+    assert updated["action"]["status"] == "approved"
 
 
 def test_chat_command_cancel_updates_same_run_without_execution(
