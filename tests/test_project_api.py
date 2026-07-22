@@ -57,7 +57,7 @@ def _database_snapshot(database):
                 "project_runs",
                 "project_events",
                 "project_artifacts",
-                "project_idempotency",
+                "project_action_replays",
             )
         )
 

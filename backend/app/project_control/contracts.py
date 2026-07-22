@@ -202,6 +202,25 @@ class ApprovalGrant(StrictModel):
     superseded_by_id: str | None = None
 
 
+class ManualEvidenceInvalidation(StrictModel):
+    schema_version: Literal["astra.project-control.manual-evidence-invalidation.v1"] = (
+        "astra.project-control.manual-evidence-invalidation.v1"
+    )
+    invalidation_id: str
+    project_run_id: str
+    evidence_id: str
+    evidence_hash: str = Field(min_length=64, max_length=64)
+    criterion_id: str
+    criterion_hash: str = Field(min_length=64, max_length=64)
+    cause: str
+    superseding_plan_revision_id: str | None = None
+    superseding_scope_revision_id: str | None = None
+    superseding_manifest_hash: str | None = None
+    superseding_execution_attempt_id: str | None = None
+    superseding_artifact_id: str | None = None
+    created_at: datetime
+
+
 class ExecutionAttempt(StrictModel):
     schema_version: str = EXECUTION_ATTEMPT_VERSION
     execution_attempt_id: str
@@ -376,6 +395,7 @@ class ProjectReadModel(StrictModel):
     pending_user_action: str | None
     verification_summary: dict[str, int]
     criterion_states: dict[str, dict[str, Any]]
+    manual_evidence_history: tuple[dict[str, Any], ...] = ()
     repair_state: dict[str, Any] = Field(default_factory=dict)
     blocked_reason: str | None
     handoff_eligible: bool

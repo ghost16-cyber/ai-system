@@ -19,6 +19,7 @@ from backend.app.project_control.contracts import (
     PLAN_REVISION_VERSION,
     PROJECT_RUN_VERSION,
     SCOPE_REVISION_VERSION,
+    TRANSITION_RESULT_VERSION,
     ApprovalGrant,
     ExecutionDispatch,
     ExecutionDispatchStatus,
@@ -26,6 +27,7 @@ from backend.app.project_control.contracts import (
     ExecutionAttempt,
     ExecutionAttemptStatus,
     ExecutionAttemptType,
+    ManualEvidenceInvalidation,
     PlanRevision,
     ProjectCommand,
     ProjectCommandType,
@@ -116,6 +118,11 @@ class ProjectControlPlane:
             run = self._load_project(connection, project_run_id)
             return self._read_model(connection, run)
 
+    def list_manual_evidence(self, project_run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            self._load_project(connection, project_run_id)
+            return self._manual_evidence_history(connection, project_run_id)
+
     def get_plan_revision(self, plan_revision_id: str) -> PlanRevision:
         with self._connect() as connection:
             return self._load_plan(connection, plan_revision_id)
@@ -123,7 +130,7 @@ class ProjectControlPlane:
     def has_idempotency_key(self, project_run_id: str, idempotency_key: str) -> bool:
         with self._connect() as connection:
             return connection.execute(
-                "SELECT 1 FROM project_idempotency WHERE project_run_id = ? AND idempotency_key = ?",
+                "SELECT 1 FROM project_action_replays WHERE project_run_id = ? AND idempotency_key = ?",
                 (project_run_id, idempotency_key),
             ).fetchone() is not None
 
@@ -596,6 +603,17 @@ class ProjectControlPlane:
             plan = self._create_plan(connection, run, command)
             created.append(plan.plan_revision_id)
             self._invalidate_approvals(connection, run.project_run_id, "plan_revision_superseded")
+            created.extend(self._invalidate_manual_evidence(
+                connection,
+                run.project_run_id,
+                "plan_revision_superseded",
+                superseding={
+                    "plan_revision_id": plan.plan_revision_id,
+                    "scope_revision_id": run.current_scope_revision_id,
+                    "manifest_hash": run.current_manifest_hash,
+                    "artifact_id": artifact.artifact_id if artifact else None,
+                },
+            ))
             work_state = {
                 str(unit.get("work_unit_id") or unit.get("id")): {"status": "pending", "attempts": 0}
                 for unit in plan.work_units if str(unit.get("work_unit_id") or unit.get("id"))
@@ -665,6 +683,19 @@ class ProjectControlPlane:
             attempt = self._finish_or_create_attempt(connection, run, command, ExecutionAttemptType.PATCH, succeeded=succeeded)
             created.append(attempt.execution_attempt_id)
             manifest_hash = _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash
+            if manifest_hash != run.current_manifest_hash:
+                created.extend(self._invalidate_manual_evidence(
+                    connection,
+                    run.project_run_id,
+                    "execution_manifest_superseded",
+                    superseding={
+                        "plan_revision_id": run.current_plan_revision_id,
+                        "scope_revision_id": run.current_scope_revision_id,
+                        "manifest_hash": manifest_hash,
+                        "execution_attempt_id": attempt.execution_attempt_id,
+                        "artifact_id": command.artifact_id,
+                    },
+                ))
             status = ProjectLifecycle.WORK_IN_PROGRESS if succeeded else ProjectLifecycle.REPAIR_REQUIRED
             updated = self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
                 "current_manifest_hash": manifest_hash,
@@ -732,6 +763,22 @@ class ProjectControlPlane:
         if kind == ProjectCommandType.REQUEST_VERIFICATION:
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.VERIFICATION)
             created.append(attempt.execution_attempt_id)
+            criterion_id = _text(
+                payload.get("criterion_id") or command.authority_scope.get("criterion_id")
+            )
+            if criterion_id:
+                created.extend(self._invalidate_manual_evidence(
+                    connection,
+                    run.project_run_id,
+                    "verification_attempt_superseded",
+                    criterion_ids={criterion_id},
+                    superseding={
+                        "plan_revision_id": run.current_plan_revision_id,
+                        "scope_revision_id": run.current_scope_revision_id,
+                        "manifest_hash": run.current_manifest_hash,
+                        "execution_attempt_id": attempt.execution_attempt_id,
+                    },
+                ))
             return self._with_attempt(run, attempt).model_copy(update={
                 "lifecycle_status": ProjectLifecycle.VERIFICATION_PENDING,
                 "pending_user_action": "record_verifier_result",
@@ -739,6 +786,22 @@ class ProjectControlPlane:
         if kind == ProjectCommandType.RECORD_VERIFIER_RESULT:
             criterion_id = _required(payload, "criterion_id")
             self._validate_verifier_result(connection, run, payload, criterion_id)
+            verifier_attempt = self._active_attempt(connection, run)
+            created.extend(self._invalidate_manual_evidence(
+                connection,
+                run.project_run_id,
+                "verification_artifact_superseded",
+                criterion_ids={criterion_id},
+                superseding={
+                    "plan_revision_id": run.current_plan_revision_id,
+                    "scope_revision_id": run.current_scope_revision_id,
+                    "manifest_hash": run.current_manifest_hash,
+                    "execution_attempt_id": (
+                        verifier_attempt.execution_attempt_id if verifier_attempt else None
+                    ),
+                    "artifact_id": command.artifact_id,
+                },
+            ))
             outcome = _required(payload, "outcome")
             verification = _copy(run.verification_state)
             verification[criterion_id] = {
@@ -812,6 +875,7 @@ class ProjectControlPlane:
                 "execution_attempt_id": active_attempt_id,
                 "criterion_hash": current.get("criterion_hash"),
                 "verification_artifact_id": current.get("verification_artifact_id"),
+                "verification_artifact_hash": current.get("verification_artifact_hash"),
             }
             for field, expected_value in exact.items():
                 if payload.get(field) != expected_value:
@@ -897,7 +961,16 @@ class ProjectControlPlane:
             scope = self._create_scope(connection, run, command, specification_hash)
             created.append(scope.scope_revision_id)
             self._invalidate_approvals(connection, run.project_run_id, "scope_revision_superseded")
-            self._invalidate_manual_evidence(connection, run.project_run_id, "scope_revision_superseded")
+            created.extend(self._invalidate_manual_evidence(
+                connection,
+                run.project_run_id,
+                "scope_revision_superseded",
+                superseding={
+                    "scope_revision_id": scope.scope_revision_id,
+                    "manifest_hash": run.current_manifest_hash,
+                    "artifact_id": artifact.artifact_id if artifact else None,
+                },
+            ))
             return self._with_artifact(run.model_copy(update={
                 "specification_hash": specification_hash,
                 "current_scope_revision_id": scope.scope_revision_id,
@@ -916,7 +989,6 @@ class ProjectControlPlane:
                     "The automatic one-repair budget has been exhausted.",
                 )
             failure_artifact_id = _required(payload, "failure_artifact_id")
-            self._invalidate_manual_evidence(connection, run.project_run_id, "repair_attempt_started")
             if run.current_artifact_ids.get("failure_evidence") != failure_artifact_id:
                 raise ProjectControlError(
                     ProjectControlErrorCode.STALE_VERIFICATION,
@@ -924,6 +996,18 @@ class ProjectControlPlane:
                 )
             attempt = self._create_attempt(connection, run, command, ExecutionAttemptType.REPAIR)
             created.append(attempt.execution_attempt_id)
+            created.extend(self._invalidate_manual_evidence(
+                connection,
+                run.project_run_id,
+                "repair_attempt_started",
+                superseding={
+                    "plan_revision_id": run.current_plan_revision_id,
+                    "scope_revision_id": run.current_scope_revision_id,
+                    "manifest_hash": run.current_manifest_hash,
+                    "execution_attempt_id": attempt.execution_attempt_id,
+                    "artifact_id": failure_artifact_id,
+                },
+            ))
             updated = self._with_attempt(run, attempt).model_copy(update={
                 "lifecycle_status": ProjectLifecycle.WORK_IN_PROGRESS,
                 "pending_user_action": "record_patch_preview",
@@ -1009,10 +1093,22 @@ class ProjectControlPlane:
                 succeeded=bool(payload.get("succeeded")),
             )
             created.append(attempt.execution_attempt_id)
-            self._invalidate_manual_evidence(connection, run.project_run_id, "rollback_changed_manifest")
             succeeded = bool(payload.get("succeeded"))
+            resulting_manifest_hash = _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash
+            created.extend(self._invalidate_manual_evidence(
+                connection,
+                run.project_run_id,
+                "rollback_changed_manifest",
+                superseding={
+                    "plan_revision_id": run.current_plan_revision_id,
+                    "scope_revision_id": run.current_scope_revision_id,
+                    "manifest_hash": resulting_manifest_hash,
+                    "execution_attempt_id": attempt.execution_attempt_id,
+                    "artifact_id": command.artifact_id,
+                },
+            ))
             return self._with_artifact(self._with_attempt(run, attempt).model_copy(update={
-                "current_manifest_hash": _text(payload.get("resulting_manifest_hash")) or run.current_manifest_hash,
+                "current_manifest_hash": resulting_manifest_hash,
                 "verification_state": {}, "handoff_eligible": False,
                 "lifecycle_status": ProjectLifecycle.READY_FOR_WORK if succeeded else ProjectLifecycle.REPAIR_REQUIRED,
                 "pending_user_action": "begin_work_unit" if succeeded else "initiate_repair",
@@ -1193,11 +1289,6 @@ class ProjectControlPlane:
             event_id=event.event_id, created_record_ids=created,
             read_model=read_model.model_dump(mode="json"),
         )
-        connection.execute(
-            "INSERT INTO project_idempotency (project_run_id, idempotency_key, command_type, request_hash, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (resulting.project_run_id, command.idempotency_key, command.command_type.value,
-             request_hash, result.model_dump_json(), now.isoformat()),
-        )
         replay_payload = {
             "request_fingerprint": request_hash,
             "command": command.model_dump(mode="json"),
@@ -1220,19 +1311,84 @@ class ProjectControlPlane:
 
     def _idempotent_result(self, connection: sqlite3.Connection, command: ProjectCommand, request_hash: str) -> TransitionResult | None:
         row = connection.execute(
-            "SELECT request_hash, result_json FROM project_idempotency WHERE project_run_id = ? AND idempotency_key = ?",
+            "SELECT action_type, request_fingerprint, terminal_status, "
+            "state_version_before, state_version_after, event_id, "
+            "result_schema_version, replay_json FROM project_action_replays "
+            "WHERE project_run_id = ? AND idempotency_key = ?",
             (command.project_run_id, command.idempotency_key),
         ).fetchone()
         if row is None:
             return None
-        if row["request_hash"] != request_hash:
+        if (
+            str(row["action_type"]) != command.command_type.value
+            or str(row["request_fingerprint"]) != request_hash
+        ):
             raise ProjectControlError(
                 ProjectControlErrorCode.IDEMPOTENCY_CONFLICT,
                 "This idempotency key was already used for a different project command.",
             )
-        return self._stored_model(TransitionResult, row["result_json"], "transition result").model_copy(
-            update={"replayed": True}
+        if str(row["terminal_status"]) != "completed":
+            raise ProjectControlError(
+                ProjectControlErrorCode.UNSUPPORTED_STORED_STATE,
+                "The stored action replay terminal status is unsupported.",
+            )
+        if str(row["result_schema_version"]) != TRANSITION_RESULT_VERSION:
+            raise ProjectControlError(
+                ProjectControlErrorCode.UNSUPPORTED_STORED_STATE,
+                "The stored action replay result schema is unsupported.",
+            )
+        try:
+            replay = json.loads(str(row["replay_json"]))
+            if not isinstance(replay, dict) or not isinstance(replay.get("result"), dict):
+                raise TypeError("action replay payload is incomplete")
+            if replay.get("request_fingerprint") != request_hash:
+                raise ValueError("action replay fingerprint is inconsistent")
+            result = self._stored_model(
+                TransitionResult,
+                canonical_json(replay["result"]),
+                "action replay transition result",
+            )
+        except ProjectControlError:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The stored action replay failed integrity validation.",
+            ) from error
+        event_row = connection.execute(
+            "SELECT event_type, request_id, previous_state_version, "
+            "resulting_state_version, event_json FROM project_events "
+            "WHERE event_id = ? AND project_run_id = ?",
+            (row["event_id"], command.project_run_id),
+        ).fetchone()
+        if event_row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The stored action replay references a missing project event.",
+            )
+        event = self._stored_model(ProjectEvent, event_row["event_json"], "action replay event")
+        consistent = (
+            result.project_run_id == command.project_run_id
+            and result.command_type == command.command_type
+            and result.idempotency_key == command.idempotency_key
+            and result.event_id == str(row["event_id"])
+            and result.previous_state_version == int(row["state_version_before"])
+            and result.state_version == int(row["state_version_after"])
+            and event.project_run_id == command.project_run_id
+            and event.event_type == command.command_type.value
+            and event.request_id == command.idempotency_key
+            and event.actor_id == command.actor_id
+            and event.conversation_id == command.conversation_id
+            and event.workspace_id == command.workspace_id
+            and int(event_row["previous_state_version"]) == result.previous_state_version
+            and int(event_row["resulting_state_version"]) == result.state_version
         )
+        if not consistent:
+            raise ProjectControlError(
+                ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                "The stored action replay does not match its canonical action event.",
+            )
+        return result.model_copy(update={"replayed": True})
 
     def _load_execution_dispatch(
         self,
@@ -1592,20 +1748,121 @@ class ProjectControlPlane:
             )
 
     def _invalidate_manual_evidence(
-        self, connection: sqlite3.Connection, project_run_id: str, reason: str
-    ) -> None:
+        self,
+        connection: sqlite3.Connection,
+        project_run_id: str,
+        cause: str,
+        *,
+        criterion_ids: set[str] | None = None,
+        superseding: dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
         rows = connection.execute(
-            "SELECT evidence_id, evidence_json FROM project_manual_evidence WHERE project_run_id = ? AND status IN ('submitted', 'passed', 'failed')",
+            "SELECT e.evidence_id, e.criterion_id, e.evidence_hash, e.evidence_json "
+            "FROM project_manual_evidence e "
+            "LEFT JOIN project_manual_evidence_invalidations i "
+            "ON i.evidence_id = e.evidence_id "
+            "WHERE e.project_run_id = ? AND i.evidence_id IS NULL "
+            "ORDER BY e.created_at, e.evidence_id",
             (project_run_id,),
         ).fetchall()
-        now = self._now().isoformat()
+        now = self._now()
+        superseding = superseding or {}
+        created: list[str] = []
         for row in rows:
-            record = json.loads(row["evidence_json"])
-            record.update({"status": "invalidated", "invalidation_reason": reason, "invalidated_at": now})
-            connection.execute(
-                "UPDATE project_manual_evidence SET status = 'invalidated', evidence_json = ?, updated_at = ? WHERE evidence_id = ?",
-                (canonical_json(record), now, row["evidence_id"]),
+            criterion_id = str(row["criterion_id"])
+            if criterion_ids is not None and criterion_id not in criterion_ids:
+                continue
+            try:
+                evidence = json.loads(str(row["evidence_json"]))
+                criterion_hash = str(evidence["criterion_hash"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                    "Stored manual evidence failed integrity validation.",
+                ) from error
+            identity = {
+                "project_run_id": project_run_id,
+                "evidence_id": str(row["evidence_id"]),
+                "criterion_id": criterion_id,
+                "criterion_hash": criterion_hash,
+                "cause": cause,
+                "superseding": superseding,
+            }
+            invalidation = ManualEvidenceInvalidation(
+                invalidation_id=content_hash(identity),
+                project_run_id=project_run_id,
+                evidence_id=str(row["evidence_id"]),
+                evidence_hash=str(row["evidence_hash"]),
+                criterion_id=criterion_id,
+                criterion_hash=criterion_hash,
+                cause=cause,
+                superseding_plan_revision_id=_text(superseding.get("plan_revision_id")),
+                superseding_scope_revision_id=_text(superseding.get("scope_revision_id")),
+                superseding_manifest_hash=_text(superseding.get("manifest_hash")),
+                superseding_execution_attempt_id=_text(superseding.get("execution_attempt_id")),
+                superseding_artifact_id=_text(superseding.get("artifact_id")),
+                created_at=now,
             )
+            connection.execute(
+                "INSERT OR IGNORE INTO project_manual_evidence_invalidations "
+                "(invalidation_id, project_run_id, evidence_id, criterion_id, criterion_hash, "
+                "cause, superseding_plan_revision_id, superseding_scope_revision_id, "
+                "superseding_manifest_hash, superseding_execution_attempt_id, "
+                "superseding_artifact_id, invalidation_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    invalidation.invalidation_id, invalidation.project_run_id,
+                    invalidation.evidence_id, invalidation.criterion_id,
+                    invalidation.criterion_hash, invalidation.cause,
+                    invalidation.superseding_plan_revision_id,
+                    invalidation.superseding_scope_revision_id,
+                    invalidation.superseding_manifest_hash,
+                    invalidation.superseding_execution_attempt_id,
+                    invalidation.superseding_artifact_id,
+                    invalidation.model_dump_json(), now.isoformat(),
+                ),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0]:
+                created.append(invalidation.invalidation_id)
+        return tuple(created)
+
+    def _manual_evidence_history(
+        self, connection: sqlite3.Connection, project_run_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT e.evidence_json, e.status AS stored_status, i.invalidation_json "
+            "FROM project_manual_evidence e "
+            "LEFT JOIN project_manual_evidence_invalidations i "
+            "ON i.evidence_id = e.evidence_id "
+            "WHERE e.project_run_id = ? ORDER BY e.created_at, e.evidence_id",
+            (project_run_id,),
+        ).fetchall()
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                evidence = json.loads(str(row["evidence_json"]))
+                if not isinstance(evidence, dict):
+                    raise TypeError("evidence is not an object")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                    "Stored manual evidence failed integrity validation.",
+                ) from error
+            evidence = {**evidence, "stored_status": str(row["stored_status"])}
+            if row["invalidation_json"] is not None:
+                invalidation = self._stored_model(
+                    ManualEvidenceInvalidation,
+                    row["invalidation_json"],
+                    "manual evidence invalidation",
+                )
+                evidence.update({
+                    "status": "verification_invalidated",
+                    "invalidation": invalidation.model_dump(mode="json"),
+                })
+            else:
+                evidence["status"] = str(row["stored_status"])
+            history.append(_bounded_object(evidence))
+        return history
 
     def _require_approval(self, connection: sqlite3.Connection, run: ProjectRun, approval_type: ApprovalType) -> ApprovalGrant:
         manifest_binding = run.current_manifest_hash
@@ -1771,6 +2028,45 @@ class ProjectControlPlane:
                     raise ProjectControlError(
                         ProjectControlErrorCode.STALE_VERIFICATION,
                         "Required manual evidence is stale.",
+                    )
+                evidence_row = connection.execute(
+                    "SELECT e.status, e.evidence_json, i.invalidation_id "
+                    "FROM project_manual_evidence e "
+                    "LEFT JOIN project_manual_evidence_invalidations i "
+                    "ON i.evidence_id = e.evidence_id "
+                    "WHERE e.evidence_id = ? AND e.project_run_id = ? "
+                    "AND e.criterion_id = ?",
+                    (evidence.get("evidence_id"), run.project_run_id, criterion_id),
+                ).fetchone()
+                if (
+                    evidence_row is None
+                    or str(evidence_row["status"]) != "passed"
+                    or evidence_row["invalidation_id"] is not None
+                ):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "Required manual evidence has been invalidated.",
+                    )
+                try:
+                    stored_evidence = json.loads(str(evidence_row["evidence_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                        "Stored manual evidence failed integrity validation.",
+                    ) from error
+                if (
+                    stored_evidence.get("criterion_hash") != content_hash(criterion)
+                    or stored_evidence.get("plan_revision_id") != run.current_plan_revision_id
+                    or stored_evidence.get("scope_revision_id") != run.current_scope_revision_id
+                    or stored_evidence.get("manifest_hash") != run.current_manifest_hash
+                    or stored_evidence.get("execution_attempt_id")
+                    != evidence.get("execution_attempt_id")
+                    or stored_evidence.get("verification_artifact_id")
+                    != evidence.get("verification_artifact_id")
+                ):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.STALE_VERIFICATION,
+                        "Required manual evidence persistence bindings are stale.",
                     )
                 continue
             if not evidence or evidence.get("outcome") != "passed":
@@ -2122,6 +2418,14 @@ class ProjectControlPlane:
             (run.project_run_id,),
         ).fetchone()
         projected_sequence = int(projection_row["last_event_sequence"]) if projection_row else 0
+        manual_evidence_history = self._manual_evidence_history(
+            connection, run.project_run_id
+        )
+        invalidated_manual_count = sum(
+            1
+            for evidence in manual_evidence_history
+            if evidence.get("status") == "verification_invalidated"
+        )
         return ProjectReadModel(
             project_run_id=run.project_run_id, conversation_id=run.conversation_id,
             workspace_id=run.workspace_id, actor_id=run.actor_id,
@@ -2138,12 +2442,14 @@ class ProjectControlPlane:
                 "manual_required": outcomes.count("manual_required") + outcomes.count("manual_evidence_required"),
                 "manual_evidence_required": outcomes.count("manual_evidence_required"),
                 "stale": outcomes.count("verification_stale") + outcomes.count("stale"),
+                "invalidated": invalidated_manual_count,
                 "total": len(outcomes),
             },
             criterion_states={
                 criterion_id: _bounded_object(evidence)
                 for criterion_id, evidence in run.verification_state.items()
             },
+            manual_evidence_history=tuple(manual_evidence_history),
             repair_state=_copy(run.repair_state),
             blocked_reason=run.blocked_reason, handoff_eligible=handoff_eligible,
             state_version=run.state_version,

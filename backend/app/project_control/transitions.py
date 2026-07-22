@@ -46,6 +46,7 @@ LEGAL_TRANSITIONS: dict[ProjectLifecycle, frozenset[ProjectLifecycle]] = {
     }),
     ProjectLifecycle.VERIFICATION_PENDING: frozenset({
         ProjectLifecycle.READY_FOR_WORK, ProjectLifecycle.REPAIR_REQUIRED,
+        ProjectLifecycle.AWAITING_PLAN_APPROVAL,
         ProjectLifecycle.SCOPE_CHANGE_REQUIRED, ProjectLifecycle.HANDOFF_READY,
         ProjectLifecycle.BLOCKED, ProjectLifecycle.CANCELLED,
     }),
@@ -79,7 +80,10 @@ LEGAL_TRANSITIONS: dict[ProjectLifecycle, frozenset[ProjectLifecycle]] = {
 COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
     ProjectCommandType.ATTACH_SPECIFICATION: frozenset({ProjectLifecycle.SPECIFICATION_PENDING, ProjectLifecycle.CLARIFICATION_REQUIRED}),
     ProjectCommandType.REGISTER_MANIFEST: frozenset({ProjectLifecycle.MANIFEST_REQUIRED, ProjectLifecycle.SPECIFICATION_PENDING, ProjectLifecycle.CLARIFICATION_REQUIRED}),
-    ProjectCommandType.PROPOSE_PLAN_REVISION: frozenset({ProjectLifecycle.PLANNING}),
+    ProjectCommandType.PROPOSE_PLAN_REVISION: frozenset({
+        ProjectLifecycle.PLANNING,
+        ProjectLifecycle.VERIFICATION_PENDING,
+    }),
     ProjectCommandType.APPROVE_PLAN: frozenset({ProjectLifecycle.AWAITING_PLAN_APPROVAL}),
     ProjectCommandType.BEGIN_WORK_UNIT: frozenset({ProjectLifecycle.READY_FOR_WORK}),
     ProjectCommandType.RECORD_PATCH_PREVIEW: frozenset({ProjectLifecycle.WORK_IN_PROGRESS}),
@@ -93,7 +97,11 @@ COMMAND_SOURCES: dict[ProjectCommandType, frozenset[ProjectLifecycle]] = {
     }),
     ProjectCommandType.BEGIN_COMMAND_EXECUTION: frozenset({ProjectLifecycle.WORK_IN_PROGRESS}),
     ProjectCommandType.RECORD_COMMAND_RESULT: frozenset({ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.AWAITING_COMMAND_APPROVAL}),
-    ProjectCommandType.REQUEST_VERIFICATION: frozenset({ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.READY_FOR_WORK}),
+    ProjectCommandType.REQUEST_VERIFICATION: frozenset({
+        ProjectLifecycle.WORK_IN_PROGRESS,
+        ProjectLifecycle.READY_FOR_WORK,
+        ProjectLifecycle.VERIFICATION_PENDING,
+    }),
     ProjectCommandType.RECORD_VERIFIER_RESULT: frozenset({
         ProjectLifecycle.WORK_IN_PROGRESS,
         ProjectLifecycle.VERIFICATION_PENDING,

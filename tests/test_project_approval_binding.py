@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from backend.app.project_artifacts import (
     ProjectArtifactBinding,
     ProjectArtifactStore,
@@ -383,3 +387,97 @@ def test_replay_survives_artifact_supersession_but_new_request_does_not(tmp_path
         raised = exc
     assert raised is not None
     assert raised.code.value == "non_current_artifact"
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("missing_event", "corrupted_stored_state"),
+        ("malformed_json", "corrupted_stored_state"),
+        ("unsupported_schema", "unsupported_stored_state"),
+        ("wrong_action", "idempotency_conflict"),
+    ),
+)
+def test_canonical_action_replay_fails_closed_on_unverifiable_persistence(
+    tmp_path, tamper, expected_code
+):
+    control, artifacts, _service, project_id = _canonical(tmp_path)
+    run = control.get_project(project_id)
+    request = _command(
+        run,
+        ProjectCommandType.APPROVE_PLAN,
+        "tamper-replay",
+        authority={"operation": "prepare_work_units"},
+        artifact=artifacts.get(run.current_artifact_ids["plan"]),
+    )
+    first = control.execute(request)
+    with sqlite3.connect(control.database_path) as connection:
+        if tamper == "missing_event":
+            connection.execute("DELETE FROM project_events WHERE event_id = ?", (first.event_id,))
+        elif tamper == "malformed_json":
+            connection.execute(
+                "UPDATE project_action_replays SET replay_json = '{not-json' "
+                "WHERE project_run_id = ? AND idempotency_key = ?",
+                (project_id, request.idempotency_key),
+            )
+        elif tamper == "unsupported_schema":
+            connection.execute(
+                "UPDATE project_action_replays SET result_schema_version = 'future.v99' "
+                "WHERE project_run_id = ? AND idempotency_key = ?",
+                (project_id, request.idempotency_key),
+            )
+        else:
+            connection.execute(
+                "UPDATE project_action_replays SET action_type = 'approve_patch' "
+                "WHERE project_run_id = ? AND idempotency_key = ?",
+                (project_id, request.idempotency_key),
+            )
+
+    restarted = ProjectControlPlane(control.database_path, artifact_store=artifacts)
+    restarted.initialize()
+    with pytest.raises(Exception) as error:
+        restarted.replay_completed(request)
+    assert error.value.code.value == expected_code
+
+
+def test_project_action_replays_is_the_only_live_replay_authority(tmp_path):
+    control, artifacts, _service, project_id = _canonical(tmp_path)
+    run = control.get_project(project_id)
+    request = _command(
+        run,
+        ProjectCommandType.APPROVE_PLAN,
+        "canonical-replay-only",
+        authority={"operation": "prepare_work_units"},
+        artifact=artifacts.get(run.current_artifact_ids["plan"]),
+    )
+    first = control.execute(request)
+    event_count = len(control.list_events(project_id))
+    approval_count = len(control.list_approvals(project_id))
+    with sqlite3.connect(control.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        replay_count = connection.execute(
+            "SELECT COUNT(*) FROM project_action_replays WHERE project_run_id = ? "
+            "AND idempotency_key = ?",
+            (project_id, request.idempotency_key),
+        ).fetchone()[0]
+        legacy_count = connection.execute(
+            "SELECT COUNT(*) FROM project_idempotency_legacy WHERE project_run_id = ? "
+            "AND idempotency_key = ?",
+            (project_id, request.idempotency_key),
+        ).fetchone()[0]
+    assert "project_idempotency" not in tables
+    assert replay_count == 1
+    assert legacy_count == 0
+
+    restarted = ProjectControlPlane(control.database_path, artifact_store=artifacts)
+    restarted.initialize()
+    replay = restarted.replay_completed(request)
+    assert replay is not None and replay.replayed is True
+    assert replay.model_dump(exclude={"replayed"}) == first.model_dump(exclude={"replayed"})
+    assert len(restarted.list_events(project_id)) == event_count
+    assert len(restarted.list_approvals(project_id)) == approval_count

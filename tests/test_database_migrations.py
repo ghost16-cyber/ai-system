@@ -22,6 +22,7 @@ from backend.app.database.migrations import (
     build_schema_migrations,
     current_schema_version,
     _sqlite_logical_sha256,
+    _PHASE4A_SCHEMA_SQL,
 )
 from backend.app.database.repository import AnalysisRepository
 from backend.app.project_control import (
@@ -362,7 +363,7 @@ def test_fresh_exact_v9_backup_permits_migration_10_and_records_binding(tmp_path
     source_bytes = database.read_bytes()
     source_stat = database.stat()
 
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:10])
 
     assert result.applied_versions == (10,)
     manifest_path = Path(result.backup_manifest_path or "")
@@ -374,7 +375,7 @@ def test_fresh_exact_v9_backup_permits_migration_10_and_records_binding(tmp_path
     assert manifest["source_sha256"] == hashlib.sha256(source_bytes).hexdigest()
     assert manifest["migration_operation_id"] in manifest_path.name
     assert current_schema_version(database) == 10
-    assert assert_schema_compatible(database) == 10
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:10]) == 10
 
 
 def test_source_change_after_backup_is_rejected_and_safe_retry_works(tmp_path: Path) -> None:
@@ -387,7 +388,9 @@ def test_source_change_after_backup_is_rejected_and_safe_retry_works(tmp_path: P
                 connection.execute("CREATE TABLE concurrent_source_change (value TEXT)")
 
     with pytest.raises(MigrationBackupError) as error:
-        apply_schema_migrations(database, boundary=mutate_after_manifest)
+        apply_schema_migrations(
+            database, migrations=SCHEMA_MIGRATIONS[:10], boundary=mutate_after_manifest
+        )
     assert error.value.code == "migration_backup_source_changed"
     assert current_schema_version(database) == 9
     with sqlite3.connect(database) as connection:
@@ -395,8 +398,10 @@ def test_source_change_after_backup_is_rejected_and_safe_retry_works(tmp_path: P
             "SELECT 1 FROM sqlite_master WHERE name = 'concurrent_source_change'"
         ).fetchone() is not None
 
-    assert apply_schema_migrations(database).applied_versions == (10,)
-    assert assert_schema_compatible(database) == 10
+    assert apply_schema_migrations(
+        database, migrations=SCHEMA_MIGRATIONS[:10]
+    ).applied_versions == (10,)
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:10]) == 10
 
 
 def test_backup_from_another_database_is_rejected(tmp_path: Path) -> None:
@@ -508,17 +513,133 @@ def test_interrupted_backup_creation_blocks_migration_and_retains_identity(
             raise RuntimeError("injected backup interruption")
 
     with pytest.raises(MigrationBackupError) as error:
-        apply_schema_migrations(database, boundary=interrupt)
+        apply_schema_migrations(
+            database, migrations=SCHEMA_MIGRATIONS[:10], boundary=interrupt
+        )
     assert error.value.code == "migration_backup_interrupted"
     assert current_schema_version(database) == 9
     orphaned_backups = tuple(database.parent.glob(f"{database.name}.migration-*.bak"))
     assert len(orphaned_backups) == 1
     assert not Path(f"{orphaned_backups[0]}.manifest.json").exists()
 
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:10])
     assert result.applied_versions == (10,)
     assert Path(result.backup_manifest_path or "").is_file()
     assert orphaned_backups[0].is_file()
+
+
+def test_migration_11_backfills_canonical_replay_and_retires_old_authority(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "phase4a-replay-upgrade.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:10])
+    # Current Phase 4A service reads the new invalidation projection while the
+    # fixture deliberately remains on the old v10 replay schema. Installing
+    # only this empty table lets us create a representative legacy replay row;
+    # Migration 11 still owns/backfills/validates the actual upgrade.
+    with sqlite3.connect(database) as connection:
+        for statement in _PHASE4A_SCHEMA_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+    control = ProjectControlPlane(database)
+    initialize = ProjectCommand(
+        command_type=ProjectCommandType.INITIALIZE_PROJECT,
+        project_run_id="upgrade-project",
+        conversation_id="upgrade-conversation",
+        workspace_id="upgrade-workspace",
+        repository_root="canonical-root",
+        repository_root_fingerprint="upgrade-root",
+        actor_id="local-user",
+        expected_state_version=0,
+        idempotency_key="upgrade-initialize",
+    )
+    original = control.execute(initialize)
+    with sqlite3.connect(database) as connection:
+        replay = connection.execute(
+            "SELECT action_type, request_fingerprint, replay_json, created_at "
+            "FROM project_action_replays WHERE project_run_id = ? AND idempotency_key = ?",
+            (initialize.project_run_id, initialize.idempotency_key),
+        ).fetchone()
+        result_json = json.dumps(
+            json.loads(replay[2])["result"], sort_keys=True, separators=(",", ":")
+        )
+        connection.execute(
+            "INSERT INTO project_idempotency "
+            "(project_run_id, idempotency_key, command_type, request_hash, result_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                initialize.project_run_id, initialize.idempotency_key,
+                replay[0], replay[1], result_json, replay[3],
+            ),
+        )
+        connection.execute(
+            "DELETE FROM project_action_replays WHERE project_run_id = ? AND idempotency_key = ?",
+            (initialize.project_run_id, initialize.idempotency_key),
+        )
+
+    result = apply_schema_migrations(database)
+    assert result.applied_versions == (11,)
+    with sqlite3.connect(database) as connection:
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "project_idempotency" not in tables
+        assert "project_idempotency_legacy" in tables
+        assert connection.execute(
+            "SELECT COUNT(*) FROM project_action_replays WHERE project_run_id = ? "
+            "AND idempotency_key = ?",
+            (initialize.project_run_id, initialize.idempotency_key),
+        ).fetchone()[0] == 1
+
+    restarted = ProjectControlPlane(database)
+    restarted.initialize()
+    replayed = restarted.replay_completed(initialize)
+    assert replayed is not None and replayed.replayed is True
+    assert replayed.model_dump(exclude={"replayed"}) == original.model_dump(exclude={"replayed"})
+
+
+def test_migration_11_rejects_conflicting_replay_authorities(tmp_path: Path) -> None:
+    database = tmp_path / "phase4a-conflicting-replay.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:10])
+    with sqlite3.connect(database) as connection:
+        for statement in _PHASE4A_SCHEMA_SQL.split(";"):
+            if statement.strip():
+                connection.execute(statement)
+    control = ProjectControlPlane(database)
+    initialize = ProjectCommand(
+        command_type=ProjectCommandType.INITIALIZE_PROJECT,
+        project_run_id="conflict-project",
+        conversation_id="conflict-conversation",
+        workspace_id="conflict-workspace",
+        repository_root="canonical-root",
+        repository_root_fingerprint="conflict-root",
+        actor_id="local-user",
+        expected_state_version=0,
+        idempotency_key="conflict-initialize",
+    )
+    control.execute(initialize)
+    with sqlite3.connect(database) as connection:
+        replay = connection.execute(
+            "SELECT action_type, replay_json, created_at FROM project_action_replays "
+            "WHERE project_run_id = ? AND idempotency_key = ?",
+            (initialize.project_run_id, initialize.idempotency_key),
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO project_idempotency "
+            "(project_run_id, idempotency_key, command_type, request_hash, result_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                initialize.project_run_id, initialize.idempotency_key, replay[0],
+                "0" * 64,
+                json.dumps(json.loads(replay[1])["result"]), replay[2],
+            ),
+        )
+
+    with pytest.raises(MigrationError, match="conflicts"):
+        apply_schema_migrations(database)
+    assert current_schema_version(database) == 10
 
 
 _MIGRATION_BOUNDARIES = tuple(

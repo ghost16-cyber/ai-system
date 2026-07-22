@@ -592,6 +592,211 @@ def _stage7a_schema_step() -> SchemaMigrationStep:
     )
 
 
+_PHASE4A_SCHEMA_SQL = """
+CREATE TABLE project_manual_evidence_invalidations (
+    invalidation_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    evidence_id TEXT NOT NULL UNIQUE,
+    criterion_id TEXT NOT NULL,
+    criterion_hash TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    superseding_plan_revision_id TEXT,
+    superseding_scope_revision_id TEXT,
+    superseding_manifest_hash TEXT,
+    superseding_execution_attempt_id TEXT,
+    superseding_artifact_id TEXT,
+    invalidation_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
+    FOREIGN KEY(evidence_id) REFERENCES project_manual_evidence(evidence_id)
+);
+CREATE INDEX idx_project_manual_evidence_invalidations_project
+    ON project_manual_evidence_invalidations(project_run_id, criterion_id, created_at)
+"""
+
+
+def _phase4a_manual_invalidation_and_replay_step() -> SchemaMigrationStep:
+    checksum_material = (
+        "phase4a-manual-invalidation-and-replay:v1\n"
+        + _PHASE4A_SCHEMA_SQL
+        + "\nbackfill-project-action-replays-and-retire-project-idempotency:v1"
+    )
+
+    def apply(connection: sqlite3.Connection) -> None:
+        for statement in _PHASE4A_SCHEMA_SQL.split(";"):
+            if statement.strip():
+                adoptable = statement.replace(
+                    "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+                ).replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+                connection.execute(adoptable)
+        legacy_invalidations = connection.execute(
+            "SELECT evidence_id, project_run_id, criterion_id, evidence_hash, "
+            "evidence_json, updated_at FROM project_manual_evidence "
+            "WHERE status IN ('stale', 'invalidated') ORDER BY evidence_id"
+        ).fetchall()
+        for row in legacy_invalidations:
+            try:
+                evidence = json.loads(str(row["evidence_json"]))
+                if not isinstance(evidence, dict):
+                    raise TypeError("manual evidence is not an object")
+                criterion_hash = str(evidence["criterion_hash"])
+                cause = str(
+                    evidence.get("invalidation_reason")
+                    or "legacy_manual_evidence_invalidation"
+                )
+                created_at = str(evidence.get("invalidated_at") or row["updated_at"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise MigrationError(
+                    "Legacy invalidated manual evidence cannot be migrated immutably."
+                ) from exc
+            identity = json.dumps(
+                {
+                    "project_run_id": row["project_run_id"],
+                    "evidence_id": row["evidence_id"],
+                    "criterion_id": row["criterion_id"],
+                    "criterion_hash": criterion_hash,
+                    "cause": cause,
+                    "legacy_backfill": True,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            invalidation_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            invalidation = {
+                "schema_version": "astra.project-control.manual-evidence-invalidation.v1",
+                "invalidation_id": invalidation_id,
+                "project_run_id": str(row["project_run_id"]),
+                "evidence_id": str(row["evidence_id"]),
+                "evidence_hash": str(row["evidence_hash"]),
+                "criterion_id": str(row["criterion_id"]),
+                "criterion_hash": criterion_hash,
+                "cause": cause,
+                "superseding_plan_revision_id": None,
+                "superseding_scope_revision_id": None,
+                "superseding_manifest_hash": None,
+                "superseding_execution_attempt_id": None,
+                "superseding_artifact_id": None,
+                "created_at": created_at,
+            }
+            connection.execute(
+                "INSERT INTO project_manual_evidence_invalidations "
+                "(invalidation_id, project_run_id, evidence_id, criterion_id, "
+                "criterion_hash, cause, invalidation_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    invalidation_id, row["project_run_id"], row["evidence_id"],
+                    row["criterion_id"], criterion_hash, cause,
+                    json.dumps(invalidation, sort_keys=True, separators=(",", ":")),
+                    created_at,
+                ),
+            )
+        rows = connection.execute(
+            "SELECT i.project_run_id, i.idempotency_key, i.command_type, "
+            "i.request_hash, i.result_json, i.created_at, "
+            "r.project_run_id AS replay_project_run_id, "
+            "r.action_type AS replay_action_type, "
+            "r.request_fingerprint AS replay_request_fingerprint, "
+            "r.event_id AS replay_event_id, r.result_schema_version, r.replay_json "
+            "FROM project_idempotency i "
+            "LEFT JOIN project_action_replays r "
+            "ON r.project_run_id = i.project_run_id "
+            "AND r.idempotency_key = i.idempotency_key "
+            "ORDER BY i.project_run_id, i.idempotency_key"
+        ).fetchall()
+        for row in rows:
+            try:
+                result = json.loads(str(row["result_json"]))
+                if not isinstance(result, dict):
+                    raise TypeError("transition result is not an object")
+                if result.get("schema_version") != "astra.project-control.transition-result.v1":
+                    raise ValueError("unsupported transition result schema")
+                event_id = str(result["event_id"])
+                before = int(result["previous_state_version"])
+                after = int(result["state_version"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise MigrationError(
+                    "A legacy idempotency result cannot be migrated to the canonical replay ledger."
+                ) from exc
+            event = connection.execute(
+                "SELECT event_type, request_id, previous_state_version, "
+                "resulting_state_version FROM project_events "
+                "WHERE event_id = ? AND project_run_id = ?",
+                (event_id, row["project_run_id"]),
+            ).fetchone()
+            if (
+                event is None
+                or str(event["event_type"]) != str(row["command_type"])
+                or str(event["request_id"]) != str(row["idempotency_key"])
+                or int(event["previous_state_version"]) != before
+                or int(event["resulting_state_version"]) != after
+            ):
+                raise MigrationError(
+                    "A legacy idempotency result has no matching canonical project event."
+                )
+            if row["replay_project_run_id"] is not None:
+                try:
+                    existing_replay = json.loads(str(row["replay_json"]))
+                    replay_result = existing_replay["result"]
+                except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                    raise MigrationError(
+                        "An existing canonical action replay is malformed."
+                    ) from exc
+                if (
+                    str(row["replay_action_type"]) != str(row["command_type"])
+                    or str(row["replay_request_fingerprint"]) != str(row["request_hash"])
+                    or str(row["replay_event_id"]) != event_id
+                    or str(row["result_schema_version"]) != str(result["schema_version"])
+                    or json.dumps(replay_result, sort_keys=True, separators=(",", ":"))
+                    != json.dumps(result, sort_keys=True, separators=(",", ":"))
+                ):
+                    raise MigrationError(
+                        "The legacy idempotency result conflicts with the canonical replay ledger."
+                    )
+                continue
+            replay_payload = {
+                "request_fingerprint": str(row["request_hash"]),
+                "result": result,
+                "legacy_idempotency_backfill": True,
+            }
+            connection.execute(
+                "INSERT INTO project_action_replays "
+                "(project_run_id, idempotency_key, action_type, request_fingerprint, "
+                "terminal_status, state_version_before, state_version_after, event_id, "
+                "result_schema_version, replay_json, created_at) "
+                "VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)",
+                (
+                    row["project_run_id"], row["idempotency_key"], row["command_type"],
+                    row["request_hash"], before, after, event_id,
+                    result["schema_version"],
+                    json.dumps(replay_payload, sort_keys=True, separators=(",", ":")),
+                    row["created_at"],
+                ),
+            )
+        legacy_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'project_idempotency_legacy'"
+        ).fetchone()
+        if legacy_exists is None:
+            connection.execute(
+                "ALTER TABLE project_idempotency RENAME TO project_idempotency_legacy"
+            )
+        else:
+            connection.execute(
+                "INSERT OR IGNORE INTO project_idempotency_legacy "
+                "(project_run_id, idempotency_key, command_type, request_hash, "
+                "result_json, created_at) "
+                "SELECT project_run_id, idempotency_key, command_type, request_hash, "
+                "result_json, created_at FROM project_idempotency"
+            )
+            connection.execute("DROP TABLE project_idempotency")
+
+    return SchemaMigrationStep(
+        "manual_evidence_invalidations_and_canonical_action_replay",
+        checksum_material,
+        apply,
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -676,6 +881,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "exact_replay_manual_evidence_and_local_ai",
             "astra-schema-migration:exact-replay-manual-evidence-local-ai:v1",
             (_stage7a_schema_step(),),
+        ),
+        SchemaMigration(
+            11,
+            "manual_evidence_invalidation_and_replay_authority",
+            "astra-schema-migration:manual-evidence-invalidation-replay-authority:v1",
+            (_phase4a_manual_invalidation_and_replay_step(),),
         ),
     )
 
@@ -1480,6 +1691,37 @@ REQUIRED_SCHEMA_SHAPE[10] = {
     "local_ai_rag_source_manifests": {"present": True, "columns": ("source_id", "enabled", "manifest_json"), "sql_contains": ("CHECK(enabled = 0)",)},
     "local_ai_evaluation_definitions": {"present": True, "columns": ("evaluation_id", "enabled", "definition_json"), "sql_contains": ("CHECK(enabled = 0)",)},
     "local_ai_training_definitions": {"present": True, "columns": ("training_definition_id", "enabled", "definition_json"), "sql_contains": ("CHECK(enabled = 0)",)},
+}
+
+REQUIRED_SCHEMA_SHAPE[11] = {
+    **{
+        table: requirements
+        for table, requirements in REQUIRED_SCHEMA_SHAPE[10].items()
+        if table != "project_idempotency"
+    },
+    "project_idempotency_legacy": {
+        "present": True,
+        "columns": (
+            "project_run_id", "idempotency_key", "command_type", "request_hash",
+            "result_json", "created_at",
+        ),
+        "indexes": ("idx_project_idempotency_request",),
+    },
+    "project_manual_evidence_invalidations": {
+        "present": True,
+        "columns": (
+            "invalidation_id", "project_run_id", "evidence_id", "criterion_id",
+            "criterion_hash", "cause", "superseding_plan_revision_id",
+            "superseding_scope_revision_id", "superseding_manifest_hash",
+            "superseding_execution_attempt_id", "superseding_artifact_id",
+            "invalidation_json", "created_at",
+        ),
+        "indexes": ("idx_project_manual_evidence_invalidations_project",),
+        "foreign_keys": (
+            ("project_run_id", "project_runs", "project_run_id"),
+            ("evidence_id", "project_manual_evidence", "evidence_id"),
+        ),
+    },
 }
 
 

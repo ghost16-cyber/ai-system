@@ -774,19 +774,7 @@ class CanonicalProjectService:
         return self.control.get_read_model(project_run_id)
 
     def manual_evidence(self, project_run_id: str) -> list[dict[str, Any]]:
-        self.control.get_project(project_run_id)
-        import json
-        import sqlite3
-        connection = sqlite3.connect(self.control.database_path)
-        connection.row_factory = sqlite3.Row
-        try:
-            rows = connection.execute(
-                "SELECT evidence_json FROM project_manual_evidence WHERE project_run_id = ? ORDER BY created_at, evidence_id",
-                (project_run_id,),
-            ).fetchall()
-            return [json.loads(row["evidence_json"]) for row in rows]
-        finally:
-            connection.close()
+        return self.control.list_manual_evidence(project_run_id)
 
     def list_artifacts(self, project_run_id: str, *, limit: int = 100) -> list[ProjectArtifact]:
         # Loading the project first prevents cross-kind artifact enumeration.
