@@ -432,7 +432,6 @@ class CanonicalProjectService:
             "approve_patch": ProjectCommandType.APPROVE_PATCH,
             "approve_command": ProjectCommandType.APPROVE_COMMAND,
             "approve_rollback": ProjectCommandType.APPROVE_ROLLBACK,
-            "approve_manual_verification": ProjectCommandType.APPROVE_COMMAND,
             "cancel_project": ProjectCommandType.CANCEL_PROJECT,
         }
         command_type = command_types.get(action)
@@ -468,9 +467,6 @@ class CanonicalProjectService:
                 replay_authority["execution_hash"] = replay_payload["execution_hash"]
         elif action == "approve_rollback":
             replay_authority["operation"] = "apply_exact_rollback"
-        elif action == "approve_manual_verification":
-            replay_payload["approval_type"] = "manual_verification"
-            replay_authority["operation"] = "accept_manual_verification"
         else:
             replay_payload.setdefault("reason", "Cancelled through the canonical project API.")
         # Do NOT gate the replay lookup on live current-artifact state here: an
@@ -510,7 +506,6 @@ class CanonicalProjectService:
             "approve_patch": ("patch_preview", "repair_preview"),
             "approve_command": ("command_preview",),
             "approve_rollback": ("rollback_preview",),
-            "approve_manual_verification": ("verifier_result",),
         }
         if action != "cancel_project":
             allowed_types = required_artifact_types.get(action, ())
@@ -573,9 +568,6 @@ class CanonicalProjectService:
                 authority["execution_hash"] = payload["execution_hash"]
         elif action == "approve_rollback":
             authority["operation"] = "apply_exact_rollback"
-        elif action == "approve_manual_verification":
-            payload["approval_type"] = "manual_verification"
-            authority["operation"] = "accept_manual_verification"
         else:
             payload.setdefault("reason", "Cancelled through the canonical project API.")
         self.control.execute(ProjectCommand(

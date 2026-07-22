@@ -401,7 +401,7 @@ export interface CanonicalProjectReadModel {
 
 export interface CanonicalProjectActionDescriptor {
   schema_version: "astra.project-api.action-descriptor.v1";
-  action: "approve_plan" | "approve_patch" | "approve_command" | "approve_rollback" | "approve_manual_verification" | "cancel_project";
+  action: "approve_plan" | "approve_patch" | "approve_command" | "approve_rollback" | "cancel_project";
   label: string;
   requires_approval: true;
   expected_state_version: number;

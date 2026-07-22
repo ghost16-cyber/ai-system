@@ -111,7 +111,7 @@ class CanonicalProjectActionDescriptor(StrictModel):
     schema_version: Literal["astra.project-api.action-descriptor.v1"] = CANONICAL_PROJECT_ACTION_DESCRIPTOR_VERSION
     action: Literal[
         "approve_plan", "approve_patch", "approve_command", "approve_rollback",
-        "approve_manual_verification", "cancel_project",
+        "cancel_project",
     ]
     label: str = Field(min_length=1, max_length=100)
     requires_approval: bool = True

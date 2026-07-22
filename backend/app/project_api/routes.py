@@ -194,14 +194,12 @@ def _next_actions(project, artifacts) -> tuple[CanonicalProjectActionDescriptor,
         "approve_patch": "Approve exact patch",
         "approve_command": "Approve exact command",
         "approve_rollback": "Approve exact rollback",
-        "approve_manual_verification": "Approve manual verification",
     }
     artifact_types = {
         "approve_plan": ("plan",),
         "approve_patch": ("patch_preview", "repair_preview"),
         "approve_command": ("command_preview",),
         "approve_rollback": ("rollback_preview",),
-        "approve_manual_verification": ("verifier_result",),
     }
     values: list[CanonicalProjectActionDescriptor] = []
     if base in labels:

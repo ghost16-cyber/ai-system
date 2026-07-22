@@ -47,6 +47,7 @@ import {
   type FolderAccessAction,
 } from "./state/folderAccessState";
 import { actionRunFromStreamEvent } from "./state/chatStreamState";
+import { describeAstraError } from "./state/errorMessage";
 import {
   canonicalConversationTurns,
   clearScrollSnapshot,
@@ -1780,7 +1781,7 @@ function List({ items }: { items: string[] }) {
 }
 
 function Welcome({ onPrompt }: { onPrompt: (prompt: string) => void }) {
-  return <div className="welcome"><span className="welcome-icon"><Bot size={30} /></span><h1>What can I help with?</h1><p>Ask a question, inspect Astra, or request an allowlisted action directly in chat.</p><div className="suggestions">{["Run the tests", "Show system status", "Show recent chats", "What model are you using?"].map((prompt) => <button key={prompt} onClick={() => onPrompt(prompt)}>{prompt}</button>)}</div></div>;
+  return <div className="welcome"><span className="welcome-icon"><Bot size={30} /></span><h1>What can I help with?</h1><p>Ask a question, inspect Astra, or request an allowlisted action directly in chat.</p><div className="suggestions">{["Show system status", "Show recent chats", "What model are you using?"].map((prompt) => <button key={prompt} onClick={() => onPrompt(prompt)}>{prompt}</button>)}</div></div>;
 }
 
 function Avatar({ role }: { role: "user" | "assistant" }) { return <div className="avatar">{role === "user" ? "You" : <Bot size={17} />}</div>; }
@@ -2049,7 +2050,7 @@ function workspaceStatusText(status: ChatActionStatus) { return status === "appr
 function makeMessage(role: Message["role"], text: string): Message { return { id: newId(role), role, text, createdAt: new Date().toISOString() }; }
 function newId(prefix: string) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 function normalize(value: string) { return value.trim().toLowerCase().replace(/[.!?]+$/, "").replace(/\s+/g, " "); }
-function cleanError(error: unknown) { return error instanceof Error ? error.message : String(error); }
+function cleanError(error: unknown) { return describeAstraError(error instanceof Error ? error.message : String(error)); }
 function formatTime(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "Saved chat" : date.toLocaleString(); }
 function nextPaint() { return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())); }
 function formatFileSize(bytes: number) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`; }

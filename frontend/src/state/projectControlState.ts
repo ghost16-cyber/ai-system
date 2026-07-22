@@ -44,7 +44,7 @@ export interface CanonicalProjectAction {
 
 const supportedActions = new Set([
   "approve_plan", "approve_patch", "approve_command", "approve_rollback",
-  "approve_manual_verification", "cancel_project",
+  "cancel_project",
 ]);
 
 export function canonicalProjectActionFromResponse(value: unknown): CanonicalProjectAction | null {

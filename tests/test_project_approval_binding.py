@@ -326,6 +326,28 @@ def test_command_approval_payload_cannot_forge_manual_verification_bypass(tmp_pa
     assert approved.read_model["next_permitted_action"] != "complete_work_unit"
 
 
+def test_approve_manual_verification_action_is_removed_and_fails_closed(tmp_path):
+    """Regression for a P2 pre-Phase5 audit finding.
+
+    `approve_manual_verification` was a fully-wired but unreachable action
+    (nothing in the state machine ever set `pending_user_action` to that
+    literal) that mapped to `ProjectCommandType.APPROVE_COMMAND` -- the exact
+    shape of the bypass fixed above. It carried no criterion binding and no
+    manual-evidence artifact requirement, so if any future change ever made
+    it reachable it would silently resurrect the same authority bypass. The
+    action has been deleted; any client still sending it must get a typed
+    rejection, not a lifecycle transition.
+    """
+    client, project, plan_action = _created(tmp_path)
+    body = _approval_body(project, plan_action)
+    response = client.post(
+        f"/chat/projects/{project['project_run_id']}/actions/approve_manual_verification",
+        json=body,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_command"
+
+
 def test_replay_survives_artifact_supersession_but_new_request_does_not(tmp_path):
     """Regression: exact replay must not evaluate live state.
 
