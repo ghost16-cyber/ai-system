@@ -318,12 +318,24 @@ class LocalAIService:
     def providers(self) -> tuple[ProviderProfile, ...]:
         with self._connect() as connection:
             rows = connection.execute("SELECT profile_json FROM local_ai_providers ORDER BY provider_id").fetchall()
-        return tuple(ProviderProfile.model_validate_json(row["profile_json"]) for row in rows)
+        report = self._latest_persisted_snapshot()
+        return tuple(
+            self._effective_provider_profile(
+                ProviderProfile.model_validate_json(row["profile_json"]), report
+            )
+            for row in rows
+        )
 
     def models(self) -> tuple[ModelProfile, ...]:
         with self._connect() as connection:
             rows = connection.execute("SELECT profile_json FROM local_ai_models ORDER BY model_profile_id").fetchall()
-        return tuple(ModelProfile.model_validate_json(row["profile_json"]) for row in rows)
+        report = self._latest_persisted_snapshot()
+        return tuple(
+            self._effective_model_profile(
+                ModelProfile.model_validate_json(row["profile_json"]), report
+            )
+            for row in rows
+        )
 
     def set_model_enabled(self, model_profile_id: str, *, enabled: bool, actor_id: str,
                           expected_version: int, idempotency_key: str) -> ModelProfile:
@@ -345,7 +357,9 @@ class LocalAIService:
             if int(row["config_version"]) != expected_version:
                 raise ValueError("stale_configuration_version")
             profile = ModelProfile.model_validate_json(row["profile_json"])
-            if enabled and not profile.local_available and profile.provider_id != "fake-deterministic":
+            report = self._latest_persisted_snapshot(connection=connection)
+            effective = self._effective_model_profile(profile, report)
+            if enabled and not effective.local_available and profile.provider_id != "fake-deterministic":
                 raise ValueError("model_not_locally_available")
             updated = profile.model_copy(update={"enabled": enabled})
             now = _now().isoformat()
@@ -356,7 +370,7 @@ class LocalAIService:
             self._store_config_result(connection, idempotency_key, request_hash, updated.model_dump(mode="json"))
             self._audit(connection, "model_configuration_changed", model_profile_id, {"enabled": enabled, "actor_id": actor_id})
             connection.execute("COMMIT")
-            return updated
+            return self._effective_model_profile(updated, report)
 
     def set_role_mapping(self, role_id: str, model_profile_id: str, *, actor_id: str,
                          expected_version: int, idempotency_key: str) -> dict[str, object]:
@@ -841,6 +855,129 @@ class LocalAIService:
         if row is None or datetime.fromisoformat(row["generated_at"]) < _now() - timedelta(seconds=max_age_seconds):
             return None
         return HostCapabilityReport.model_validate_json(row["report_json"])
+
+    def _latest_persisted_snapshot(
+        self, *, connection: sqlite3.Connection | None = None
+    ) -> HostCapabilityReport | None:
+        """Read the latest completed discovery snapshot without probing or mutating."""
+
+        owned = connection is None
+        target = connection or self._connect()
+        try:
+            row = target.execute(
+                "SELECT report_json FROM local_ai_capability_snapshots "
+                "ORDER BY generated_at DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            if owned:
+                target.close()
+        return (
+            HostCapabilityReport.model_validate_json(row["report_json"])
+            if row is not None
+            else None
+        )
+
+    def _effective_provider_profile(
+        self,
+        profile: ProviderProfile,
+        report: HostCapabilityReport | None,
+    ) -> ProviderProfile:
+        if profile.provider_id != "ollama-local" or report is None:
+            return profile
+        capability = next(
+            (
+                item
+                for item in report.capabilities
+                if isinstance(item, OllamaCapability)
+                and item.capability_id == "ollama"
+            ),
+            None,
+        )
+        if capability is None:
+            return profile.model_copy(
+                update={"health_status": CapabilityStatus.NOT_CONFIGURED}
+            )
+        return profile.model_copy(
+            update={
+                "health_status": (
+                    CapabilityStatus.AVAILABLE
+                    if capability.provider_reachable
+                    else CapabilityStatus.UNAVAILABLE
+                )
+            }
+        )
+
+    def _effective_model_profile(
+        self,
+        profile: ModelProfile,
+        report: HostCapabilityReport | None,
+    ) -> ModelProfile:
+        if profile.provider_id == "fake-deterministic":
+            return profile
+        if profile.provider_id != "ollama-local" or report is None:
+            return profile.model_copy(
+                update={
+                    "local_available": False,
+                    "policy_status": CapabilityStatus.NOT_CONFIGURED,
+                }
+            )
+        capabilities = {item.capability_id: item for item in report.capabilities}
+        provider = capabilities.get("ollama")
+        if not isinstance(provider, OllamaCapability):
+            return profile.model_copy(
+                update={
+                    "local_available": False,
+                    "policy_status": CapabilityStatus.NOT_CONFIGURED,
+                }
+            )
+        provider_reachable = provider.provider_reachable
+        model_installed = profile.provider_model_id in set(provider.installed_models)
+        local_available = provider_reachable and model_installed
+        if not provider_reachable:
+            state = CapabilityStatus.PROVIDER_UNREACHABLE
+        elif not model_installed:
+            state = CapabilityStatus.MODEL_NOT_INSTALLED
+        else:
+            memory = capabilities.get("memory")
+            available_ram = (
+                memory.available_bytes
+                if isinstance(memory, MemoryCapability)
+                else None
+            )
+            vram = capabilities.get("vram")
+            available_vram = (
+                (vram.free_bytes if vram.free_bytes is not None else vram.total_bytes)
+                if isinstance(vram, VRAMCapability)
+                else None
+            )
+            if (
+                profile.minimum_ram_bytes > 0
+                and (
+                    available_ram is None
+                    or available_ram < profile.minimum_ram_bytes
+                )
+            ):
+                state = CapabilityStatus.INSUFFICIENT_MEMORY
+            elif (
+                profile.minimum_vram_bytes > 0
+                and (
+                    available_vram is None
+                    or available_vram < profile.minimum_vram_bytes
+                )
+            ):
+                state = CapabilityStatus.INSUFFICIENT_VRAM
+            elif not self.configuration.generation_enabled:
+                state = CapabilityStatus.DISABLED_BY_POLICY
+            elif not profile.enabled:
+                state = CapabilityStatus.INSTALLED_NOT_ENABLED
+            else:
+                state = CapabilityStatus.READY
+        return profile.model_copy(
+            update={
+                "local_available": local_available,
+                "policy_status": state,
+            }
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
