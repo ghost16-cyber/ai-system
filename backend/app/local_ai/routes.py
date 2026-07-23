@@ -7,9 +7,16 @@ from pydantic import Field
 
 from backend.app.local_ai.contracts import (
     HardwareAdmissionRequest,
+    LocalAIConfigurationState,
+    ModelConfigurationResult,
+    RoleMappingConfigurationResult,
     SchedulerStatus,
 )
 from backend.app.local_ai.service import LocalAIService
+from backend.app.local_ai.generation_contracts import (
+    LocalAIExecutionRequest,
+    LocalAIExecutionResult,
+)
 from backend.app.project_control.contracts import StrictModel
 
 
@@ -73,8 +80,14 @@ def create_local_ai_router(service: LocalAIService) -> APIRouter:
     def models():
         return {"schema_version": "astra.local-ai.models.v1", "items": service.models()}
 
+    @router.get("/configuration")
+    def configuration() -> LocalAIConfigurationState:
+        return service.configuration_state()
+
     @router.post("/models/{model_profile_id}/enabled")
-    def set_model_enabled(model_profile_id: str, request: ModelEnableRequest):
+    def set_model_enabled(
+        model_profile_id: str, request: ModelEnableRequest
+    ) -> ModelConfigurationResult:
         try:
             return service.set_model_enabled(
                 model_profile_id, enabled=request.enabled, actor_id=request.actor_id,
@@ -85,7 +98,9 @@ def create_local_ai_router(service: LocalAIService) -> APIRouter:
             raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
     @router.post("/roles/{role_id}")
-    def set_role_mapping(role_id: str, request: RoleMappingRequest):
+    def set_role_mapping(
+        role_id: str, request: RoleMappingRequest
+    ) -> RoleMappingConfigurationResult:
         try:
             return service.set_role_mapping(
                 role_id, request.model_profile_id, actor_id=request.actor_id,
@@ -98,6 +113,15 @@ def create_local_ai_router(service: LocalAIService) -> APIRouter:
     @router.post("/admission/preview")
     def admission_preview(request: HardwareAdmissionRequest):
         return service.admission_preview(request)
+
+    @router.post("/generations")
+    def execute_generation(
+        request: LocalAIExecutionRequest,
+    ) -> LocalAIExecutionResult:
+        try:
+            return service.execute_generation(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
     @router.get("/scheduler")
     def scheduler():

@@ -27,6 +27,8 @@ def build_work_unit_evidence(
 ) -> dict[str, Any]:
     payload = {
         "project_run_id": run.project_run_id,
+        "workspace_id": run.workspace_id,
+        "repository_root_fingerprint": run.repository_root_fingerprint,
         "coordinator_intent_id": intent.coordinator_intent_id,
         "plan_revision_id": intent.plan_revision_id,
         "scope_revision_id": intent.scope_revision_id,

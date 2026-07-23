@@ -257,6 +257,7 @@ from backend.app.project_analysis import (
 from backend.app.project_analysis.model_synthesis import (
     ModelSynthesisError,
     SynthesisGateway,
+    SynthesisProposalStore,
     build_synthesis_gateway_from_environment,
 )
 from backend.app.project_analysis.diagnosis import (
@@ -854,6 +855,7 @@ def create_app(
         configured_workspace_root / "data" / "project_mutation_journals",
     )
     project_coordinator = ProjectCoordinatorService(configured_path, project_control)
+    synthesis_proposal_store = SynthesisProposalStore(configured_path)
     project_projection = ProjectProjectionService(configured_path, project_control)
     phase3c_recovery_enabled = (
         os.getenv("ASTRA_PROJECT_RECONCILIATION_ENABLED", "1").strip() != "0"
@@ -877,7 +879,9 @@ def create_app(
         if phase3c_recovery_enabled else None
     )
     job_queue = JobQueue(configured_path)
-    synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment()
+    synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment(
+        configured_path
+    )
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
     engagement_service = EngagementService(repository, model_gateway=synthesis_gateway)
     synthesis_lock = threading.Lock()
@@ -893,6 +897,7 @@ def create_app(
         project_worker_queue.initialize()
         project_mutation_engine.initialize()
         project_coordinator.initialize()
+        synthesis_proposal_store.initialize()
         local_ai_service.initialize()
         project_coordinator.recover_expired_leases()
         job_queue.initialize()
@@ -926,6 +931,7 @@ def create_app(
     application.state.project_worker_service = project_worker_service
     application.state.project_mutation_engine = project_mutation_engine
     application.state.project_coordinator = project_coordinator
+    application.state.synthesis_proposal_store = synthesis_proposal_store
     application.state.project_projection = project_projection
     application.state.cancellation_dispatcher = cancellation_dispatcher
     application.state.job_queue = job_queue
@@ -7192,6 +7198,7 @@ def create_app(
             canonical_project_service,
             folder_authority_resolver=_canonical_folder_authority,
             coordinator=project_coordinator,
+            synthesis_proposals=synthesis_proposal_store,
         )
     )
     return application

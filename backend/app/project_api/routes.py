@@ -13,12 +13,15 @@ from backend.app.project_api.contracts import (
     CanonicalProjectActionRequest,
     CanonicalProjectActionDescriptor,
     CanonicalCoordinatorSummary,
+    CanonicalSynthesisProposalCollection,
+    CanonicalSynthesisProposalSummary,
     ManualEvidenceSubmissionRequest,
 )
 from backend.app.project_artifacts import ProjectArtifact
 from backend.app.project_control import ProjectControlError, ProjectControlErrorCode
 from backend.app.project_control.project_service import CanonicalProjectService
 from backend.app.project_coordinator import ProjectCoordinatorService
+from backend.app.project_analysis.model_synthesis.proposals import SynthesisProposalStore
 
 
 FolderAuthorityResolver = Callable[[str], dict[str, Any]]
@@ -29,6 +32,7 @@ def create_project_router(
     *,
     folder_authority_resolver: FolderAuthorityResolver | None = None,
     coordinator: ProjectCoordinatorService | None = None,
+    synthesis_proposals: SynthesisProposalStore | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["canonical-projects"])
 
@@ -69,6 +73,28 @@ def create_project_router(
             return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
+
+    @router.get(
+        "/chat/projects/{project_run_id}/synthesis-proposals",
+        response_model=CanonicalSynthesisProposalCollection,
+    )
+    def list_synthesis_proposals(
+        project_run_id: str,
+        limit: int = Query(default=100, ge=1, le=200),
+    ) -> CanonicalSynthesisProposalCollection:
+        try:
+            service.get_project(project_run_id)
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+        if synthesis_proposals is None:
+            return CanonicalSynthesisProposalCollection(
+                project_run_id=project_run_id, items=(), count=0
+            )
+        proposals = synthesis_proposals.list_for_project(project_run_id, limit=limit)
+        items = tuple(_proposal_summary(item, synthesis_proposals) for item in proposals)
+        return CanonicalSynthesisProposalCollection(
+            project_run_id=project_run_id, items=items, count=len(items)
+        )
 
     @router.get(
         "/chat/conversations/{conversation_id}/projects",
@@ -254,6 +280,28 @@ def _summary(artifact: ProjectArtifact) -> CanonicalArtifactSummary:
         binding_hash=artifact.binding_hash,
         content_hash=artifact.content_hash,
         created_at=artifact.created_at.isoformat(),
+    )
+
+
+def _proposal_summary(proposal, store: SynthesisProposalStore) -> CanonicalSynthesisProposalSummary:
+    content = proposal.content
+    operations = content.get("validated_operations") or content.get("operations") or ()
+    affected = tuple(dict.fromkeys(
+        str(item.get("path") or item.get("relative_path") or "")
+        for item in operations
+        if isinstance(item, dict) and (item.get("path") or item.get("relative_path"))
+    ))[:40]
+    return CanonicalSynthesisProposalSummary(
+        proposal_id=proposal.proposal_id,
+        proposal_type=proposal.proposal_type.value,
+        proposal_fingerprint=proposal.proposal_fingerprint,
+        evidence_hash=proposal.evidence_hash,
+        exact_model_tag=proposal.exact_model_tag,
+        semantic_validation_status=proposal.semantic_validation_status.value,
+        lifecycle_state=store.current_lifecycle(proposal.proposal_id).value,
+        summary=" ".join(str(content.get("summary") or proposal.proposal_type.value).split())[:1000],
+        affected_paths=affected,
+        created_at=proposal.created_at.isoformat(),
     )
 
 

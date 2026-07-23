@@ -7,6 +7,11 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from backend.app.project_control.contracts import StrictModel, canonical_json
+from backend.app.local_ai.contracts import (
+    AdmissionOutcome,
+    ExecutionProvenance,
+    SchedulerJob,
+)
 
 
 MAX_SYSTEM_INSTRUCTION_CHARS = 16_384
@@ -154,6 +159,69 @@ class LocalGenerationResult(StrictModel):
         return self
 
 
+class LocalAIAdvisoryResponse(StrictModel):
+    """The only response shape accepted by the public runtime execution API."""
+
+    schema_version: Literal["astra.local-ai.advisory-response.v1"] = (
+        "astra.local-ai.advisory-response.v1"
+    )
+    response: str = Field(min_length=1, max_length=65_536)
+
+
+class LocalAIExecutionRequest(StrictModel):
+    schema_version: Literal["astra.local-ai.execution-request.v1"] = (
+        "astra.local-ai.execution-request.v1"
+    )
+    request_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    actor_id: str = Field(min_length=1, max_length=200)
+    model_profile_id: str = Field(min_length=1, max_length=200)
+    exact_model_tag: str = Field(min_length=1, max_length=300)
+    expected_configuration_version: int = Field(ge=1)
+    purpose: GenerationPurpose
+    system_instruction: str = Field(
+        min_length=1, max_length=MAX_SYSTEM_INSTRUCTION_CHARS
+    )
+    user_content: str = Field(min_length=1, max_length=MAX_USER_CONTENT_CHARS)
+    context: tuple[GenerationContextItem, ...] = Field(
+        default=(), max_length=MAX_CONTEXT_ITEMS
+    )
+    timeout_seconds: int = Field(ge=1, le=3600)
+    parameters: GenerationParameters = Field(default_factory=GenerationParameters)
+    allow_cpu_fallback: bool = False
+    prefer_gpu: bool = True
+    approved_admission_outcome: AdmissionOutcome | None = None
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def enforce_aggregate_bounds(self) -> "LocalAIExecutionRequest":
+        if sum(len(item.content) for item in self.context) > MAX_CONTEXT_CHARS:
+            raise ValueError("context_too_large")
+        if len(canonical_json(self.model_dump(mode="json")).encode("utf-8")) > MAX_REQUEST_BYTES:
+            raise ValueError("request_too_large")
+        return self
+
+
+class LocalAIExecutionState(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    IN_PROGRESS = "in_progress"
+    CANCELLED = "cancelled"
+
+
+class LocalAIExecutionResult(StrictModel):
+    schema_version: Literal["astra.local-ai.execution-result.v1"] = (
+        "astra.local-ai.execution-result.v1"
+    )
+    state: LocalAIExecutionState
+    scheduler_job: SchedulerJob
+    generation_result: LocalGenerationResult | None = None
+    provenance: ExecutionProvenance | None = None
+    advisory_only: Literal[True] = True
+    authority_granted: Literal[False] = False
+
+
 __all__ = [
     "GenerationContextItem",
     "GenerationCorrelation",
@@ -162,6 +230,10 @@ __all__ = [
     "GenerationPurpose",
     "GenerationState",
     "GenerationUsage",
+    "LocalAIAdvisoryResponse",
+    "LocalAIExecutionRequest",
+    "LocalAIExecutionResult",
+    "LocalAIExecutionState",
     "LocalGenerationRequest",
     "LocalGenerationResult",
     "MAX_CONTEXT_CHARS",

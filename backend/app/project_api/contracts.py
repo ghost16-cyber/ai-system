@@ -18,6 +18,8 @@ CANONICAL_PROJECT_ACTION_VERSION = "astra.project-api.action.v1"
 CANONICAL_PROJECT_ACTION_DESCRIPTOR_VERSION = "astra.project-api.action-descriptor.v1"
 CANONICAL_COORDINATOR_SUMMARY_VERSION = "astra.project-api.coordinator-summary.v1"
 CANONICAL_ARTIFACT_SUMMARY_VERSION = "astra.project-api.artifact-summary.v1"
+CANONICAL_SYNTHESIS_PROPOSAL_SUMMARY_VERSION = "astra.project-api.synthesis-proposal-summary.v1"
+CANONICAL_SYNTHESIS_PROPOSAL_COLLECTION_VERSION = "astra.project-api.synthesis-proposal-collection.v1"
 MANUAL_EVIDENCE_REQUEST_VERSION = "astra.project-api.manual-evidence.v1"
 MAX_CANONICAL_CREATE_BYTES = 524_288
 
@@ -144,6 +146,28 @@ class CanonicalArtifactSummary(StrictModel):
     binding_hash: str = Field(min_length=64, max_length=64)
     content_hash: str = Field(min_length=64, max_length=64)
     created_at: str
+
+
+class CanonicalSynthesisProposalSummary(StrictModel):
+    schema_version: Literal["astra.project-api.synthesis-proposal-summary.v1"] = CANONICAL_SYNTHESIS_PROPOSAL_SUMMARY_VERSION
+    proposal_id: str
+    proposal_type: str
+    proposal_fingerprint: str = Field(min_length=64, max_length=64)
+    evidence_hash: str = Field(min_length=64, max_length=64)
+    exact_model_tag: str
+    semantic_validation_status: str
+    lifecycle_state: str
+    summary: str
+    affected_paths: tuple[str, ...] = ()
+    created_at: str
+    advisory_only: Literal[True] = True
+
+
+class CanonicalSynthesisProposalCollection(StrictModel):
+    schema_version: Literal["astra.project-api.synthesis-proposal-collection.v1"] = CANONICAL_SYNTHESIS_PROPOSAL_COLLECTION_VERSION
+    project_run_id: str
+    items: tuple[CanonicalSynthesisProposalSummary, ...] = ()
+    count: int = Field(ge=0)
 
 
 class CanonicalProjectResponse(StrictModel):

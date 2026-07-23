@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -264,6 +264,55 @@ class ModelProfile(StrictModel):
     stop_sequences: tuple[str, ...] = ()
     reasoning_content_handling: Literal["discard", "provider_only"] = "discard"
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+ConfigurationVersion = Annotated[int, Field(ge=1)]
+
+
+class LocalAIConfigurationVersions(StrictModel):
+    """Exact resource versions used by local-AI mutation preconditions.
+
+    Local-AI configuration is deliberately versioned per durable resource; it
+    has no synthetic global counter.  An absent role mapping is created with
+    version zero, matching the role-mapping mutation contract.
+    """
+
+    schema_version: Literal["astra.local-ai.configuration-versions.v1"] = (
+        "astra.local-ai.configuration-versions.v1"
+    )
+    provider_profiles: dict[str, ConfigurationVersion]
+    model_profiles: dict[str, ConfigurationVersion]
+    role_mappings: dict[str, ConfigurationVersion]
+    unmapped_role_configuration_version: Literal[0] = 0
+
+
+class LocalAIConfigurationState(StrictModel):
+    schema_version: Literal["astra.local-ai.configuration.v1"] = (
+        "astra.local-ai.configuration.v1"
+    )
+    configuration_version: LocalAIConfigurationVersions
+    generation_enabled: bool
+    enabled_model_profile_ids: tuple[str, ...]
+    role_mappings: dict[str, str]
+    provider_enablement_mode: Literal["not_an_execution_gate"] = (
+        "not_an_execution_gate"
+    )
+    updated_at: datetime
+
+
+class ModelConfigurationResult(ModelProfile):
+    configuration_version: ConfigurationVersion
+    updated_at: datetime | None = None
+
+
+class RoleMappingConfigurationResult(StrictModel):
+    schema_version: Literal["astra.local-ai.role-mapping.v1"] = (
+        "astra.local-ai.role-mapping.v1"
+    )
+    role_id: str
+    model_profile_id: str
+    configuration_version: ConfigurationVersion
+    updated_at: datetime | None = None
 
 
 class ResourceRequest(StrictModel):

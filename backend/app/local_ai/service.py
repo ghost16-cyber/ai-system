@@ -22,13 +22,17 @@ from backend.app.local_ai.contracts import (
     HardwareAdmissionDecision,
     HardwareAdmissionRequest,
     HostCapabilityReport,
+    LocalAIConfigurationState,
+    LocalAIConfigurationVersions,
     MemoryCapability,
+    ModelConfigurationResult,
     ModelProfile,
     OllamaCapability,
     ONNXRuntimeCapability,
     ProviderProfile,
     PyTorchCapability,
     ResourceRequest,
+    RoleMappingConfigurationResult,
     RuntimeUnavailabilityReason,
     SchedulerJob,
     SchedulerStatus,
@@ -46,6 +50,17 @@ from backend.app.local_ai.hardware import (
     MemoryProbeResult,
     parse_linux_meminfo,
     probe_host_memory,
+)
+from backend.app.local_ai.generation import LocalGenerationGateway
+from backend.app.local_ai.generation_contracts import (
+    GenerationFailureReason,
+    GenerationState,
+    LocalAIAdvisoryResponse,
+    LocalAIExecutionRequest,
+    LocalAIExecutionResult,
+    LocalAIExecutionState,
+    LocalGenerationRequest,
+    LocalGenerationResult,
 )
 from backend.app.local_ai.provider import OllamaProviderClient, ProviderClientError
 from backend.app.project_control.contracts import canonical_json, content_hash
@@ -220,15 +235,21 @@ class LocalAIService:
         configuration: LocalAIConfiguration | None = None,
         hardware_registry: HardwareCapabilityRegistry | None = None,
         ollama_probe: OllamaProbe | None = None,
+        generation_gateway: LocalGenerationGateway | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.configuration = configuration or load_local_ai_configuration()
         self._hardware_registry = hardware_registry or HardwareCapabilityRegistry()
         self._ollama_probe = ollama_probe or _probe_ollama
         self._probe = probe or self._safe_probe
+        self._generation_gateway = generation_gateway or LocalGenerationGateway(
+            self.database_path,
+            configuration=self.configuration,
+        )
 
     def initialize(self) -> None:
         assert_schema_compatible(self.database_path)
+        self._generation_gateway.initialize()
         now = _now().isoformat()
         with self._connect() as connection:
             for provider in default_provider_profiles(self.configuration):
@@ -337,8 +358,429 @@ class LocalAIService:
             for row in rows
         )
 
+    def configuration_state(self) -> LocalAIConfigurationState:
+        """Return the exact durable versions accepted by configuration writes.
+
+        Versions are resource scoped in the migration-owned schema.  Keeping
+        that shape public avoids inventing a global counter that mutation
+        handlers neither check nor update.
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            provider_rows = connection.execute(
+                "SELECT provider_id, config_version, updated_at "
+                "FROM local_ai_providers ORDER BY provider_id"
+            ).fetchall()
+            model_rows = connection.execute(
+                "SELECT model_profile_id, config_version, enabled, updated_at "
+                "FROM local_ai_models ORDER BY model_profile_id"
+            ).fetchall()
+            role_rows = connection.execute(
+                "SELECT role_id, model_profile_id, config_version, updated_at "
+                "FROM local_ai_role_mappings ORDER BY role_id"
+            ).fetchall()
+            connection.execute("COMMIT")
+
+        updated_values = [
+            datetime.fromisoformat(str(row["updated_at"]))
+            for row in (*provider_rows, *model_rows, *role_rows)
+        ]
+        if not updated_values:
+            raise RuntimeError("local_ai_configuration_not_initialized")
+        return LocalAIConfigurationState(
+            configuration_version=LocalAIConfigurationVersions(
+                provider_profiles={
+                    str(row["provider_id"]): int(row["config_version"])
+                    for row in provider_rows
+                },
+                model_profiles={
+                    str(row["model_profile_id"]): int(row["config_version"])
+                    for row in model_rows
+                },
+                role_mappings={
+                    str(row["role_id"]): int(row["config_version"])
+                    for row in role_rows
+                },
+            ),
+            generation_enabled=self.configuration.generation_enabled,
+            enabled_model_profile_ids=tuple(
+                str(row["model_profile_id"])
+                for row in model_rows
+                if bool(row["enabled"])
+            ),
+            role_mappings={
+                str(row["role_id"]): str(row["model_profile_id"])
+                for row in role_rows
+            },
+            updated_at=max(updated_values),
+        )
+
+    def execute_generation(
+        self, request: LocalAIExecutionRequest
+    ) -> LocalAIExecutionResult:
+        """Compose existing admission, scheduler, gateway and provenance authorities."""
+        binding_hash = content_hash(request.model_dump(mode="json"))
+        scheduler_key = f"runtime-execution:{request.idempotency_key}"
+        existing = self._scheduler_job_for_idempotency(scheduler_key)
+        if existing is None:
+            profile = self._execution_model_profile(request)
+            admission = self.admission_preview(HardwareAdmissionRequest(
+                workload_class=request.purpose.value,
+                model_profile_id=profile.model_profile_id,
+                estimated_model_bytes=profile.estimated_model_bytes,
+                requested_context=profile.operational_context,
+                requested_output_tokens=request.parameters.maximum_output_tokens,
+                allow_cpu_fallback=request.allow_cpu_fallback,
+                prefer_gpu=request.prefer_gpu,
+            ))
+            if (
+                admission.requires_explicit_approval
+                and request.approved_admission_outcome != admission.outcome
+            ):
+                admission = self._decision(
+                    AdmissionOutcome.BLOCKED_POLICY,
+                    "The selected admission outcome requires exact explicit approval.",
+                    admission.estimated_required_bytes,
+                    admission.available_bytes,
+                    admission.safety_reserve_bytes,
+                )
+            resource = self._generation_resource_request(request, profile, admission)
+        else:
+            # Exact scheduler replay retains the original admission snapshot.
+            profile = None
+            admission = existing.admission
+            resource = existing.resource_request
+
+        job = self.enqueue(
+            workload_class="local_generation",
+            resource_request=resource,
+            admission=admission,
+            idempotency_key=scheduler_key,
+            conversation_id=request.conversation_id,
+            priority=100,
+            execution_binding_hash=binding_hash,
+        )
+        if job.status == SchedulerStatus.BLOCKED:
+            return LocalAIExecutionResult(
+                state=LocalAIExecutionState.BLOCKED,
+                scheduler_job=job,
+            )
+        if job.status == SchedulerStatus.CANCELLED:
+            return LocalAIExecutionResult(
+                state=LocalAIExecutionState.CANCELLED,
+                scheduler_job=job,
+            )
+
+        generation_request = LocalGenerationRequest(
+            request_id=request.request_id,
+            idempotency_key=f"runtime-generation:{request.idempotency_key}",
+            purpose=request.purpose,
+            exact_model_tag=request.exact_model_tag,
+            system_instruction=request.system_instruction,
+            user_content=request.user_content,
+            context=request.context,
+            expected_response_schema_identity=(
+                "astra.local-ai.advisory-response.v1"
+            ),
+            timeout_seconds=request.timeout_seconds,
+            parameters=request.parameters,
+            correlation={
+                "actor_id": request.actor_id,
+                "conversation_id": request.conversation_id,
+                "attributes": {
+                    "model_profile_id": request.model_profile_id,
+                    "scheduler_job_id": job.job_id,
+                },
+            },
+        )
+
+        worker_id = f"runtime-api:{job.job_id}"
+        if job.status == SchedulerStatus.QUEUED:
+            claimed = self._claim_exact_scheduler_job(
+                job.job_id,
+                worker_id=worker_id,
+                lease_seconds=max(60, request.timeout_seconds + 10),
+            )
+            if claimed is None:
+                current = self._scheduler_job(job.job_id)
+                return LocalAIExecutionResult(
+                    state=LocalAIExecutionState.IN_PROGRESS,
+                    scheduler_job=current,
+                )
+            job = claimed
+        elif job.status == SchedulerStatus.CLAIMED:
+            return LocalAIExecutionResult(
+                state=LocalAIExecutionState.IN_PROGRESS,
+                scheduler_job=job,
+            )
+        elif job.status not in {
+            SchedulerStatus.COMPLETED,
+            SchedulerStatus.FAILED,
+            SchedulerStatus.TIMED_OUT,
+        }:
+            return LocalAIExecutionResult(
+                state=LocalAIExecutionState.IN_PROGRESS,
+                scheduler_job=job,
+            )
+
+        generation = self._generation_gateway.generate(
+            generation_request,
+            LocalAIAdvisoryResponse,
+            cancelled=lambda: self._scheduler_job(job.job_id).status
+            == SchedulerStatus.CANCELLED,
+        )
+
+        current = self._scheduler_job(job.job_id)
+        if current.status == SchedulerStatus.CANCELLED:
+            provenance = self.store_provenance(self._generation_provenance(
+                request=request,
+                job=current,
+                generation=generation,
+            ))
+            return LocalAIExecutionResult(
+                state=LocalAIExecutionState.CANCELLED,
+                scheduler_job=current,
+                generation_result=generation,
+                provenance=provenance,
+            )
+        if current.status == SchedulerStatus.CLAIMED:
+            error = None
+            if generation.state == GenerationState.SUCCEEDED:
+                current = self.complete_job(
+                    job.job_id,
+                    worker_id=worker_id,
+                    succeeded=True,
+                )
+            else:
+                error = self._generation_error(generation.failure_reason, generation.user_message)
+                if generation.failure_reason == GenerationFailureReason.GENERATION_TIMEOUT:
+                    current = self.timeout_job(
+                        job.job_id,
+                        worker_id=worker_id,
+                        error=error,
+                    )
+                else:
+                    current = self.complete_job(
+                        job.job_id,
+                        worker_id=worker_id,
+                        succeeded=False,
+                        error=error,
+                    )
+
+        provenance = self.store_provenance(self._generation_provenance(
+            request=request,
+            job=current,
+            generation=generation,
+        ))
+        return LocalAIExecutionResult(
+            state=(
+                LocalAIExecutionState.SUCCEEDED
+                if generation.state == GenerationState.SUCCEEDED
+                else LocalAIExecutionState.FAILED
+            ),
+            scheduler_job=current,
+            generation_result=generation,
+            provenance=provenance,
+        )
+
+    def _execution_model_profile(
+        self, request: LocalAIExecutionRequest
+    ) -> ModelProfile:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT config_version, enabled, profile_json FROM local_ai_models "
+                "WHERE model_profile_id = ?",
+                (request.model_profile_id,),
+            ).fetchone()
+            mapping = connection.execute(
+                "SELECT model_profile_id FROM local_ai_role_mappings WHERE role_id = ?",
+                (request.purpose.value,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("model profile not found")
+        if int(row["config_version"]) != request.expected_configuration_version:
+            raise ValueError("stale_configuration_version")
+        if not bool(row["enabled"]):
+            raise ValueError("model_profile_not_enabled")
+        if mapping is not None and mapping["model_profile_id"] != request.model_profile_id:
+            raise ValueError("role_mapping_mismatch")
+        profile = ModelProfile.model_validate_json(row["profile_json"])
+        if profile.provider_model_id != request.exact_model_tag:
+            raise ValueError("exact_model_binding_mismatch")
+        return profile
+
+    @staticmethod
+    def _generation_resource_request(
+        request: LocalAIExecutionRequest,
+        profile: ModelProfile,
+        admission: HardwareAdmissionDecision,
+    ) -> ResourceRequest:
+        gpu = request.prefer_gpu and profile.gpu_support and admission.outcome in {
+            AdmissionOutcome.GPU,
+            AdmissionOutcome.REDUCED_CONTEXT,
+            AdmissionOutcome.QUEUED,
+        }
+        return ResourceRequest(
+            backend=admission.backend or ("cuda" if gpu else "cpu"),
+            gpu_exclusive=gpu,
+            estimated_ram_bytes=admission.estimated_required_bytes,
+            estimated_vram_bytes=(admission.estimated_required_bytes if gpu else 0),
+        )
+
+    def _scheduler_job_for_idempotency(self, key: str) -> SchedulerJob | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT job_json FROM local_ai_scheduler_jobs WHERE idempotency_key = ?",
+                (key,),
+            ).fetchone()
+        return SchedulerJob.model_validate_json(row["job_json"]) if row else None
+
+    def _scheduler_job(self, job_id: str) -> SchedulerJob:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT job_json FROM local_ai_scheduler_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("scheduler_job_not_found")
+        return SchedulerJob.model_validate_json(row["job_json"])
+
+    def _claim_exact_scheduler_job(
+        self, job_id: str, *, worker_id: str, lease_seconds: int
+    ) -> SchedulerJob | None:
+        """Claim one known queued job using the existing scheduler lease rules."""
+        self.recover_expired_jobs()
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT job_json FROM local_ai_scheduler_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("scheduler_job_not_found")
+            job = SchedulerJob.model_validate_json(row["job_json"])
+            if job.status != SchedulerStatus.QUEUED:
+                connection.execute("COMMIT")
+                return None
+            active_rows = connection.execute(
+                "SELECT job_json FROM local_ai_scheduler_jobs "
+                "WHERE status IN ('claimed', 'running')"
+            ).fetchall()
+            active = [
+                SchedulerJob.model_validate_json(item["job_json"])
+                for item in active_rows
+            ]
+            if job.resource_request.gpu_exclusive and any(
+                item.resource_request.gpu_exclusive for item in active
+            ):
+                connection.execute("COMMIT")
+                return None
+            if not job.resource_request.gpu_exclusive and sum(
+                item.resource_request.cpu_slots for item in active
+            ) + job.resource_request.cpu_slots > 2:
+                connection.execute("COMMIT")
+                return None
+            claimed = job.model_copy(update={
+                "status": SchedulerStatus.CLAIMED,
+                "lease_owner": worker_id,
+                "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                "updated_at": now,
+                "started_at": now,
+                "queue_position": None,
+            })
+            cursor = connection.execute(
+                "UPDATE local_ai_scheduler_jobs SET status = 'claimed', "
+                "job_json = ?, updated_at = ? WHERE job_id = ? AND status = 'queued'",
+                (claimed.model_dump_json(), now.isoformat(), job_id),
+            )
+            if cursor.rowcount == 1:
+                self._audit(connection, "scheduler_job_claimed", job_id, {
+                    "worker_id": worker_id,
+                    "lease_expires_at": claimed.lease_expires_at.isoformat(),
+                })
+            connection.execute("COMMIT")
+            return claimed if cursor.rowcount == 1 else None
+
+    @staticmethod
+    def _generation_error(
+        reason: GenerationFailureReason | None, message: str
+    ) -> RuntimeUnavailabilityReason:
+        categories = {
+            GenerationFailureReason.LOCAL_AI_DISABLED: CapabilityStatus.DISABLED_BY_POLICY,
+            GenerationFailureReason.PROVIDER_UNREACHABLE: CapabilityStatus.PROVIDER_UNREACHABLE,
+            GenerationFailureReason.EXACT_MODEL_UNAVAILABLE: CapabilityStatus.MODEL_NOT_INSTALLED,
+        }
+        return RuntimeUnavailabilityReason(
+            category=categories.get(reason, CapabilityStatus.UNAVAILABLE),
+            component="local_generation",
+            message=message[:500],
+        )
+
+    def _generation_provenance(
+        self,
+        *,
+        request: LocalAIExecutionRequest,
+        job: SchedulerJob,
+        generation: LocalGenerationResult,
+    ) -> ExecutionProvenance:
+        context_hashes = tuple(
+            content_hash(item.model_dump(mode="json")) for item in request.context
+        )
+        return ExecutionProvenance(
+            execution_id=f"runtime-generation:{job.job_id}",
+            conversation_id=request.conversation_id,
+            provider_id=generation.provider_identity,
+            provider_endpoint_identity=generation.endpoint_identity,
+            model_profile_id=request.model_profile_id,
+            provider_model_id=generation.exact_model_tag,
+            prompt_template_version="astra.local-ai.public-advisory.v1",
+            evidence_hashes=context_hashes,
+            configuration={
+                "purpose": request.purpose.value,
+                "configuration_version": request.expected_configuration_version,
+                "response_schema": "astra.local-ai.advisory-response.v1",
+            },
+            context_limit=(
+                job.admission.admitted_context
+                or self.configuration.maximum_context_tokens
+            ),
+            output_limit=request.parameters.maximum_output_tokens,
+            thinking_mode=False,
+            backend=job.resource_request.backend,
+            device=job.admission.device or job.resource_request.backend,
+            admission=job.admission,
+            started_at=generation.started_at,
+            completed_at=generation.completed_at,
+            duration_ms=generation.duration_ms,
+            timed_out=(
+                generation.failure_reason
+                == GenerationFailureReason.GENERATION_TIMEOUT
+            ),
+            cancelled=(
+                generation.failure_reason
+                == GenerationFailureReason.GENERATION_CANCELLED
+            ),
+            response_hash=generation.raw_response_hash,
+            validation_result={
+                "state": generation.state.value,
+                "failure_reason": (
+                    generation.failure_reason.value
+                    if generation.failure_reason is not None
+                    else None
+                ),
+            },
+            retry_identity=content_hash(request.idempotency_key),
+            replay_identity=generation.replay_source_generation_id,
+            error_category=(
+                generation.failure_reason.value
+                if generation.failure_reason is not None
+                else None
+            ),
+        )
+
     def set_model_enabled(self, model_profile_id: str, *, enabled: bool, actor_id: str,
-                          expected_version: int, idempotency_key: str) -> ModelProfile:
+                          expected_version: int, idempotency_key: str) -> ModelConfigurationResult:
         request = {"model_profile_id": model_profile_id, "enabled": enabled, "actor_id": actor_id,
                    "expected_version": expected_version, "idempotency_key": idempotency_key}
         request_hash = content_hash(request)
@@ -347,7 +789,8 @@ class LocalAIService:
             replay = self._config_replay(connection, idempotency_key, request_hash)
             if replay is not None:
                 connection.execute("COMMIT")
-                return ModelProfile.model_validate(replay)
+                replay.setdefault("configuration_version", expected_version + 1)
+                return ModelConfigurationResult.model_validate(replay)
             row = connection.execute(
                 "SELECT config_version, profile_json FROM local_ai_models WHERE model_profile_id = ?",
                 (model_profile_id,),
@@ -363,17 +806,33 @@ class LocalAIService:
                 raise ValueError("model_not_locally_available")
             updated = profile.model_copy(update={"enabled": enabled})
             now = _now().isoformat()
-            connection.execute(
+            update = connection.execute(
                 "UPDATE local_ai_models SET config_version = config_version + 1, enabled = ?, profile_json = ?, updated_at = ? WHERE model_profile_id = ? AND config_version = ?",
                 (int(enabled), updated.model_dump_json(), now, model_profile_id, expected_version),
             )
-            self._store_config_result(connection, idempotency_key, request_hash, updated.model_dump(mode="json"))
+            if update.rowcount != 1:
+                raise ValueError("stale_configuration_version")
+            version_row = connection.execute(
+                "SELECT config_version, updated_at FROM local_ai_models "
+                "WHERE model_profile_id = ?",
+                (model_profile_id,),
+            ).fetchone()
+            effective = self._effective_model_profile(updated, report)
+            result = ModelConfigurationResult.model_validate({
+                **effective.model_dump(mode="json"),
+                "configuration_version": int(version_row["config_version"]),
+                "updated_at": str(version_row["updated_at"]),
+            })
+            self._store_config_result(
+                connection, idempotency_key, request_hash,
+                result.model_dump(mode="json"),
+            )
             self._audit(connection, "model_configuration_changed", model_profile_id, {"enabled": enabled, "actor_id": actor_id})
             connection.execute("COMMIT")
-            return self._effective_model_profile(updated, report)
+            return result
 
     def set_role_mapping(self, role_id: str, model_profile_id: str, *, actor_id: str,
-                         expected_version: int, idempotency_key: str) -> dict[str, object]:
+                         expected_version: int, idempotency_key: str) -> RoleMappingConfigurationResult:
         request = {"role_id": role_id, "model_profile_id": model_profile_id,
                    "actor_id": actor_id, "expected_version": expected_version}
         request_hash = content_hash(request)
@@ -382,7 +841,7 @@ class LocalAIService:
             replay = self._config_replay(connection, idempotency_key, request_hash)
             if replay is not None:
                 connection.execute("COMMIT")
-                return replay
+                return RoleMappingConfigurationResult.model_validate(replay)
             model = connection.execute(
                 "SELECT enabled FROM local_ai_models WHERE model_profile_id = ?", (model_profile_id,)
             ).fetchone()
@@ -394,14 +853,21 @@ class LocalAIService:
             current_version = int(existing["config_version"]) if existing else 0
             if current_version != expected_version:
                 raise ValueError("stale_configuration_version")
-            result = {"schema_version": "astra.local-ai.role-mapping.v1", "role_id": role_id,
-                      "model_profile_id": model_profile_id, "configuration_version": current_version + 1}
             now = _now().isoformat()
+            result = RoleMappingConfigurationResult(
+                role_id=role_id,
+                model_profile_id=model_profile_id,
+                configuration_version=current_version + 1,
+                updated_at=datetime.fromisoformat(now),
+            )
             connection.execute(
                 "INSERT INTO local_ai_role_mappings (role_id, model_profile_id, config_version, mapping_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(role_id) DO UPDATE SET model_profile_id = excluded.model_profile_id, config_version = excluded.config_version, mapping_json = excluded.mapping_json, updated_at = excluded.updated_at",
-                (role_id, model_profile_id, current_version + 1, canonical_json(result), now, now),
+                (role_id, model_profile_id, current_version + 1, canonical_json(result.model_dump(mode="json")), now, now),
             )
-            self._store_config_result(connection, idempotency_key, request_hash, result)
+            self._store_config_result(
+                connection, idempotency_key, request_hash,
+                result.model_dump(mode="json"),
+            )
             self._audit(connection, "role_mapping_changed", role_id, {"actor_id": actor_id, "model_profile_id": model_profile_id})
             connection.execute("COMMIT")
             return result
@@ -479,11 +945,14 @@ class LocalAIService:
     def enqueue(self, *, workload_class: str, resource_request: ResourceRequest,
                 admission: HardwareAdmissionDecision, idempotency_key: str,
                 project_run_id: str | None = None, conversation_id: str | None = None,
-                coordinator_intent_id: str | None = None, priority: int = 100) -> SchedulerJob:
+                coordinator_intent_id: str | None = None, priority: int = 100,
+                execution_binding_hash: str | None = None) -> SchedulerJob:
         request = {"workload_class": workload_class, "resource_request": resource_request.model_dump(mode="json"),
                    "admission": admission.model_dump(mode="json"), "project_run_id": project_run_id,
                    "conversation_id": conversation_id, "coordinator_intent_id": coordinator_intent_id,
                    "priority": priority}
+        if execution_binding_hash is not None:
+            request["execution_binding_hash"] = execution_binding_hash
         request_hash = content_hash(request)
         now = _now()
         with self._connect() as connection:

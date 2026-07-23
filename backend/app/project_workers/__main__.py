@@ -23,6 +23,7 @@ from backend.app.project_analysis.model_synthesis.orchestrator import (
     CanonicalProviderProfile,
     CanonicalSynthesisOrchestrator,
 )
+from backend.app.project_analysis.model_synthesis.proposals import SynthesisProposalStore
 from backend.app.project_models import ProjectModelInvocationStore
 from backend.app.project_projection import ProjectProjectionService
 from backend.app.project_workers.cancellation import CancellationDispatcher
@@ -168,13 +169,16 @@ def build_runtime(
         )
         service.projector = projector
         service.coordinator = coordinator
-        synthesis_gateway = build_synthesis_gateway_from_environment()
+        synthesis_gateway = build_synthesis_gateway_from_environment(database_path)
         model_invocations = ProjectModelInvocationStore(database_path)
         model_invocations.initialize()
+        synthesis_proposals = SynthesisProposalStore(database_path)
+        synthesis_proposals.initialize()
         synthesis_orchestrator = CanonicalSynthesisOrchestrator(
             invocations=model_invocations,
             artifacts=artifact_store,
             gateway=synthesis_gateway,
+            proposals=synthesis_proposals,
         )
         provider_profile = CanonicalProviderProfile(
             provider=synthesis_gateway.provider,

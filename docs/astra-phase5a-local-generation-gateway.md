@@ -12,13 +12,17 @@ The gateway returns data only. A successful result has `advisory_only=true` and 
 
 ## Configuration authority
 
-The versioned `astra.local-ai.configuration.v2` contract provides:
+The configuration contract is now `astra.local-ai.configuration.v3`. Phase 5B
+adds the separate, default-off `project_synthesis_enabled` gate while preserving
+all Phase 5A fields and behavior. The contract provides:
 
 - provider type and canonical endpoint identity;
 - role-specific synthesis, coding, planning, and review model tags;
 - connection and generation timeouts;
 - maximum context and output-token limits;
 - `generation_enabled`, read from `ASTRA_LOCAL_AI_GENERATION_ENABLED` with the legacy `ASTRA_SLM_ENABLED` accepted only inside the canonical loader.
+- `project_synthesis_enabled`, read from `ASTRA_PROJECT_SYNTHESIS_ENABLED`, so
+  general local generation does not implicitly admit canonical project synthesis.
 
 The generation service does not read environment variables. Arbitrary request endpoints and arbitrary model substitution are not supported.
 
@@ -38,11 +42,29 @@ The contract rejects input beyond the fixed system, user, item, item-count, cont
 
 ## Structured-output validation
 
-Canonical Phase 5A calls request Ollama JSON format. The returned response string must contain exactly one JSON object, apart from harmless surrounding JSON whitespace. Markdown fences, prose mixed with JSON, malformed JSON, arrays, and scalars fail. The parsed object must then validate against the caller-supplied strict target model, including its exact schema-version identity. JSON syntax alone never grants semantic trust, and returned command or patch strings remain inert data.
+Canonical Phase 5A calls derive a bounded JSON Schema object from the strict
+Pydantic target using `model_json_schema()`. The canonical schema SHA-256 is
+bound into the request fingerprint and durable invocation record, and Ollama
+receives the schema object through `format`. Generic structured requests with
+no exact schema continue to use `format: "json"`. The provider independently
+reserializes and verifies the schema/hash before submission and always uses
+non-streaming, temperature-zero generation.
+
+The returned response string must contain exactly one JSON object. Duplicate
+keys, Markdown fences, prose mixed with JSON, malformed JSON, arrays, and
+scalars fail. The parsed object must then validate against the caller-supplied
+strict target model, including its exact schema-version identity. Provider
+constraints supplement rather than replace post-response validation. JSON
+syntax alone never grants semantic trust, and returned command or patch strings
+remain inert data.
 
 ## Persistence and idempotency
 
-Migration 12 creates `local_ai_generation_invocations`, request/status indexes, and a trigger that permits only the initial `started` to terminal transition while keeping identity fields fixed. Completed and failed terminal rows cannot be updated.
+Migration 12 creates `local_ai_generation_invocations`, request/status indexes,
+and a trigger that permits only the initial `started` to terminal transition
+while keeping identity fields fixed. Migration 14 additively records the exact
+`response_schema_hash` and extends terminal immutability to that binding.
+Completed and failed terminal rows cannot be updated.
 
 The record stores request, input, context, and response hashes plus bounded diagnostics; it does not store the full prompt or unrestricted raw response. A successful result stores only its already bounded, target-validated object.
 

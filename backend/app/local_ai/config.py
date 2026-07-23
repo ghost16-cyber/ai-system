@@ -23,10 +23,11 @@ class LocalAIConfigurationError(ValueError):
 
 
 class LocalAIConfiguration(StrictModel):
-    schema_version: Literal["astra.local-ai.configuration.v2"] = (
-        "astra.local-ai.configuration.v2"
+    schema_version: Literal["astra.local-ai.configuration.v3"] = (
+        "astra.local-ai.configuration.v3"
     )
     generation_enabled: bool = False
+    project_synthesis_enabled: bool = False
     provider_type: Literal["ollama", "unavailable", "fake"] = "ollama"
     endpoint_identity: str
     synthesis_model: str
@@ -111,6 +112,12 @@ def load_local_ai_configuration(
     planner_model = _optional_role(env, "ASTRA_LOCAL_AI_PLANNER_MODEL", shared_model)
     reviewer_model = _optional_role(env, "ASTRA_LOCAL_AI_REVIEWER_MODEL", shared_model)
     try:
+        synthesis_enabled = (
+            _boolean(env, "ASTRA_PROJECT_SYNTHESIS_ENABLED", default=False)
+            if "ASTRA_PROJECT_SYNTHESIS_ENABLED" in env
+            else env.get("ASTRA_PROJECT_SYNTHESIS_MODE", "disabled").strip().lower()
+            == "ollama"
+        )
         return LocalAIConfiguration(
             generation_enabled=_boolean(
                 env,
@@ -119,6 +126,7 @@ def load_local_ai_configuration(
                 else "ASTRA_SLM_ENABLED",
                 default=True,
             ),
+            project_synthesis_enabled=synthesis_enabled,
             provider_type=provider,
             endpoint_identity=endpoint,
             synthesis_model=synthesis_model,
