@@ -851,15 +851,6 @@ BEGIN
     SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
 END
 """
-_PHASE5A_GENERATION_NO_DELETE_TRIGGER_SQL = """
-CREATE TRIGGER local_ai_generation_records_no_delete
-BEFORE DELETE ON local_ai_generation_invocations
-BEGIN
-    SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
-END
-"""
-
-
 def _phase5a_generation_gateway_steps() -> tuple[SchemaMigrationStep, ...]:
     return (
         _sql_step(
@@ -878,9 +869,162 @@ def _phase5a_generation_gateway_steps() -> tuple[SchemaMigrationStep, ...]:
             "protect_local_ai_generation_terminal_records",
             _PHASE5A_GENERATION_IMMUTABILITY_TRIGGER_SQL,
         ),
+    )
+
+
+_LOCAL_AI_GENERATION_NO_DELETE_TRIGGER_SQL = """
+CREATE TRIGGER local_ai_generation_records_no_delete
+BEFORE DELETE ON local_ai_generation_invocations
+BEGIN
+    SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
+END
+"""
+
+
+def _local_ai_generation_delete_protection_steps() -> tuple[SchemaMigrationStep, ...]:
+    return (
         _sql_step(
             "protect_local_ai_generation_records_from_deletion",
-            _PHASE5A_GENERATION_NO_DELETE_TRIGGER_SQL,
+            _LOCAL_AI_GENERATION_NO_DELETE_TRIGGER_SQL,
+        ),
+    )
+
+
+_PHASE5B_PROPOSAL_TABLE_SQL = """
+CREATE TABLE project_synthesis_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    proposal_type TEXT NOT NULL CHECK(proposal_type IN ('clarification', 'implementation_plan', 'patch', 'command', 'diagnosis')),
+    project_run_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    generation_request_id TEXT NOT NULL,
+    generation_request_fingerprint TEXT NOT NULL,
+    proposal_fingerprint TEXT NOT NULL UNIQUE,
+    evidence_envelope_id TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    repository_manifest_identity TEXT NOT NULL,
+    scope_revision_id TEXT NOT NULL,
+    plan_revision_id TEXT,
+    semantic_validation_status TEXT NOT NULL CHECK(semantic_validation_status IN ('accepted', 'rejected')),
+    initial_lifecycle_state TEXT NOT NULL CHECK(initial_lifecycle_state IN ('accepted', 'rejected')),
+    proposal_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)
+"""
+_PHASE5B_PROPOSAL_PROJECT_INDEX_SQL = """
+CREATE INDEX idx_project_synthesis_proposals_project
+ON project_synthesis_proposals(project_run_id, created_at)
+"""
+_PHASE5B_PROPOSAL_GENERATION_INDEX_SQL = """
+CREATE INDEX idx_project_synthesis_proposals_generation
+ON project_synthesis_proposals(generation_id, generation_request_id)
+"""
+_PHASE5B_PROPOSAL_EVENT_TABLE_SQL = """
+CREATE TABLE project_synthesis_proposal_events (
+    event_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+    lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('generated', 'rejected', 'accepted', 'previewed', 'stale', 'superseded', 'invalidated')),
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(proposal_id, sequence),
+    FOREIGN KEY(proposal_id) REFERENCES project_synthesis_proposals(proposal_id)
+)
+"""
+_PHASE5B_PROPOSAL_EVENT_INDEX_SQL = """
+CREATE INDEX idx_project_synthesis_proposal_events_state
+ON project_synthesis_proposal_events(proposal_id, lifecycle_state, sequence)
+"""
+_PHASE5B_PROPOSAL_NO_UPDATE_SQL = """
+CREATE TRIGGER project_synthesis_proposals_no_update
+BEFORE UPDATE ON project_synthesis_proposals
+BEGIN
+    SELECT RAISE(ABORT, 'project_synthesis_proposal_immutable');
+END
+"""
+_PHASE5B_PROPOSAL_NO_DELETE_SQL = """
+CREATE TRIGGER project_synthesis_proposals_no_delete
+BEFORE DELETE ON project_synthesis_proposals
+BEGIN
+    SELECT RAISE(ABORT, 'project_synthesis_proposal_immutable');
+END
+"""
+_PHASE5B_PROPOSAL_EVENT_NO_UPDATE_SQL = """
+CREATE TRIGGER project_synthesis_proposal_events_no_update
+BEFORE UPDATE ON project_synthesis_proposal_events
+BEGIN
+    SELECT RAISE(ABORT, 'project_synthesis_proposal_event_immutable');
+END
+"""
+_PHASE5B_PROPOSAL_EVENT_NO_DELETE_SQL = """
+CREATE TRIGGER project_synthesis_proposal_events_no_delete
+BEFORE DELETE ON project_synthesis_proposal_events
+BEGIN
+    SELECT RAISE(ABORT, 'project_synthesis_proposal_event_immutable');
+END
+"""
+
+
+def _phase5b_canonical_synthesis_steps() -> tuple[SchemaMigrationStep, ...]:
+    return (
+        _sql_step("create_project_synthesis_proposals", _PHASE5B_PROPOSAL_TABLE_SQL),
+        _sql_step("index_project_synthesis_proposals_project", _PHASE5B_PROPOSAL_PROJECT_INDEX_SQL),
+        _sql_step("index_project_synthesis_proposals_generation", _PHASE5B_PROPOSAL_GENERATION_INDEX_SQL),
+        _sql_step("create_project_synthesis_proposal_events", _PHASE5B_PROPOSAL_EVENT_TABLE_SQL),
+        _sql_step("index_project_synthesis_proposal_events_state", _PHASE5B_PROPOSAL_EVENT_INDEX_SQL),
+        _sql_step("protect_project_synthesis_proposals_from_update", _PHASE5B_PROPOSAL_NO_UPDATE_SQL),
+        _sql_step("protect_project_synthesis_proposals_from_delete", _PHASE5B_PROPOSAL_NO_DELETE_SQL),
+        _sql_step("protect_project_synthesis_proposal_events_from_update", _PHASE5B_PROPOSAL_EVENT_NO_UPDATE_SQL),
+        _sql_step("protect_project_synthesis_proposal_events_from_delete", _PHASE5B_PROPOSAL_EVENT_NO_DELETE_SQL),
+    )
+
+
+_PHASE5B_RESPONSE_SCHEMA_HASH_COLUMN_SQL = """
+ALTER TABLE local_ai_generation_invocations
+ADD COLUMN response_schema_hash TEXT
+"""
+_PHASE5B_DROP_GENERATION_IMMUTABILITY_TRIGGER_SQL = """
+DROP TRIGGER local_ai_generation_terminal_immutable
+"""
+_PHASE5B_SCHEMA_BOUND_GENERATION_IMMUTABILITY_TRIGGER_SQL = """
+CREATE TRIGGER local_ai_generation_terminal_immutable
+BEFORE UPDATE ON local_ai_generation_invocations
+WHEN OLD.status != 'started'
+  OR NEW.status NOT IN ('completed', 'failed', 'timed_out', 'cancelled')
+  OR NEW.generation_id IS NOT OLD.generation_id
+  OR NEW.request_id IS NOT OLD.request_id
+  OR NEW.idempotency_key IS NOT OLD.idempotency_key
+  OR NEW.request_fingerprint IS NOT OLD.request_fingerprint
+  OR NEW.purpose IS NOT OLD.purpose
+  OR NEW.provider_identity IS NOT OLD.provider_identity
+  OR NEW.endpoint_identity IS NOT OLD.endpoint_identity
+  OR NEW.exact_model_tag IS NOT OLD.exact_model_tag
+  OR NEW.input_hash IS NOT OLD.input_hash
+  OR NEW.context_hash IS NOT OLD.context_hash
+  OR NEW.expected_schema_identity IS NOT OLD.expected_schema_identity
+  OR NEW.response_schema_hash IS NOT OLD.response_schema_hash
+  OR NEW.started_at IS NOT OLD.started_at
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'local_ai_generation_record_immutable');
+END
+"""
+
+
+def _phase5b_ollama_json_schema_steps() -> tuple[SchemaMigrationStep, ...]:
+    return (
+        _sql_step(
+            "add_local_generation_response_schema_hash",
+            _PHASE5B_RESPONSE_SCHEMA_HASH_COLUMN_SQL,
+        ),
+        _sql_step(
+            "drop_pre_schema_generation_immutability_trigger",
+            _PHASE5B_DROP_GENERATION_IMMUTABILITY_TRIGGER_SQL,
+        ),
+        _sql_step(
+            "protect_schema_bound_local_generation_records",
+            _PHASE5B_SCHEMA_BOUND_GENERATION_IMMUTABILITY_TRIGGER_SQL,
         ),
     )
 
@@ -981,6 +1125,24 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "production_safe_local_generation_gateway",
             "astra-schema-migration:production-safe-local-generation-gateway:v1",
             _phase5a_generation_gateway_steps(),
+        ),
+        SchemaMigration(
+            13,
+            "canonical_model_synthesis_integration",
+            "astra-schema-migration:canonical-model-synthesis-integration:v1",
+            _phase5b_canonical_synthesis_steps(),
+        ),
+        SchemaMigration(
+            14,
+            "ollama_json_schema_constrained_generation",
+            "astra-schema-migration:ollama-json-schema-constrained-generation:v1",
+            _phase5b_ollama_json_schema_steps(),
+        ),
+        SchemaMigration(
+            15,
+            "local_ai_generation_delete_protection",
+            "astra-schema-migration:local-ai-generation-delete-protection:v1",
+            _local_ai_generation_delete_protection_steps(),
         ),
     )
 
@@ -1842,6 +2004,63 @@ REQUIRED_SCHEMA_SHAPE[12] = {
     },
 }
 
+REQUIRED_SCHEMA_SHAPE[13] = {
+    **REQUIRED_SCHEMA_SHAPE[12],
+    "project_synthesis_proposals": {
+        "present": True,
+        "columns": (
+            "proposal_id", "idempotency_key", "proposal_type", "project_run_id",
+            "generation_id", "generation_request_id",
+            "generation_request_fingerprint", "proposal_fingerprint",
+            "evidence_envelope_id", "evidence_hash",
+            "repository_manifest_identity", "scope_revision_id", "plan_revision_id",
+            "semantic_validation_status", "initial_lifecycle_state",
+            "proposal_json", "created_at",
+        ),
+        "indexes": (
+            "idx_project_synthesis_proposals_project",
+            "idx_project_synthesis_proposals_generation",
+        ),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+        "sql_contains": (
+            "idempotency_key TEXT NOT NULL UNIQUE",
+            "proposal_fingerprint TEXT NOT NULL UNIQUE",
+        ),
+    },
+    "project_synthesis_proposal_events": {
+        "present": True,
+        "columns": (
+            "event_id", "proposal_id", "sequence", "lifecycle_state",
+            "metadata_json", "created_at",
+        ),
+        "indexes": ("idx_project_synthesis_proposal_events_state",),
+        "foreign_keys": (("proposal_id", "project_synthesis_proposals", "proposal_id"),),
+        "sql_contains": ("UNIQUE(proposal_id, sequence)",),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[14] = {
+    **REQUIRED_SCHEMA_SHAPE[13],
+    "local_ai_generation_invocations": {
+        **REQUIRED_SCHEMA_SHAPE[13]["local_ai_generation_invocations"],
+        "columns": (
+            *REQUIRED_SCHEMA_SHAPE[13]["local_ai_generation_invocations"]["columns"],
+            "response_schema_hash",
+        ),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[15] = {
+    **REQUIRED_SCHEMA_SHAPE[14],
+    "local_ai_generation_invocations": {
+        **REQUIRED_SCHEMA_SHAPE[14]["local_ai_generation_invocations"],
+        "triggers": (
+            *REQUIRED_SCHEMA_SHAPE[14]["local_ai_generation_invocations"].get("triggers", ()),
+            "local_ai_generation_records_no_delete",
+        ),
+    },
+}
+
 
 def validate_schema_shape(database_path: str | Path, current_version: int) -> None:
     """Fail closed when the live schema drifts from the required shape.
@@ -1904,6 +2123,22 @@ def validate_schema_shape(database_path: str | Path, current_version: int) -> No
                 raise MigrationError(
                     f"Table '{table}' is missing required foreign key(s) at schema "
                     f"version {current_version}."
+                )
+            trigger_names = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?",
+                    (table,),
+                )
+            }
+            missing_triggers = tuple(
+                trigger for trigger in requirements.get("triggers", ())
+                if trigger not in trigger_names
+            )
+            if missing_triggers:
+                raise MigrationError(
+                    f"Table '{table}' is missing required trigger(s) "
+                    f"{', '.join(missing_triggers)} at schema version {current_version}."
                 )
             table_sql_row = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",

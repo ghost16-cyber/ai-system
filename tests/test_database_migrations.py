@@ -21,6 +21,7 @@ from backend.app.database.migrations import (
     assert_schema_compatible,
     build_schema_migrations,
     current_schema_version,
+    preflight_schema_compatibility,
     _sqlite_logical_sha256,
     _PHASE4A_SCHEMA_SQL,
 )
@@ -792,6 +793,8 @@ def test_stage2c_project_records_remain_readable_without_emitting_work(
     events_before = control.list_events("existing-project")
     with sqlite3.connect(database) as connection:
         for table in (
+            "project_synthesis_proposal_events",
+            "project_synthesis_proposals",
             "project_repair_cycles_v2",
             "project_projection_checkpoints",
             "project_execution_cancellations",
@@ -895,3 +898,156 @@ def test_dropped_required_column_fails_closed_instead_of_silent_repair(tmp_path:
 def test_valid_current_schema_passes_shape_validation(tmp_path: Path) -> None:
     database = _fully_initialized(tmp_path)
     assert assert_schema_compatible(database) == LATEST_SCHEMA_VERSION
+
+
+# --- Regression coverage for a migration-12 checksum-integrity incident -----
+#
+# Migration 12 ("production_safe_local_generation_gateway") was applied to a
+# live local database with 4 steps (table, 2 indexes, terminal-immutability
+# trigger). Before that work was committed, a 5th step (a delete-protection
+# trigger) was folded into migration 12's definition instead of becoming its
+# own migration -- changing migration 12's checksum without bumping its
+# version, so every subsequent startup failed closed with "Schema migration
+# 12 checksum does not match the runtime." The fix restores migration 12 to
+# its original 4-step definition and moves the delete-protection trigger into
+# additive migration 15. These tests pin that exact incident so it cannot
+# regress silently.
+
+_ORIGINAL_MIGRATION_12_CHECKSUM = (
+    "273ad99e2c85f6f12cd6c0e23cae1bf4ef4643f9b59de048a9648b969b1b667c"
+)
+
+
+def test_original_migration_12_ledger_starts_successfully(tmp_path: Path) -> None:
+    """Category 1: a database whose ledger records the true original
+    migration-12 checksum (captured from the incident database before this
+    fix) starts successfully and upgrades cleanly to the latest version."""
+    database = tmp_path / "original-migration-12.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:12])
+    assert SCHEMA_MIGRATIONS[11].checksum == _ORIGINAL_MIGRATION_12_CHECKSUM
+
+    assert preflight_schema_compatibility(database) == 12
+    result = apply_schema_migrations(database)
+    assert result.current_version == LATEST_SCHEMA_VERSION
+    assert assert_schema_compatible(database) == LATEST_SCHEMA_VERSION
+
+
+def test_runtime_mutation_of_migration_12_fails_closed(tmp_path: Path) -> None:
+    """Category 3: editing migration 12's declared checksum material at
+    runtime (the exact defect class that caused the incident) is detected and
+    rejected, rather than silently accepted or silently re-applied."""
+    database = tmp_path / "mutated-migration-12.db"
+    apply_schema_migrations(database)
+    mutated = list(build_schema_migrations())
+    mutated[11] = replace(
+        mutated[11],
+        checksum_material=mutated[11].checksum_material + ":mutated",
+    )
+
+    with pytest.raises(MigrationError, match="checksum"):
+        preflight_schema_compatibility(database, migrations=mutated)
+    with pytest.raises(MigrationError, match="checksum"):
+        apply_schema_migrations(database, migrations=mutated)
+
+
+def test_incorrect_migration_12_checksum_fails_closed(tmp_path: Path) -> None:
+    """Category 4: a ledger row for version 12 whose recorded checksum does
+    not match any valid runtime definition fails closed, reproducing the
+    exact reported error."""
+    database = tmp_path / "corrupted-migration-12.db"
+    apply_schema_migrations(database)
+    schema_before = _sqlite_schema_snapshot(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE schema_migrations SET checksum = ? WHERE version = 12",
+            ("f" * 64,),
+        )
+
+    with pytest.raises(MigrationError, match="migration 12 checksum"):
+        preflight_schema_compatibility(database)
+    with pytest.raises(MigrationError, match="migration 12 checksum"):
+        assert_schema_compatible(database)
+    # Fail-closed: no repair, no rewrite, no silent recovery attempt.
+    with sqlite3.connect(database) as connection:
+        recorded = connection.execute(
+            "SELECT checksum FROM schema_migrations WHERE version = 12"
+        ).fetchone()[0]
+    assert recorded == "f" * 64
+    assert _sqlite_schema_snapshot(database) == schema_before
+
+
+def test_existing_local_ai_generation_data_survives_the_12_to_15_upgrade(
+    tmp_path: Path,
+) -> None:
+    """Category 8: a row written under migration 12 (before the delete-
+    protection trigger existed) survives untouched through migrations 13-15,
+    and the new trigger becomes active without disturbing prior rows."""
+    database = tmp_path / "generation-data-survives.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:12])
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO local_ai_generation_invocations ("
+            "generation_id, request_id, idempotency_key, request_fingerprint, "
+            "purpose, provider_identity, endpoint_identity, exact_model_tag, "
+            "input_hash, context_hash, expected_schema_identity, status, "
+            "started_at, diagnostic_json, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, '{}', ?)",
+            (
+                "gen-1", "req-1", "idem-1", "fp-1", "purpose", "provider",
+                "endpoint", "model", "input-hash", "context-hash", "schema-id",
+                "2026-07-22T00:00:00+00:00", "2026-07-22T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+
+    result = apply_schema_migrations(database)
+    assert result.applied_versions == (13, 14, 15)
+
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT generation_id, request_id, status FROM "
+            "local_ai_generation_invocations WHERE generation_id = 'gen-1'"
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "DELETE FROM local_ai_generation_invocations WHERE generation_id = 'gen-1'"
+            )
+    assert row == ("gen-1", "req-1", "completed")
+
+
+def test_schema_migration_registry_has_unique_contiguous_versions(tmp_path: Path) -> None:
+    """Category 9: the live registry's versions are exactly 1..N, unique and
+    contiguous, and the shared constructor rejects a registry that is not."""
+    versions = tuple(migration.version for migration in SCHEMA_MIGRATIONS)
+    assert versions == tuple(range(1, len(SCHEMA_MIGRATIONS) + 1))
+    assert len(set(versions)) == len(versions)
+    assert LATEST_SCHEMA_VERSION == 15
+    assert SCHEMA_MIGRATIONS[11].version == 12
+    assert SCHEMA_MIGRATIONS[11].name == "production_safe_local_generation_gateway"
+
+    gapped = SCHEMA_MIGRATIONS[:11] + SCHEMA_MIGRATIONS[12:]
+    with pytest.raises(MigrationError, match="ordered, contiguous"):
+        preflight_schema_compatibility(tmp_path / "never-created.db", migrations=gapped)
+
+    duplicated = SCHEMA_MIGRATIONS[:12] + (SCHEMA_MIGRATIONS[11],) + SCHEMA_MIGRATIONS[12:]
+    with pytest.raises(MigrationError, match="ordered, contiguous"):
+        preflight_schema_compatibility(tmp_path / "never-created.db", migrations=duplicated)
+
+
+def test_checksum_generation_is_deterministic_for_migration_12() -> None:
+    """Category 10: recomputing migration 12's checksum from a freshly
+    rebuilt registry, or from an independently constructed migration with the
+    same declared material, always yields the same value."""
+    first = build_schema_migrations()[11].checksum
+    second = build_schema_migrations()[11].checksum
+    assert first == second == SCHEMA_MIGRATIONS[11].checksum
+
+    original = SCHEMA_MIGRATIONS[11]
+    source_independent_steps = tuple(
+        SchemaMigrationStep(step.step_id, step.checksum_material, lambda _connection: None)
+        for step in original.steps
+    )
+    source_independent = SchemaMigration(
+        original.version, original.name, original.checksum_material, source_independent_steps,
+    )
+    assert source_independent.checksum == original.checksum
