@@ -6,7 +6,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
@@ -32,6 +32,17 @@ from backend.app.project_control.contracts import canonical_json, content_hash
 
 
 MAX_STRUCTURED_OUTPUT_BYTES = 524_288
+MAX_RESPONSE_SCHEMA_BYTES = 131_072
+
+
+class ResponseSchemaError(ValueError):
+    def __init__(self, reason: GenerationFailureReason, message: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+
+class DuplicateJSONKeyError(ValueError):
+    pass
 
 
 class LocalGenerationGateway:
@@ -64,7 +75,23 @@ class LocalGenerationGateway:
         started_clock = time.monotonic()
         generation_id = f"generation-{uuid4().hex}"
         request_payload = request.model_dump(mode="json")
-        request_fingerprint = content_hash(request_payload)
+        try:
+            response_schema, response_schema_hash = _bounded_response_schema(
+                target_schema
+            )
+        except ResponseSchemaError as exc:
+            return self._ephemeral_failure(
+                generation_id,
+                request,
+                exc.reason,
+                str(exc),
+            )
+        request_fingerprint = content_hash(
+            {
+                "request": request_payload,
+                "response_schema_hash": response_schema_hash,
+            }
+        )
         input_hash = content_hash(
             {
                 "system_instruction": request.system_instruction,
@@ -81,6 +108,7 @@ class LocalGenerationGateway:
             request_fingerprint=request_fingerprint,
             input_hash=input_hash,
             context_hash=context_hash,
+            response_schema_hash=response_schema_hash,
             started_at=started_at,
         )
         if replay is not None:
@@ -147,6 +175,7 @@ class LocalGenerationGateway:
                 "request_fingerprint": request_fingerprint,
                 "input_hash": input_hash,
                 "context_hash": context_hash,
+                "response_schema_hash": response_schema_hash,
             },
         )
         try:
@@ -160,6 +189,8 @@ class LocalGenerationGateway:
                     temperature=request.parameters.temperature,
                     top_p=request.parameters.top_p,
                     seed=request.parameters.seed,
+                    exact_response_schema=response_schema,
+                    exact_response_schema_hash=response_schema_hash,
                 ),
                 cancelled=cancelled,
             )
@@ -208,8 +239,8 @@ class LocalGenerationGateway:
                 response_hash=response_hash,
             )
         try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
+            parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        except (json.JSONDecodeError, DuplicateJSONKeyError):
             return self._fail(
                 generation_id,
                 request,
@@ -218,6 +249,7 @@ class LocalGenerationGateway:
                 GenerationFailureReason.INVALID_STRUCTURED_OUTPUT,
                 _message(GenerationFailureReason.INVALID_STRUCTURED_OUTPUT),
                 response_hash=response_hash,
+                usage=_usage(provider_result.metadata),
             )
         if not isinstance(parsed, dict):
             return self._fail(
@@ -228,10 +260,12 @@ class LocalGenerationGateway:
                 GenerationFailureReason.INVALID_STRUCTURED_OUTPUT,
                 "The structured model output must be one JSON object.",
                 response_hash=response_hash,
+                usage=_usage(provider_result.metadata),
             )
         try:
             validated = target_schema.model_validate(parsed)
         except ValidationError as exc:
+            first = exc.errors(include_url=False)[0] if exc.errors() else {}
             return self._fail(
                 generation_id,
                 request,
@@ -240,7 +274,12 @@ class LocalGenerationGateway:
                 GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED,
                 _message(GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED),
                 response_hash=response_hash,
-                diagnostic={"validation_error_count": exc.error_count()},
+                diagnostic={
+                    "validation_error_count": exc.error_count(),
+                    "validation_error_location": _validation_location(first.get("loc")),
+                    "validation_error_type": str(first.get("type") or "validation_error")[:120],
+                },
+                usage=_usage(provider_result.metadata),
             )
 
         completed_at = _now()
@@ -308,6 +347,7 @@ class LocalGenerationGateway:
         request_fingerprint: str,
         input_hash: str,
         context_hash: str,
+        response_schema_hash: str,
         started_at: datetime,
     ) -> LocalGenerationResult | None:
         try:
@@ -332,10 +372,32 @@ class LocalGenerationGateway:
                             GenerationFailureReason.IDEMPOTENCY_CONFLICT,
                             "The idempotency key is already bound to another request.",
                         )
-                    if row["status"] == "completed" and row["result_json"]:
-                        stored = LocalGenerationResult.model_validate_json(
-                            row["result_json"]
+                    status = str(row["status"])
+                    if status in {
+                        "completed", "failed", "cancelled", "timed_out"
+                    } and row["result_json"]:
+                        stored = LocalGenerationResult.model_validate_json(row["result_json"])
+                        if (
+                            stored.generation_id != str(row["generation_id"])
+                            or stored.request_id != request.request_id
+                        ):
+                            raise ValueError("stored_generation_identity_mismatch")
+                        expected_status = (
+                            "completed"
+                            if stored.state == GenerationState.SUCCEEDED
+                            else "timed_out"
+                            if stored.failure_reason
+                            == GenerationFailureReason.GENERATION_TIMEOUT
+                            else "cancelled"
+                            if stored.failure_reason
+                            == GenerationFailureReason.GENERATION_CANCELLED
+                            else "failed"
                         )
+                        if status != expected_status:
+                            raise ValueError("stored_generation_status_mismatch")
+                    else:
+                        stored = None
+                    if status == "completed" and stored is not None:
                         replay = stored.model_copy(
                             update={
                                 "replayed": True,
@@ -348,19 +410,33 @@ class LocalGenerationGateway:
                             {"request_id": request.request_id},
                         )
                         return replay
+                    if stored is not None:
+                        self._audit(
+                            "local_generation_terminal_failure_reused",
+                            stored.generation_id,
+                            {
+                                "request_id": request.request_id,
+                                "failure_reason": (
+                                    stored.failure_reason.value
+                                    if stored.failure_reason is not None
+                                    else "unknown"
+                                ),
+                            },
+                        )
+                        return stored
                     return self._ephemeral_failure(
                         str(row["generation_id"]),
                         request,
                         GenerationFailureReason.PERSISTENCE_FAILURE,
-                        "A previous non-successful invocation is not a successful replay.",
+                        "The matching generation invocation has no valid terminal result.",
                     )
                 connection.execute(
                     "INSERT INTO local_ai_generation_invocations "
                     "(generation_id, request_id, idempotency_key, request_fingerprint, "
                     "purpose, provider_identity, endpoint_identity, exact_model_tag, "
-                    "input_hash, context_hash, expected_schema_identity, status, "
+                    "input_hash, context_hash, expected_schema_identity, response_schema_hash, status, "
                     "started_at, diagnostic_json, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, '{}', ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', ?, '{}', ?)",
                     (
                         generation_id,
                         request.request_id,
@@ -373,6 +449,7 @@ class LocalGenerationGateway:
                         input_hash,
                         context_hash,
                         request.expected_response_schema_identity,
+                        response_schema_hash,
                         started_at.isoformat(),
                         started_at.isoformat(),
                     ),
@@ -398,6 +475,7 @@ class LocalGenerationGateway:
         *,
         response_hash: str | None = None,
         diagnostic: dict[str, Any] | None = None,
+        usage: GenerationUsage | None = None,
     ) -> LocalGenerationResult:
         result = LocalGenerationResult(
             generation_id=generation_id,
@@ -411,6 +489,7 @@ class LocalGenerationGateway:
             state=GenerationState.FAILED,
             raw_response_hash=response_hash,
             failure_reason=reason,
+            usage=usage or GenerationUsage(),
             user_message=user_message,
         )
         terminal_status = {
@@ -496,6 +575,42 @@ class LocalGenerationGateway:
         connection.execute("PRAGMA busy_timeout = 30000")
         return connection
 
+    def safe_generation_diagnostic(self, generation_id: str) -> dict[str, Any]:
+        """Return only the bounded diagnostic fields allowed by the smoke tool."""
+
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT provider_identity, exact_model_tag, expected_schema_identity, "
+                    "response_schema_hash, duration_ms, failure_classification, "
+                    "diagnostic_json, result_json FROM local_ai_generation_invocations "
+                    "WHERE generation_id = ?",
+                    (generation_id,),
+                ).fetchone()
+            if row is None:
+                return {}
+            diagnostic = json.loads(row["diagnostic_json"] or "{}")
+            result = (
+                LocalGenerationResult.model_validate_json(row["result_json"])
+                if row["result_json"]
+                else None
+            )
+            usage = result.usage if result is not None else GenerationUsage()
+            return {
+                "generation_failure_classification": row["failure_classification"],
+                "validation_error_location": diagnostic.get("validation_error_location"),
+                "validation_error_type": diagnostic.get("validation_error_type"),
+                "provider_identity": row["provider_identity"],
+                "exact_model_tag": row["exact_model_tag"],
+                "response_schema_identity": row["expected_schema_identity"],
+                "response_schema_hash": row["response_schema_hash"],
+                "duration_ms": row["duration_ms"],
+                "prompt_eval_count": usage.prompt_eval_count,
+                "eval_count": usage.eval_count,
+            }
+        except (sqlite3.Error, ValueError, json.JSONDecodeError):
+            return {}
+
     def _ephemeral_failure(
         self,
         generation_id: str,
@@ -552,9 +667,75 @@ def _render_prompt(request: LocalGenerationRequest) -> str:
 
 
 def _schema_identity(target_schema: type[BaseModel]) -> str | None:
-    field = target_schema.model_fields.get("schema_version")
-    default = field.default if field is not None else None
-    return default if isinstance(default, str) else None
+    for field_name in ("schema_version", "contract_version"):
+        field = target_schema.model_fields.get(field_name)
+        if field is None:
+            continue
+        if isinstance(field.default, str):
+            return field.default
+        if get_origin(field.annotation) is Literal:
+            values = get_args(field.annotation)
+            if len(values) == 1 and isinstance(values[0], str):
+                return values[0]
+    return None
+
+
+def _bounded_response_schema(
+    target_schema: type[BaseModel],
+) -> tuple[dict[str, Any], str]:
+    try:
+        schema = target_schema.model_json_schema()
+    except Exception as exc:
+        raise ResponseSchemaError(
+            GenerationFailureReason.INVALID_REQUEST,
+            "The expected response schema could not be constructed safely.",
+        ) from exc
+    if not isinstance(schema, dict) or not schema:
+        raise ResponseSchemaError(
+            GenerationFailureReason.INVALID_REQUEST,
+            "The expected response schema must be one JSON object.",
+        )
+    try:
+        encoded = json.dumps(
+            schema,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        canonical = json.loads(encoded.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ResponseSchemaError(
+            GenerationFailureReason.INVALID_REQUEST,
+            "The expected response schema is not canonical JSON.",
+        ) from exc
+    if not isinstance(canonical, dict):
+        raise ResponseSchemaError(
+            GenerationFailureReason.INVALID_REQUEST,
+            "The expected response schema must be one JSON object.",
+        )
+    if len(encoded) > MAX_RESPONSE_SCHEMA_BYTES:
+        raise ResponseSchemaError(
+            GenerationFailureReason.REQUEST_TOO_LARGE,
+            "The expected response schema exceeds the configured byte limit.",
+        )
+    return canonical, hashlib.sha256(encoded).hexdigest()
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in output:
+            raise DuplicateJSONKeyError(key)
+        output[key] = value
+    return output
+
+
+def _validation_location(value: Any) -> str:
+    if not isinstance(value, (list, tuple)):
+        return "response"
+    rendered = ".".join(str(item)[:80] for item in value[:12])
+    return rendered[:300] or "response"
 
 
 def _usage(metadata: dict[str, int]) -> GenerationUsage:
@@ -579,6 +760,7 @@ def _provider_failure(
         ProviderErrorCode.CANCELLED: GenerationFailureReason.GENERATION_CANCELLED,
         ProviderErrorCode.REJECTED: GenerationFailureReason.PROVIDER_REJECTED_REQUEST,
         ProviderErrorCode.MALFORMED_RESPONSE: GenerationFailureReason.MALFORMED_PROVIDER_RESPONSE,
+        ProviderErrorCode.INVALID_REQUEST: GenerationFailureReason.INVALID_REQUEST,
     }[code]
 
 
@@ -622,4 +804,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-__all__ = ["LocalGenerationGateway", "MAX_STRUCTURED_OUTPUT_BYTES"]
+__all__ = [
+    "LocalGenerationGateway",
+    "MAX_RESPONSE_SCHEMA_BYTES",
+    "MAX_STRUCTURED_OUTPUT_BYTES",
+]

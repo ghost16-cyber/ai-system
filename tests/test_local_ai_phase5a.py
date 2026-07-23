@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -9,9 +10,14 @@ from typing import Literal
 import pytest
 from pydantic import Field, ValidationError
 
-from backend.app.database.migrations import apply_schema_migrations, assert_schema_compatible
+from backend.app.database.migrations import (
+    SCHEMA_MIGRATIONS,
+    apply_schema_migrations,
+    assert_schema_compatible,
+)
 from backend.app.local_ai.config import LocalAIConfiguration, load_local_ai_configuration
 from backend.app.local_ai.generation import LocalGenerationGateway
+from backend.app.local_ai.generation import MAX_RESPONSE_SCHEMA_BYTES
 from backend.app.local_ai.generation_contracts import (
     GenerationContextItem,
     GenerationFailureReason,
@@ -19,19 +25,23 @@ from backend.app.local_ai.generation_contracts import (
     GenerationPurpose,
     GenerationState,
     LocalGenerationRequest,
+    LocalGenerationResult,
     MAX_CONTEXT_ITEM_CHARS,
     MAX_CONTEXT_ITEMS,
     MAX_SYSTEM_INSTRUCTION_CHARS,
     MAX_USER_CONTENT_CHARS,
 )
 from backend.app.local_ai.provider import (
+    MAX_RESPONSE_SCHEMA_BYTES as PROVIDER_MAX_RESPONSE_SCHEMA_BYTES,
     OllamaProviderClient,
     ProviderClientError,
     ProviderErrorCode,
     ProviderGenerationRequest,
     ProviderGenerationResponse,
     ProviderInspection,
+    _strip_ungrammatable_bounds,
 )
+from backend.app.project_analysis.model_synthesis.contracts import SynthesisResponse
 from backend.app.project_control.contracts import StrictModel, content_hash
 
 
@@ -40,6 +50,12 @@ class Proposal(StrictModel):
     summary: str = Field(min_length=1, max_length=200)
     command: str | None = Field(default=None, max_length=200)
     patch: str | None = Field(default=None, max_length=500)
+
+
+class ExpandedProposal(StrictModel):
+    schema_version: Literal["test.proposal.v1"] = "test.proposal.v1"
+    summary: str = Field(min_length=1, max_length=200)
+    required_detail: str
 
 
 class FakeProvider:
@@ -141,7 +157,7 @@ def test_canonical_configuration_owns_generation_feature_flag() -> None:
     disabled = load_local_ai_configuration({"ASTRA_SLM_ENABLED": "false"})
     assert enabled.generation_enabled is True
     assert disabled.generation_enabled is False
-    assert enabled.schema_version == "astra.local-ai.configuration.v2"
+    assert enabled.schema_version == "astra.local-ai.configuration.v3"
 
 
 @pytest.mark.parametrize(
@@ -202,12 +218,20 @@ def test_successful_strict_generation_persists_exact_hashes_and_usage(
     assert result.authority_granted is False and result.advisory_only is True
     assert provider.last_request.model == request.exact_model_tag
     assert provider.last_request.maximum_output_tokens == 128
+    assert provider.last_request.temperature == 0.0
+    assert provider.last_request.exact_response_schema == Proposal.model_json_schema()
+    expected_schema_hash = content_hash(Proposal.model_json_schema())
+    assert provider.last_request.exact_response_schema_hash == expected_schema_hash
     with sqlite3.connect(database) as connection:
         row = connection.execute(
             "SELECT request_fingerprint, input_hash, context_hash, response_hash, "
-            "status, result_json, diagnostic_json FROM local_ai_generation_invocations"
+            "status, result_json, diagnostic_json, response_schema_hash "
+            "FROM local_ai_generation_invocations"
         ).fetchone()
-        assert row[0] == content_hash(request.model_dump(mode="json"))
+        assert row[0] == content_hash({
+            "request": request.model_dump(mode="json"),
+            "response_schema_hash": expected_schema_hash,
+        })
         assert row[1] == content_hash(
             {
                 "system_instruction": request.system_instruction,
@@ -221,6 +245,7 @@ def test_successful_strict_generation_persists_exact_hashes_and_usage(
         assert row[4] == "completed"
         assert "Prepare inert" not in row[5]
         assert "Prepare inert" not in row[6]
+        assert row[7] == expected_schema_hash
 
 
 def test_successful_exact_replay_does_not_contact_provider(tmp_path: Path) -> None:
@@ -242,6 +267,20 @@ def test_changed_payload_with_same_key_fails_closed(tmp_path: Path) -> None:
     assert provider.generate_calls == 1
 
 
+def test_changed_exact_schema_hash_invalidates_replay(tmp_path: Path) -> None:
+    gateway, database, provider = _gateway(tmp_path)
+    assert gateway.generate(_request(), Proposal).state == GenerationState.SUCCEEDED
+    conflict = gateway.generate(_request(), ExpandedProposal)
+    assert conflict.failure_reason == GenerationFailureReason.IDEMPOTENCY_CONFLICT
+    assert provider.generate_calls == 1
+    with sqlite3.connect(database) as connection:
+        stored_hash = connection.execute(
+            "SELECT response_schema_hash FROM local_ai_generation_invocations"
+        ).fetchone()[0]
+    assert stored_hash == content_hash(Proposal.model_json_schema())
+    assert stored_hash != content_hash(ExpandedProposal.model_json_schema())
+
+
 @pytest.mark.parametrize(
     "error_code,reason",
     [
@@ -255,13 +294,30 @@ def test_provider_failures_are_typed_and_never_successfully_replayed(
     tmp_path: Path, error_code, reason
 ) -> None:
     provider = FakeProvider(error=ProviderClientError(error_code, "safe failure"))
-    gateway, _, _ = _gateway(tmp_path, provider)
+    gateway, database, _ = _gateway(tmp_path, provider)
     first = gateway.generate(_request(), Proposal)
     second = gateway.generate(_request(), Proposal)
     assert first.failure_reason == reason
     assert second.state == GenerationState.FAILED
     assert second.replayed is False
+    assert second.failure_reason == first.failure_reason
+    assert second.user_message == first.user_message == "safe failure"
+    assert second.generation_id == first.generation_id
+    assert second.started_at == first.started_at
+    assert second.completed_at == first.completed_at
     assert provider.generate_calls == 1
+    expected_status = {
+        ProviderErrorCode.TIMEOUT: "timed_out",
+        ProviderErrorCode.CANCELLED: "cancelled",
+    }.get(error_code, "failed")
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT status, failure_classification, result_json "
+            "FROM local_ai_generation_invocations"
+        ).fetchone()
+    assert row[0] == expected_status
+    assert row[1] == reason.value
+    assert LocalGenerationResult.model_validate_json(row[2]) == first
 
 
 @pytest.mark.parametrize(
@@ -273,6 +329,7 @@ def test_provider_failures_are_typed_and_never_successfully_replayed(
         ('{"schema_version":"test.proposal.v1"}', GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED),
         ('{"schema_version":"test.proposal.v1","summary":"x","extra":1}', GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED),
         ('{"schema_version":"wrong","summary":"x"}', GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED),
+        ('{"schema_version":"test.proposal.v1","summary":"first","summary":"second"}', GenerationFailureReason.INVALID_STRUCTURED_OUTPUT),
     ],
 )
 def test_structured_output_requires_strict_json_and_target_schema(
@@ -319,6 +376,172 @@ def test_provider_client_rejects_missing_response_field(monkeypatch) -> None:
             )
         )
     assert caught.value.code == ProviderErrorCode.MALFORMED_RESPONSE
+
+
+def test_ollama_provider_submits_exact_json_schema_and_generic_json(monkeypatch) -> None:
+    payloads: list[dict] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _maximum):
+            return b'{"model":"qwen-test:1.5b","response":"{}"}'
+
+    def open_request(request, **_kwargs):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.setattr(
+        "backend.app.local_ai.provider.url_request.urlopen", open_request
+    )
+    client = OllamaProviderClient("http://127.0.0.1:11434")
+    schema = Proposal.model_json_schema()
+    schema_hash = content_hash(schema)
+    client.generate(ProviderGenerationRequest(
+        model="qwen-test:1.5b", system_instruction="system", prompt="prompt",
+        timeout_seconds=2, maximum_output_tokens=10, temperature=1.5,
+        exact_response_schema=schema, exact_response_schema_hash=schema_hash,
+    ))
+    client.generate(ProviderGenerationRequest(
+        model="qwen-test:1.5b", system_instruction="system", prompt="prompt",
+        timeout_seconds=2, maximum_output_tokens=10,
+    ))
+    # The transmitted format is the schema with minLength/maxLength stripped
+    # (a large maxLength reproducibly crashes Ollama's grammar compiler --
+    # see test_structured_schema_strips_bounds_ollama_cannot_grammar_compile)
+    # but the hash-integrity check above still bound to the full, unmodified
+    # schema: content_hash(schema) succeeded, proving the check validates
+    # against Astra's exact contract, not the transmitted subset.
+    assert payloads[0]["format"] == _strip_ungrammatable_bounds(schema)
+    assert payloads[0]["format"] != schema
+    assert payloads[0]["format"] != "json"
+    assert payloads[0]["options"]["temperature"] == 0.0
+    assert payloads[0]["stream"] is False
+    assert payloads[1]["format"] == "json"
+
+
+def _all_schema_keys(node) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(node, dict):
+        keys.update(node.keys())
+        for value in node.values():
+            keys |= _all_schema_keys(value)
+    elif isinstance(node, list):
+        for item in node:
+            keys |= _all_schema_keys(item)
+    return keys
+
+
+def test_structured_schema_strips_bounds_ollama_cannot_grammar_compile(
+    monkeypatch,
+) -> None:
+    """Regression: a JSON schema with maxLength: 65536 (Proposal/Advisory
+    response bounds) reproducibly crashes the installed Ollama's structured-
+    output model runner ('model runner has unexpectedly stopped'). The
+    provider must strip minLength/maxLength from what it actually transmits,
+    while still hash-validating the caller's full, unmodified schema."""
+    payloads: list[dict] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _maximum):
+            return b'{"model":"qwen-test:1.5b","response":"{\\"summary\\":\\"ok\\"}"}'
+
+    def open_request(request, **_kwargs):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.setattr(
+        "backend.app.local_ai.provider.url_request.urlopen", open_request
+    )
+    client = OllamaProviderClient("http://127.0.0.1:11434")
+    schema = Proposal.model_json_schema()
+    assert "maxLength" in _all_schema_keys(schema)
+    schema_hash = content_hash(schema)
+
+    client.generate(ProviderGenerationRequest(
+        model="qwen-test:1.5b", system_instruction="system", prompt="prompt",
+        timeout_seconds=2, maximum_output_tokens=10,
+        exact_response_schema=schema, exact_response_schema_hash=schema_hash,
+    ))
+
+    transmitted_keys = _all_schema_keys(payloads[0]["format"])
+    assert "minLength" not in transmitted_keys
+    assert "maxLength" not in transmitted_keys
+    # The rest of the schema (types, required, additionalProperties, const)
+    # is preserved -- only the two ungrammatable bound keywords are removed.
+    assert payloads[0]["format"]["type"] == "object"
+    assert payloads[0]["format"]["required"] == ["summary"]
+
+
+def test_provider_rejects_stale_schema_hash_before_http(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "backend.app.local_ai.provider.url_request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no HTTP")),
+    )
+    client = OllamaProviderClient("http://127.0.0.1:11434")
+    with pytest.raises(ProviderClientError) as caught:
+        client.generate(ProviderGenerationRequest(
+            model="qwen-test:1.5b", system_instruction="system", prompt="prompt",
+            timeout_seconds=2, maximum_output_tokens=10,
+            exact_response_schema=Proposal.model_json_schema(),
+            exact_response_schema_hash="0" * 64,
+        ))
+    assert caught.value.code == ProviderErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    "schema,reason",
+    [
+        (["not", "an", "object"], GenerationFailureReason.INVALID_REQUEST),
+        ({"type": "object", "unsupported": {1, 2}}, GenerationFailureReason.INVALID_REQUEST),
+        ({"type": "object", "description": "x" * (MAX_RESPONSE_SCHEMA_BYTES + 1)}, GenerationFailureReason.REQUEST_TOO_LARGE),
+    ],
+)
+def test_malformed_or_oversized_schema_fails_before_provider(
+    tmp_path: Path, schema, reason
+) -> None:
+    class InvalidSchema:
+        @classmethod
+        def model_json_schema(cls):
+            return schema
+
+    gateway, database, provider = _gateway(tmp_path)
+    result = gateway.generate(_request(), InvalidSchema)  # type: ignore[arg-type]
+    assert result.failure_reason == reason
+    assert provider.inspect_calls == provider.generate_calls == 0
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM local_ai_generation_invocations"
+        ).fetchone()[0] == 0
+
+
+def test_wrong_discriminated_operation_type_fails_strict_validation(tmp_path: Path) -> None:
+    response = json.dumps({
+        "contract_version": "astra.project-synthesis.response.v1",
+        "request_id": "request-1",
+        "summary": "invalid operation",
+        "operations": [{"operation": "rename", "path": "app.py"}],
+        "assumptions": [], "uncertainties": [], "model_confidence": "low",
+        "requires_clarification": False, "clarification_question": None,
+        "recommended_validation": [],
+    }, separators=(",", ":"))
+    gateway, _, provider = _gateway(tmp_path, FakeProvider(response=response))
+    result = gateway.generate(
+        _request(expected_response_schema_identity="astra.project-synthesis.response.v1"),
+        SynthesisResponse,
+    )
+    assert result.failure_reason == GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED
+    assert provider.generate_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -403,17 +626,72 @@ def test_completed_invocation_is_immutable_and_generated_authority_text_is_inert
 
 def test_migration_12_owns_gateway_schema_and_shape_validation(tmp_path: Path) -> None:
     database = tmp_path / "migration-12.db"
-    apply_schema_migrations(database)
-    assert assert_schema_compatible(database) == 12
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:12])
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:12]) == 12
     with sqlite3.connect(database) as connection:
         trigger = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' "
             "AND name LIKE 'local_ai_generation_%' ORDER BY name"
         ).fetchall()
-    assert [row[0] for row in trigger] == [
-        "local_ai_generation_records_no_delete",
+    # Migration 12, as originally applied, owns the table, its indexes, and the
+    # terminal-state immutability trigger only. The delete-protection trigger
+    # was mistakenly folded into migration 12's definition after it had
+    # already been applied to a live database; it now lives in migration 15
+    # (see test_migration_15_adds_delete_protection_without_disturbing_migration_12).
+    assert [row[0] for row in trigger] == ["local_ai_generation_terminal_immutable"]
+
+
+def test_migration_14_adds_immutable_exact_response_schema_hash(tmp_path: Path) -> None:
+    database = tmp_path / "migration-14.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:13])
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:14])
+    assert result.applied_versions == (14,)
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:14]) == 14
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(local_ai_generation_invocations)"
+            )
+        }
+    assert "response_schema_hash" in columns
+    assert MAX_RESPONSE_SCHEMA_BYTES == PROVIDER_MAX_RESPONSE_SCHEMA_BYTES
+
+
+def test_migration_15_adds_delete_protection_without_disturbing_migration_12(tmp_path: Path) -> None:
+    """Regression for a migration-checksum-integrity incident: migration 12's
+    checksum must never again change after it has been applied. The
+    delete-protection trigger that was previously (incorrectly) part of
+    migration 12 is its own additive migration 15."""
+    database = tmp_path / "migration-15.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:12])
+    migration_12_checksum = SCHEMA_MIGRATIONS[11].checksum
+    with sqlite3.connect(database) as connection:
+        recorded = connection.execute(
+            "SELECT checksum FROM schema_migrations WHERE version = 12"
+        ).fetchone()[0]
+    assert recorded == migration_12_checksum
+
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:15])
+    assert result.applied_versions == (13, 14, 15)
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:15]) == 15
+
+    with sqlite3.connect(database) as connection:
+        recorded_after = connection.execute(
+            "SELECT checksum FROM schema_migrations WHERE version = 12"
+        ).fetchone()[0]
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'local_ai_generation_%'"
+            )
+        }
+    assert recorded_after == migration_12_checksum
+    assert triggers == {
         "local_ai_generation_terminal_immutable",
-    ]
+        "local_ai_generation_records_no_delete",
+    }
 
 
 def test_persistence_failure_prevents_provider_contact(tmp_path: Path) -> None:

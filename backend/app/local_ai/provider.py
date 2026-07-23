@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import socket
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,10 +12,12 @@ from urllib import request as url_request
 
 MAX_INSPECTION_RESPONSE_BYTES = 1_048_576
 MAX_GENERATION_ENVELOPE_BYTES = 2_097_152
+MAX_RESPONSE_SCHEMA_BYTES = 131_072
 CancellationCheck = Callable[[], bool]
 
 
 class ProviderErrorCode(StrEnum):
+    INVALID_REQUEST = "invalid_provider_request"
     UNREACHABLE = "provider_unreachable"
     TIMEOUT = "generation_timeout"
     CANCELLED = "generation_cancelled"
@@ -54,6 +57,8 @@ class ProviderGenerationRequest:
     top_p: float = 1.0
     seed: int | None = None
     structured_json: bool = True
+    exact_response_schema: dict[str, Any] | None = None
+    exact_response_schema_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +109,7 @@ class OllamaProviderClient:
     ) -> ProviderGenerationResponse:
         _raise_if_cancelled(cancelled)
         options: dict[str, int | float] = {
-            "temperature": request.temperature,
+            "temperature": 0.0,
             "top_p": request.top_p,
             "num_predict": request.maximum_output_tokens,
         }
@@ -117,7 +122,14 @@ class OllamaProviderClient:
             "stream": False,
             "options": options,
         }
-        if request.structured_json:
+        if request.exact_response_schema is not None:
+            payload["format"] = _validated_response_schema(request)
+        elif request.exact_response_schema_hash is not None:
+            raise ProviderClientError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "The structured-generation schema binding is invalid.",
+            )
+        elif request.structured_json:
             payload["format"] = "json"
         parsed = self._request_json(
             "/api/generate",
@@ -257,6 +269,67 @@ def _model_names(payload: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+_UNGRAMMATABLE_SCHEMA_KEYWORDS = ("minLength", "maxLength")
+
+
+def _strip_ungrammatable_bounds(node: Any) -> Any:
+    """Drop string-length bound keywords the installed Ollama grammar compiler
+    cannot handle (a very large ``maxLength`` reproducibly crashes its model
+    runner: ``model runner has unexpectedly stopped``). Astra's own Pydantic
+    model still enforces these bounds when it validates the parsed response,
+    so removing them from the provider-facing grammar only affects what
+    constrains decoding, not what Astra accepts."""
+    if isinstance(node, dict):
+        return {
+            key: _strip_ungrammatable_bounds(value)
+            for key, value in node.items()
+            if key not in _UNGRAMMATABLE_SCHEMA_KEYWORDS
+        }
+    if isinstance(node, list):
+        return [_strip_ungrammatable_bounds(item) for item in node]
+    return node
+
+
+def _validated_response_schema(
+    request: ProviderGenerationRequest,
+) -> dict[str, Any]:
+    schema = request.exact_response_schema
+    if not isinstance(schema, dict) or not schema:
+        raise ProviderClientError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "The structured-generation schema must be one bounded JSON object.",
+        )
+    try:
+        encoded = json.dumps(
+            schema,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        canonical = json.loads(encoded.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProviderClientError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "The structured-generation schema is not canonical JSON.",
+        ) from exc
+    if not isinstance(canonical, dict) or len(encoded) > MAX_RESPONSE_SCHEMA_BYTES:
+        raise ProviderClientError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "The structured-generation schema exceeds its request bound.",
+        )
+    # The hash binds to Astra's exact, full validation contract -- computed
+    # before stripping, so provenance/replay identity is unaffected by what
+    # the provider transport can or cannot accept.
+    schema_hash = hashlib.sha256(encoded).hexdigest()
+    if request.exact_response_schema_hash != schema_hash:
+        raise ProviderClientError(
+            ProviderErrorCode.INVALID_REQUEST,
+            "The structured-generation schema hash does not match its exact content.",
+        )
+    return _strip_ungrammatable_bounds(canonical)
+
+
 def _raise_if_cancelled(cancelled: CancellationCheck | None) -> None:
     if cancelled is not None and cancelled():
         raise ProviderClientError(
@@ -274,4 +347,5 @@ __all__ = [
     "ProviderGenerationRequest",
     "ProviderGenerationResponse",
     "ProviderInspection",
+    "MAX_RESPONSE_SCHEMA_BYTES",
 ]
