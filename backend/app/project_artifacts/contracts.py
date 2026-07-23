@@ -32,6 +32,7 @@ class ProjectArtifactType(StrEnum):
     EXECUTION_RESULT = "execution_result"
     HANDOFF = "handoff"
     COORDINATOR_DECISION = "coordinator_decision"
+    RETRIEVAL_EVIDENCE = "retrieval_evidence"
 
 
 class ProjectArtifactBinding(StrictModel):

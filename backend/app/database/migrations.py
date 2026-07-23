@@ -1029,6 +1029,169 @@ def _phase5b_ollama_json_schema_steps() -> tuple[SchemaMigrationStep, ...]:
     )
 
 
+_PHASE6_RAG_SQL: tuple[tuple[str, str], ...] = (
+    ("create_rag_corpus_generations", """
+CREATE TABLE rag_corpus_generations (
+    generation_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    repository_state_hash TEXT NOT NULL,
+    generation_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_rag_corpus_generations_project", """
+CREATE INDEX idx_rag_corpus_generations_project
+ON rag_corpus_generations(project_run_id, created_at)"""),
+    ("create_rag_sources", """
+CREATE TABLE rag_sources (
+    source_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK(active IN (0, 1)),
+    source_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    invalidated_at TEXT,
+    UNIQUE(project_run_id, relative_path, content_hash),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_rag_sources_active", """
+CREATE INDEX idx_rag_sources_active
+ON rag_sources(project_run_id, active, relative_path)"""),
+    ("create_rag_chunks", """
+CREATE TABLE rag_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    project_run_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    text_hash TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK(active IN (0, 1)),
+    chunk_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    invalidated_at TEXT,
+    UNIQUE(source_id, ordinal, text_hash),
+    FOREIGN KEY(source_id) REFERENCES rag_sources(source_id),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_rag_chunks_active", """
+CREATE INDEX idx_rag_chunks_active
+ON rag_chunks(project_run_id, active, source_id, ordinal)"""),
+    ("create_rag_embeddings", """
+CREATE TABLE rag_embeddings (
+    chunk_id TEXT NOT NULL,
+    model_identity TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    embedding_policy_version TEXT NOT NULL,
+    chunk_text_hash TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+    embedding_hash TEXT NOT NULL,
+    vector_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(chunk_id, model_identity, model_version, embedding_policy_version),
+    FOREIGN KEY(chunk_id) REFERENCES rag_chunks(chunk_id)
+)"""),
+    ("index_rag_embeddings_identity", """
+CREATE INDEX idx_rag_embeddings_identity
+ON rag_embeddings(model_identity, model_version, embedding_policy_version)"""),
+    ("create_rag_retrieval_requests", """
+CREATE TABLE rag_retrieval_requests (
+    request_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started', 'completed', 'failed')),
+    request_json TEXT NOT NULL,
+    artifact_id TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_rag_retrieval_requests_project", """
+CREATE INDEX idx_rag_retrieval_requests_project
+ON rag_retrieval_requests(project_run_id, created_at)"""),
+    ("create_rag_retrieval_candidates", """
+CREATE TABLE rag_retrieval_candidates (
+    request_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    rank INTEGER NOT NULL CHECK(rank >= 1),
+    candidate_json TEXT NOT NULL,
+    PRIMARY KEY(request_id, chunk_id),
+    FOREIGN KEY(request_id) REFERENCES rag_retrieval_requests(request_id),
+    FOREIGN KEY(chunk_id) REFERENCES rag_chunks(chunk_id)
+)"""),
+    ("create_rag_retrieval_artifacts", """
+CREATE TABLE rag_retrieval_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE,
+    canonical_artifact_id TEXT NOT NULL UNIQUE,
+    artifact_hash TEXT NOT NULL,
+    artifact_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
+    FOREIGN KEY(request_id) REFERENCES rag_retrieval_requests(request_id),
+    FOREIGN KEY(canonical_artifact_id) REFERENCES project_artifacts(artifact_id)
+)"""),
+    ("index_rag_retrieval_artifacts_project", """
+CREATE INDEX idx_rag_retrieval_artifacts_project
+ON rag_retrieval_artifacts(project_run_id, created_at)"""),
+    ("create_rag_retrieval_evidence", """
+CREATE TABLE rag_retrieval_evidence (
+    artifact_id TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    final_rank INTEGER NOT NULL CHECK(final_rank >= 1),
+    evidence_json TEXT NOT NULL,
+    PRIMARY KEY(artifact_id, evidence_id),
+    UNIQUE(artifact_id, final_rank),
+    FOREIGN KEY(artifact_id) REFERENCES rag_retrieval_artifacts(artifact_id),
+    FOREIGN KEY(chunk_id) REFERENCES rag_chunks(chunk_id)
+)"""),
+    ("create_rag_retrieval_replays", """
+CREATE TABLE rag_retrieval_replays (
+    idempotency_key TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    replay_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
+    FOREIGN KEY(artifact_id) REFERENCES rag_retrieval_artifacts(artifact_id)
+)"""),
+    ("index_rag_retrieval_replays_project", """
+CREATE INDEX idx_rag_retrieval_replays_project
+ON rag_retrieval_replays(project_run_id, created_at)"""),
+    ("create_rag_invalidations", """
+CREATE TABLE rag_invalidations (
+    invalidation_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK(target_type IN ('source', 'chunk', 'artifact', 'corpus')),
+    target_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    binding_hash TEXT NOT NULL,
+    invalidation_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(target_type, target_id, reason, binding_hash),
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_rag_invalidations_target", """
+CREATE INDEX idx_rag_invalidations_target
+ON rag_invalidations(project_run_id, target_type, target_id, created_at)"""),
+    ("protect_rag_retrieval_artifacts_from_update", """
+CREATE TRIGGER rag_retrieval_artifacts_no_update
+BEFORE UPDATE ON rag_retrieval_artifacts
+BEGIN SELECT RAISE(ABORT, 'rag_retrieval_artifact_immutable'); END"""),
+    ("protect_rag_retrieval_artifacts_from_delete", """
+CREATE TRIGGER rag_retrieval_artifacts_no_delete
+BEFORE DELETE ON rag_retrieval_artifacts
+BEGIN SELECT RAISE(ABORT, 'rag_retrieval_artifact_immutable'); END"""),
+)
+
+
+def _phase6_canonical_rag_steps() -> tuple[SchemaMigrationStep, ...]:
+    return tuple(_sql_step(step_id, sql) for step_id, sql in _PHASE6_RAG_SQL)
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -1143,6 +1306,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "local_ai_generation_delete_protection",
             "astra-schema-migration:local-ai-generation-delete-protection:v1",
             _local_ai_generation_delete_protection_steps(),
+        ),
+        SchemaMigration(
+            16,
+            "canonical_project_rag",
+            "astra-schema-migration:canonical-project-rag:v1",
+            _phase6_canonical_rag_steps(),
         ),
     )
 
@@ -2058,6 +2227,86 @@ REQUIRED_SCHEMA_SHAPE[15] = {
             *REQUIRED_SCHEMA_SHAPE[14]["local_ai_generation_invocations"].get("triggers", ()),
             "local_ai_generation_records_no_delete",
         ),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[16] = {
+    **REQUIRED_SCHEMA_SHAPE[15],
+    "rag_corpus_generations": {
+        "present": True,
+        "columns": ("generation_id", "project_run_id", "repository_state_hash", "generation_json"),
+        "indexes": ("idx_rag_corpus_generations_project",),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+    },
+    "rag_sources": {
+        "present": True,
+        "columns": ("source_id", "project_run_id", "relative_path", "content_hash", "active", "source_json"),
+        "indexes": ("idx_rag_sources_active",),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+        "sql_contains": ("CHECK(active IN (0, 1))",),
+    },
+    "rag_chunks": {
+        "present": True,
+        "columns": ("chunk_id", "source_id", "project_run_id", "text_hash", "active", "chunk_json"),
+        "indexes": ("idx_rag_chunks_active",),
+        "foreign_keys": (
+            ("source_id", "rag_sources", "source_id"),
+            ("project_run_id", "project_runs", "project_run_id"),
+        ),
+    },
+    "rag_embeddings": {
+        "present": True,
+        "columns": ("chunk_id", "model_identity", "model_version", "embedding_policy_version", "chunk_text_hash", "embedding_hash", "vector_json"),
+        "indexes": ("idx_rag_embeddings_identity",),
+        "foreign_keys": (("chunk_id", "rag_chunks", "chunk_id"),),
+    },
+    "rag_retrieval_requests": {
+        "present": True,
+        "columns": ("request_id", "project_run_id", "idempotency_key", "request_fingerprint", "status", "request_json", "artifact_id"),
+        "indexes": ("idx_rag_retrieval_requests_project",),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+    },
+    "rag_retrieval_candidates": {
+        "present": True,
+        "columns": ("request_id", "chunk_id", "rank", "candidate_json"),
+        "foreign_keys": (
+            ("request_id", "rag_retrieval_requests", "request_id"),
+            ("chunk_id", "rag_chunks", "chunk_id"),
+        ),
+    },
+    "rag_retrieval_artifacts": {
+        "present": True,
+        "columns": ("artifact_id", "project_run_id", "request_id", "canonical_artifact_id", "artifact_hash", "artifact_json"),
+        "indexes": ("idx_rag_retrieval_artifacts_project",),
+        "foreign_keys": (
+            ("project_run_id", "project_runs", "project_run_id"),
+            ("request_id", "rag_retrieval_requests", "request_id"),
+            ("canonical_artifact_id", "project_artifacts", "artifact_id"),
+        ),
+        "triggers": ("rag_retrieval_artifacts_no_update", "rag_retrieval_artifacts_no_delete"),
+    },
+    "rag_retrieval_evidence": {
+        "present": True,
+        "columns": ("artifact_id", "evidence_id", "chunk_id", "final_rank", "evidence_json"),
+        "foreign_keys": (
+            ("artifact_id", "rag_retrieval_artifacts", "artifact_id"),
+            ("chunk_id", "rag_chunks", "chunk_id"),
+        ),
+    },
+    "rag_retrieval_replays": {
+        "present": True,
+        "columns": ("idempotency_key", "project_run_id", "request_fingerprint", "artifact_id", "replay_json"),
+        "indexes": ("idx_rag_retrieval_replays_project",),
+        "foreign_keys": (
+            ("project_run_id", "project_runs", "project_run_id"),
+            ("artifact_id", "rag_retrieval_artifacts", "artifact_id"),
+        ),
+    },
+    "rag_invalidations": {
+        "present": True,
+        "columns": ("invalidation_id", "project_run_id", "target_type", "target_id", "reason", "binding_hash", "invalidation_json"),
+        "indexes": ("idx_rag_invalidations_target",),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
     },
 }
 

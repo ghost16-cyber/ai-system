@@ -327,6 +327,10 @@ from backend.app.project_api import (
 )
 from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
 from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
+from backend.app.project_retrieval import (
+    ProjectRetrievalService,
+    create_project_retrieval_router,
+)
 from backend.app.local_ai.service import LocalAIService
 from backend.app.local_ai.routes import create_local_ai_router
 from backend.app.project_coordinator import (
@@ -845,6 +849,9 @@ def create_app(
     canonical_project_service = CanonicalProjectService(
         project_control, project_artifact_store
     )
+    project_retrieval_service = ProjectRetrievalService(
+        configured_path, project_control, project_artifact_store
+    )
     local_ai_service = LocalAIService(configured_path)
     delivery_control = ProjectDeliveryControlAdapter(
         project_control, project_artifact_store
@@ -894,6 +901,7 @@ def create_app(
         repository.initialize()
         project_control.initialize()
         project_artifact_store.initialize()
+        project_retrieval_service.initialize()
         project_worker_queue.initialize()
         project_mutation_engine.initialize()
         project_coordinator.initialize()
@@ -926,6 +934,7 @@ def create_app(
     application.state.project_control = project_control
     application.state.project_artifact_store = project_artifact_store
     application.state.canonical_project_service = canonical_project_service
+    application.state.project_retrieval_service = project_retrieval_service
     application.state.local_ai_service = local_ai_service
     application.state.project_worker_queue = project_worker_queue
     application.state.project_worker_service = project_worker_service
@@ -7200,6 +7209,9 @@ def create_app(
             coordinator=project_coordinator,
             synthesis_proposals=synthesis_proposal_store,
         )
+    )
+    application.include_router(
+        create_project_retrieval_router(project_retrieval_service)
     )
     return application
 

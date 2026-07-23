@@ -127,6 +127,20 @@ class ProjectControlPlane:
         with self._connect() as connection:
             return self._load_plan(connection, plan_revision_id)
 
+    def get_scope_revision(self, scope_revision_id: str) -> ScopeRevision:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision_json FROM project_scope_revisions "
+                "WHERE scope_revision_id = ?",
+                (scope_revision_id,),
+            ).fetchone()
+        if row is None:
+            raise ProjectControlError(
+                ProjectControlErrorCode.SCOPE_REVISION_MISMATCH,
+                "The project scope revision does not exist.",
+            )
+        return self._stored_model(ScopeRevision, row["revision_json"], "scope revision")
+
     def has_idempotency_key(self, project_run_id: str, idempotency_key: str) -> bool:
         with self._connect() as connection:
             return connection.execute(

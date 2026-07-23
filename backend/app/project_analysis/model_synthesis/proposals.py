@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 
 from backend.app.database.migrations import apply_schema_migrations, assert_schema_compatible
 from backend.app.project_control.contracts import StrictModel, canonical_json, content_hash
+from backend.app.project_retrieval.contracts import RetrievalPhase5BEvidence
 
 
 MAX_SYNTHESIS_EVIDENCE_BYTES = 196_608
@@ -95,7 +96,8 @@ class SynthesisEvidenceEnvelope(StrictModel):
     invalidated_evidence_identities: tuple[str, ...] = Field(default=(), max_length=80)
     created_at: datetime
     evidence_hash: str = Field(min_length=64, max_length=64)
-    project_rag_enabled: Literal[False] = False
+    retrieval_evidence: RetrievalPhase5BEvidence | None = None
+    project_rag_enabled: bool = False
 
     @model_validator(mode="after")
     def validate_envelope(self) -> "SynthesisEvidenceEnvelope":
@@ -106,6 +108,19 @@ class SynthesisEvidenceEnvelope(StrictModel):
             for item in self.evidence_items
         ):
             raise ValueError("the evidence envelope contains invalidated evidence")
+        if self.project_rag_enabled != (self.retrieval_evidence is not None):
+            raise ValueError("project RAG state must match attached retrieval evidence")
+        if self.retrieval_evidence is not None:
+            retrieval = self.retrieval_evidence
+            if (
+                retrieval.project_id != self.project_run_id
+                or retrieval.scope_revision_id != self.scope_revision_id
+                or retrieval.plan_revision_id != self.plan_revision_id
+                or retrieval.repository_manifest_hash
+                != self.repository_manifest_identity
+                or retrieval.repository_state_hash != self.repository_state_identity
+            ):
+                raise ValueError("retrieval evidence is not exactly bound to synthesis")
         material = self.model_dump(mode="json", exclude={"evidence_hash"})
         if self.evidence_hash != content_hash(material):
             raise ValueError("evidence envelope hash does not match exact content")
@@ -430,6 +445,7 @@ def build_evidence_envelope(
     scan_complete: bool = True,
     scope_resolved: bool = True,
     constraints: tuple[str, ...] = (),
+    retrieval_evidence: RetrievalPhase5BEvidence | None = None,
     created_at: datetime | None = None,
 ) -> SynthesisEvidenceEnvelope:
     item = SynthesisEvidenceItem(
@@ -460,7 +476,8 @@ def build_evidence_envelope(
         "constraints": constraints,
         "permitted_command_categories": tuple(sorted(ALLOWED_COMMAND_CATEGORIES)),
         "created_at": now,
-        "project_rag_enabled": False,
+        "retrieval_evidence": retrieval_evidence,
+        "project_rag_enabled": retrieval_evidence is not None,
     }
     draft = SynthesisEvidenceEnvelope.model_construct(
         **base, evidence_hash="0" * 64
