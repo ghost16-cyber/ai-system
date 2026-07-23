@@ -18,6 +18,12 @@ class EmbeddingProvider(Protocol):
     version: str
     dimensions: int
 
+    def transform_query(self, text: str) -> str: ...
+    def transform_passage(self, text: str) -> str: ...
+    def embed_query(self, text: str) -> tuple[float, ...]: ...
+    def embed_passages(
+        self, texts: tuple[str, ...]
+    ) -> tuple[tuple[float, ...], ...]: ...
     def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]: ...
 
 
@@ -32,6 +38,20 @@ class DeterministicEmbeddingProvider:
 
     def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
         return tuple(self._one(text) for text in texts)
+
+    def transform_query(self, text: str) -> str:
+        return text
+
+    def transform_passage(self, text: str) -> str:
+        return text
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return self._one(text)
+
+    def embed_passages(
+        self, texts: tuple[str, ...]
+    ) -> tuple[tuple[float, ...], ...]:
+        return self.embed(texts)
 
     def _one(self, text: str) -> tuple[float, ...]:
         vector = [0.0] * self.dimensions
@@ -51,6 +71,19 @@ class UnavailableEmbeddingProvider:
         del texts
         raise EmbeddingUnavailable("embedding_provider_unavailable")
 
+    def transform_query(self, text: str) -> str:
+        return text
+
+    def transform_passage(self, text: str) -> str:
+        return text
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        del text
+        raise EmbeddingUnavailable("embedding_provider_unavailable")
+
+    def embed_passages(self, texts: tuple[str, ...]):
+        return self.embed(texts)
+
 
 def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if len(left) != len(right):
@@ -59,4 +92,3 @@ def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
     if not math.isfinite(score):
         raise ValueError("invalid_semantic_score")
     return max(0.0, min(1.0, score))
-

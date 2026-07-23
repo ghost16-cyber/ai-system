@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -23,6 +23,9 @@ from backend.app.project_control.project_service import CanonicalProjectService
 from backend.app.project_coordinator import ProjectCoordinatorService
 from backend.app.project_analysis.model_synthesis.proposals import SynthesisProposalStore
 
+if TYPE_CHECKING:
+    from backend.app.project_retrieval.service import ProjectRetrievalService
+
 
 FolderAuthorityResolver = Callable[[str], dict[str, Any]]
 
@@ -33,6 +36,7 @@ def create_project_router(
     folder_authority_resolver: FolderAuthorityResolver | None = None,
     coordinator: ProjectCoordinatorService | None = None,
     synthesis_proposals: SynthesisProposalStore | None = None,
+    retrieval: "ProjectRetrievalService | None" = None,
 ) -> APIRouter:
     router = APIRouter(tags=["canonical-projects"])
 
@@ -60,7 +64,7 @@ def create_project_router(
                 manifest=request.manifest,
                 plan=request.plan,
             )
-            return build_canonical_project_response(service, project.project_run_id, coordinator=coordinator)
+            return build_canonical_project_response(service, project.project_run_id, coordinator=coordinator, retrieval=retrieval)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -70,7 +74,7 @@ def create_project_router(
     )
     def get_project(project_run_id: str) -> CanonicalProjectResponse:
         try:
-            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator, retrieval=retrieval)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -103,7 +107,7 @@ def create_project_router(
     def list_projects(conversation_id: str) -> CanonicalProjectCollection:
         try:
             items = tuple(
-                build_canonical_project_response(service, project.project_run_id, coordinator=coordinator)
+                build_canonical_project_response(service, project.project_run_id, coordinator=coordinator, retrieval=retrieval)
                 for project in service.list_projects(conversation_id)
             )
             return CanonicalProjectCollection(items=items, count=len(items))
@@ -134,7 +138,7 @@ def create_project_router(
     ) -> CanonicalProjectResponse:
         try:
             service.execute_action(project_run_id, action=action, request=request)
-            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator, retrieval=retrieval)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -162,7 +166,7 @@ def create_project_router(
     ) -> CanonicalProjectResponse:
         try:
             service.submit_manual_evidence(project_run_id, request)
-            return build_canonical_project_response(service, project_run_id, coordinator=coordinator)
+            return build_canonical_project_response(service, project_run_id, coordinator=coordinator, retrieval=retrieval)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
 
@@ -185,10 +189,11 @@ def build_canonical_project_response(
     project_run_id: str,
     *,
     coordinator: ProjectCoordinatorService | None = None,
+    retrieval: "ProjectRetrievalService | None" = None,
 ) -> CanonicalProjectResponse:
     project = service.get_project(project_run_id)
     raw_artifacts = tuple(service.list_artifacts(project_run_id))
-    artifacts = tuple(_summary(item) for item in raw_artifacts)
+    artifacts = tuple(_summary(item, retrieval=retrieval) for item in raw_artifacts)
     coordinator_summary = None
     if coordinator is not None:
         intents = coordinator.list_for_project(project_run_id)
@@ -272,7 +277,38 @@ def _next_actions(project, artifacts) -> tuple[CanonicalProjectActionDescriptor,
     return tuple(values)
 
 
-def _summary(artifact: ProjectArtifact) -> CanonicalArtifactSummary:
+def _summary(
+    artifact: ProjectArtifact,
+    *,
+    retrieval: "ProjectRetrievalService | None" = None,
+) -> CanonicalArtifactSummary:
+    values: dict[str, Any] = {}
+    if artifact.artifact_type.value == "retrieval_evidence":
+        payload = artifact.payload
+        evidence = payload.get("evidence") if isinstance(payload, dict) else None
+        if isinstance(evidence, list):
+            values["retrieval_evidence"] = tuple({
+                "evidence_id": str(item.get("evidence_id") or ""),
+                "citation_label": str(item.get("citation_label") or ""),
+                "relative_path": str(item.get("relative_path") or ""),
+                "line_start": int(item.get("line_start") or 1),
+                "line_end": int(item.get("line_end") or 1),
+                "excerpt": str(item.get("text") or "")[:8000],
+                "trust_class": "untrusted_retrieved_content",
+            } for item in evidence if isinstance(item, dict) and item.get("text"))
+        reranker = payload.get("reranker") if isinstance(payload, dict) else None
+        if isinstance(reranker, dict):
+            values["retrieval_mode"] = "hybrid_learned_rerank" if not reranker.get("fallback") else "hybrid_deterministic_fallback"
+            values["reranker_identity"] = str(reranker.get("identity") or "")
+            values["reranker_fallback"] = bool(reranker.get("fallback"))
+        values["advisory_only"] = True
+        if retrieval is not None:
+            try:
+                values["invalidated"] = retrieval.get_retrieval_artifact(
+                    artifact.binding.project_run_id, artifact.artifact_id
+                ).invalidated
+            except Exception:
+                values["invalidated"] = True
     return CanonicalArtifactSummary(
         artifact_id=artifact.artifact_id,
         artifact_type=artifact.artifact_type.value,
@@ -280,6 +316,7 @@ def _summary(artifact: ProjectArtifact) -> CanonicalArtifactSummary:
         binding_hash=artifact.binding_hash,
         content_hash=artifact.content_hash,
         created_at=artifact.created_at.isoformat(),
+        **values,
     )
 
 

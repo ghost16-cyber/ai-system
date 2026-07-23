@@ -8,6 +8,7 @@ from backend.app.project_retrieval.contracts import (
     CorpusIngestionRequest,
     RetrievalArtifactCollection,
     RetrievalEvidenceArtifact,
+    RetrievalProviderCollection,
     RetrievalRequest,
     RetrievalStatus,
 )
@@ -44,6 +45,13 @@ def create_project_retrieval_router(service: ProjectRetrievalService) -> APIRout
     def retrieval_status(project_id: str) -> RetrievalStatus:
         try:
             return service.status(project_id)
+        except (ProjectRetrievalError, ProjectControlError) as exc:
+            raise _http_error(exc) from exc
+
+    @router.get("/providers", response_model=RetrievalProviderCollection)
+    def providers(project_id: str) -> RetrievalProviderCollection:
+        try:
+            return service.providers(project_id)
         except (ProjectRetrievalError, ProjectControlError) as exc:
             raise _http_error(exc) from exc
 

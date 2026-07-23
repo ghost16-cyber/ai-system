@@ -1,5 +1,8 @@
 # Astra Phase 6: Canonical Project RAG
 
+Phase 7 learned local providers and chat-native citations are documented in
+`docs/astra-phase7-learned-rag.md`.
+
 ## Scope
 
 Phase 6 adds install-free, project-bound retrieval for canonical Astra projects. It is

@@ -329,10 +329,13 @@ from backend.app.project_control.adapters import ProjectDeliveryControlAdapter
 from backend.app.project_control.contracts import ExecutionAttemptType, content_hash
 from backend.app.project_retrieval import (
     ProjectRetrievalService,
+    build_retrieval_providers,
     create_project_retrieval_router,
+    retrieval_configuration_from_environment,
 )
 from backend.app.local_ai.service import LocalAIService
 from backend.app.local_ai.routes import create_local_ai_router
+from backend.app.local_ai.contracts import Capability, CapabilityStatus
 from backend.app.project_coordinator import (
     CoordinatorIntentError,
     ProjectCoordinatorService,
@@ -849,10 +852,46 @@ def create_app(
     canonical_project_service = CanonicalProjectService(
         project_control, project_artifact_store
     )
-    project_retrieval_service = ProjectRetrievalService(
-        configured_path, project_control, project_artifact_store
-    )
     local_ai_service = LocalAIService(configured_path)
+    rag_configuration = retrieval_configuration_from_environment()
+    rag_embedding, rag_reranker = build_retrieval_providers(
+        rag_configuration, local_ai=local_ai_service
+    )
+    project_retrieval_service = ProjectRetrievalService(
+        configured_path,
+        project_control,
+        project_artifact_store,
+        embedding_provider=rag_embedding,
+        reranker=rag_reranker,
+    )
+    def _rag_provider_capabilities() -> tuple[Capability, ...]:
+        values = []
+        for capability_id, provider in (
+            ("rag_embedding_provider", rag_embedding),
+            ("rag_reranker_provider", rag_reranker),
+        ):
+            readiness_method = getattr(provider, "readiness", None)
+            if callable(readiness_method):
+                readiness = readiness_method()
+                values.append(Capability(
+                    capability_id=capability_id,
+                    status=(
+                        CapabilityStatus.READY
+                        if readiness.ready
+                        else CapabilityStatus.UNAVAILABLE
+                    ),
+                    version=readiness.resolved_revision,
+                    details=readiness.model_dump(mode="json"),
+                    reason=readiness.reason,
+                    probed_at=datetime.now(timezone.utc),
+                    provenance={
+                        "probe": "rag_local_cache_metadata",
+                        "weights_loaded": False,
+                        "network_used": False,
+                    },
+                ))
+        return tuple(values)
+    local_ai_service.set_additional_capability_probe(_rag_provider_capabilities)
     delivery_control = ProjectDeliveryControlAdapter(
         project_control, project_artifact_store
     )
@@ -7208,6 +7247,7 @@ def create_app(
             folder_authority_resolver=_canonical_folder_authority,
             coordinator=project_coordinator,
             synthesis_proposals=synthesis_proposal_store,
+            retrieval=project_retrieval_service,
         )
     )
     application.include_router(

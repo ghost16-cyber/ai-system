@@ -246,6 +246,13 @@ class LocalAIService:
             self.database_path,
             configuration=self.configuration,
         )
+        self._additional_capability_probe: Callable[[], tuple[Capability, ...]] | None = None
+
+    def set_additional_capability_probe(
+        self, probe: Callable[[], tuple[Capability, ...]]
+    ) -> None:
+        """Attach lightweight read-only capability records owned by another subsystem."""
+        self._additional_capability_probe = probe
 
     def initialize(self) -> None:
         assert_schema_compatible(self.database_path)
@@ -283,7 +290,7 @@ class LocalAIService:
         if not refresh:
             cached = self._latest_snapshot(max_age_seconds)
             if cached is not None:
-                return cached
+                return self._with_additional_capabilities(cached)
         capabilities = self._probe()
         now = _now()
         report = HostCapabilityReport(
@@ -309,7 +316,21 @@ class LocalAIService:
                 HostCapabilityReport.model_validate_json(previous["report_json"])
             )) != content_hash(self._material_capability_payload(report)):
                 self._audit(connection, "capability_change", report.report_id, {"material_change": True})
-        return report
+        return self._with_additional_capabilities(report)
+
+    def _with_additional_capabilities(
+        self, report: HostCapabilityReport
+    ) -> HostCapabilityReport:
+        if self._additional_capability_probe is None:
+            return report
+        additional = self._additional_capability_probe()
+        existing = {item.capability_id for item in report.capabilities}
+        return report.model_copy(update={
+            "capabilities": (
+                *report.capabilities,
+                *(item for item in additional if item.capability_id not in existing),
+            )
+        })
 
     def refresh_capabilities(self, *, actor_id: str, expected_snapshot_id: str | None,
                              idempotency_key: str) -> HostCapabilityReport:

@@ -211,6 +211,30 @@ class RetrievalEvidenceItem(StrictModel):
         return self
 
 
+class RetrievalProviderTrace(StrictModel):
+    schema_version: Literal["astra.rag.provider-trace.v1"] = (
+        "astra.rag.provider-trace.v1"
+    )
+    requested_embedding_identity: str
+    effective_embedding_identity: str
+    embedding_model_id: str
+    embedding_resolved_revision: str
+    embedding_dimensions: int = Field(ge=1)
+    embedding_policy_version: str
+    transformed_query_hash: str = Field(min_length=64, max_length=64)
+    embedding_device: str | None = None
+    requested_reranker_identity: str
+    effective_reranker_identity: str
+    reranker_model_id: str
+    reranker_resolved_revision: str
+    reranking_policy_version: str
+    reranker_device: str | None = None
+    fallback_used: bool
+    fallback_reason: str | None = Field(default=None, max_length=300)
+    query_embedding_latency_ms: float = Field(ge=0)
+    reranking_latency_ms: float = Field(ge=0)
+
+
 class RetrievalEvidenceArtifact(StrictModel):
     schema_version: Literal["astra.rag.retrieval-evidence.v1"] = "astra.rag.retrieval-evidence.v1"
     artifact_id: str
@@ -236,6 +260,7 @@ class RetrievalEvidenceArtifact(StrictModel):
     embedding_model_version: str
     reranker_identity: str
     reranker_version: str
+    provider_trace: RetrievalProviderTrace | None = None
     candidate_count: int = Field(ge=0)
     reranked_count: int = Field(ge=0)
     evidence_count: int = Field(ge=0, le=MAX_EVIDENCE)
@@ -276,6 +301,46 @@ class RetrievalStatus(StrictModel):
     has_mutation_authority: Literal[False] = False
 
 
+class RetrievalProviderReadiness(StrictModel):
+    schema_version: Literal["astra.rag.provider-readiness.v1"] = (
+        "astra.rag.provider-readiness.v1"
+    )
+    provider_kind: Literal["embedding", "reranker"]
+    provider_type: str
+    configured_model_id: str
+    resolved_revision: str
+    effective_identity: str = Field(min_length=1, max_length=300)
+    package_installed: bool
+    model_present_locally: bool
+    ready: bool
+    reason: str | None = None
+    requested_device: Literal["cpu", "cuda", "auto"]
+    admitted_device: Literal["cpu", "cuda"] | None = None
+    dimensions: int | None = Field(default=None, ge=1)
+    maximum_sequence_length: int | None = Field(default=None, ge=1)
+    batch_size: int = Field(ge=1, le=128)
+    maximum_batch_size: int = Field(ge=1, le=128)
+    normalization_required: bool
+    local_files_only: Literal[True] = True
+    deterministic_fallback_available: Literal[True] = True
+    estimated_ram_bytes: int = Field(ge=0)
+    estimated_vram_bytes: int = Field(ge=0)
+    last_failure: str | None = Field(default=None, max_length=300)
+    advisory_only: Literal[True] = True
+    has_execution_authority: Literal[False] = False
+    has_approval_authority: Literal[False] = False
+    has_mutation_authority: Literal[False] = False
+
+
+class RetrievalProviderCollection(StrictModel):
+    schema_version: Literal["astra.rag.provider-collection.v1"] = (
+        "astra.rag.provider-collection.v1"
+    )
+    project_id: str
+    items: tuple[RetrievalProviderReadiness, ...]
+    advisory_only: Literal[True] = True
+
+
 class RetrievalArtifactCollection(StrictModel):
     schema_version: Literal["astra.rag.artifact-collection.v1"] = "astra.rag.artifact-collection.v1"
     project_id: str
@@ -299,6 +364,7 @@ class RetrievalPhase5BEvidence(StrictModel):
     project_state_version: int = Field(ge=1)
     authority_id: str = Field(min_length=64, max_length=64)
     evidence: tuple[RetrievalEvidenceItem, ...] = Field(max_length=MAX_EVIDENCE)
+    provider_trace: RetrievalProviderTrace | None = None
     advisory_only: Literal[True] = True
     untrusted_content: Literal[True] = True
     has_execution_authority: Literal[False] = False
@@ -326,6 +392,7 @@ __all__ = [
     "MAX_RERANK", "ProjectRetrievalBinding", "RERANK_POLICY_VERSION",
     "RETRIEVAL_POLICY_VERSION", "RetrievalArtifactCollection", "RetrievalCandidate",
     "RetrievalEvidenceArtifact", "RetrievalEvidenceItem", "RetrievalRequest",
-    "RetrievalPhase5BEvidence", "RetrievalStatus", "SourceKind", "TrustClass",
-    "normalize_query",
+    "RetrievalPhase5BEvidence", "RetrievalProviderCollection",
+    "RetrievalProviderReadiness", "RetrievalProviderTrace", "RetrievalStatus",
+    "SourceKind", "TrustClass", "normalize_query",
 ]

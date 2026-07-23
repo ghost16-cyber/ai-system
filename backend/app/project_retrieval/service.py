@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -32,6 +33,9 @@ from backend.app.project_retrieval.contracts import (
     RetrievalEvidenceArtifact,
     RetrievalEvidenceItem,
     RetrievalPhase5BEvidence,
+    RetrievalProviderCollection,
+    RetrievalProviderReadiness,
+    RetrievalProviderTrace,
     RetrievalRequest,
     RetrievalStatus,
     SourceKind,
@@ -49,6 +53,7 @@ from backend.app.project_retrieval.reranking import (
     DeterministicLexicalReranker,
     Reranker,
     RerankerUnavailable,
+    normalize_rerank_scores,
     validate_rerank,
 )
 from backend.app.project_retrieval.semantic import (
@@ -116,6 +121,9 @@ class ProjectRetrievalService:
             "scope_revision_id": request.scope_revision_id,
             "scope_hash": request.scope_hash,
             "chunking_policy_version": request.chunking_policy_version,
+            "embedding_identity": self.embedding.identity,
+            "embedding_version": self.embedding.version,
+            "embedding_dimensions": self.embedding.dimensions,
             "sources": [(path, exact_bytes_hash(data)) for path, data in files],
         }
         generation_id = f"rag-generation-{content_hash(material)[:24]}"
@@ -199,7 +207,14 @@ class ProjectRetrievalService:
         return generation
 
     def retrieve(self, request: RetrievalRequest) -> RetrievalEvidenceArtifact:
-        fingerprint = content_hash(request.model_dump(mode="json"))
+        fingerprint = content_hash({
+            "request": request.model_dump(mode="json"),
+            "embedding_identity": self.embedding.identity,
+            "embedding_version": self.embedding.version,
+            "embedding_dimensions": self.embedding.dimensions,
+            "requested_reranker_identity": self.reranker.identity,
+            "requested_reranker_version": self.reranker.version,
+        })
         try:
             run, scope, _ = validate_project_binding(self.control, request)
         except ValueError as exc:
@@ -223,12 +238,14 @@ class ProjectRetrievalService:
             raise ProjectRetrievalError("retrieval_unavailable")
         documents = {item.chunk_id: item.text for item in chunks}
         bm25 = rank_bm25(request.normalized_query, documents, limit=request.max_candidates)
+        query_started = perf_counter()
         try:
-            query_vector = self.embedding.embed((request.normalized_query,))[0]
+            query_vector = self.embedding.embed_query(request.normalized_query)
             vectors = self._embedding_vectors(chunks)
         except (EmbeddingUnavailable, ValueError) as exc:
             self._fail_request(request.request_id)
             raise ProjectRetrievalError("embedding_unavailable") from exc
+        query_embedding_latency_ms = (perf_counter() - query_started) * 1000.0
         semantic = {
             chunk.chunk_id: cosine(query_vector, vectors[chunk.chunk_id])
             for chunk in chunks
@@ -248,14 +265,18 @@ class ProjectRetrievalService:
         )
         reranker_identity = self.reranker.identity
         reranker_version = self.reranker.version
+        requested_reranker_identity = self.reranker.identity
         fallback = False
+        fallback_reason: str | None = None
+        rerank_started = perf_counter()
         try:
             rerank_scores = validate_rerank(
                 tuple(item[0] for item in rerank_input),
                 self.reranker.rerank(request.normalized_query, rerank_input),
             )
-        except (RerankerUnavailable, ValueError):
+        except (RerankerUnavailable, ValueError) as exc:
             fallback = True
+            fallback_reason = str(exc)[:300]
             deterministic = DeterministicLexicalReranker()
             reranker_identity = f"{deterministic.identity}:fallback"
             reranker_version = deterministic.version
@@ -267,6 +288,8 @@ class ProjectRetrievalService:
                 "request_id": request.request_id,
                 "configured_reranker": self.reranker.identity,
             })
+        rerank_scores = normalize_rerank_scores(rerank_scores)
+        reranking_latency_ms = (perf_counter() - rerank_started) * 1000.0
         candidate_by_id = {item.chunk_id: item for item in candidates}
         chunk_by_id = {item.chunk_id: item for item in chunks}
         ranked_ids = sorted(
@@ -297,11 +320,20 @@ class ProjectRetrievalService:
             "embedding": {
                 "identity": self.embedding.identity,
                 "version": self.embedding.version,
+                "dimensions": self.embedding.dimensions,
+                "model_id": _provider_model_id(self.embedding),
+                "resolved_revision": _provider_revision(self.embedding),
+                "actual_device": getattr(self.embedding, "actual_device", None),
             },
             "reranker": {
+                "requested_identity": requested_reranker_identity,
                 "identity": reranker_identity,
                 "version": reranker_version,
                 "fallback": fallback,
+                "fallback_reason": fallback_reason,
+                "model_id": _provider_model_id(self.reranker),
+                "resolved_revision": _provider_revision(self.reranker),
+                "actual_device": getattr(self.reranker, "actual_device", None),
             },
             "trust": "untrusted_retrieved_content",
             "advisory_only": True,
@@ -351,6 +383,28 @@ class ProjectRetrievalService:
             embedding_model_version=self.embedding.version,
             reranker_identity=reranker_identity,
             reranker_version=reranker_version,
+            provider_trace=RetrievalProviderTrace(
+                requested_embedding_identity=self.embedding.identity,
+                effective_embedding_identity=self.embedding.identity,
+                embedding_model_id=_provider_model_id(self.embedding),
+                embedding_resolved_revision=_provider_revision(self.embedding),
+                embedding_dimensions=self.embedding.dimensions,
+                embedding_policy_version=self.embedding.version,
+                transformed_query_hash=content_hash(
+                    self.embedding.transform_query(request.normalized_query)
+                ),
+                embedding_device=getattr(self.embedding, "actual_device", None),
+                requested_reranker_identity=requested_reranker_identity,
+                effective_reranker_identity=reranker_identity,
+                reranker_model_id=_provider_model_id(self.reranker),
+                reranker_resolved_revision=_provider_revision(self.reranker),
+                reranking_policy_version=reranker_version,
+                reranker_device=getattr(self.reranker, "actual_device", None),
+                fallback_used=fallback,
+                fallback_reason=fallback_reason,
+                query_embedding_latency_ms=query_embedding_latency_ms,
+                reranking_latency_ms=reranking_latency_ms,
+            ),
             candidate_count=len(candidates),
             reranked_count=len(rerank_input),
             evidence_count=len(evidence),
@@ -444,6 +498,16 @@ class ProjectRetrievalService:
             invalidation_reasons=reasons,
         )
 
+    def providers(self, project_id: str) -> RetrievalProviderCollection:
+        self.control.get_project(project_id)
+        return RetrievalProviderCollection(
+            project_id=project_id,
+            items=(
+                _provider_readiness(self.embedding, "embedding"),
+                _provider_readiness(self.reranker, "reranker"),
+            ),
+        )
+
     def verify_artifact_freshness(
         self, artifact_id: str, binding: RetrievalRequest
     ) -> RetrievalEvidenceArtifact:
@@ -518,6 +582,7 @@ class ProjectRetrievalService:
             project_state_version=artifact.project_state_version,
             authority_id=artifact.authority_id,
             evidence=artifact.evidence,
+            provider_trace=artifact.provider_trace,
         )
 
     def invalidate_for_binding_change(
@@ -742,7 +807,9 @@ class ProjectRetrievalService:
         for start in range(0, len(chunks), MAX_EMBEDDING_BATCH):
             batch = chunks[start : start + MAX_EMBEDDING_BATCH]
             try:
-                vectors = self.embedding.embed(tuple(item.text for item in batch))
+                vectors = self.embedding.embed_passages(
+                    tuple(item.text for item in batch)
+                )
             except EmbeddingUnavailable:
                 return
             with self.store.connect() as connection:
@@ -756,7 +823,8 @@ class ProjectRetrievalService:
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             chunk.chunk_id, self.embedding.identity, self.embedding.version,
-                            EMBEDDING_POLICY_VERSION, chunk.normalized_text_hash,
+                            EMBEDDING_POLICY_VERSION,
+                            content_hash(self.embedding.transform_passage(chunk.text)),
                             len(vector_payload), content_hash(vector_payload),
                             canonical_json(vector_payload), now,
                         ),
@@ -794,7 +862,10 @@ class ProjectRetrievalService:
         result: dict[str, tuple[float, ...]] = {}
         for chunk in chunks:
             stored = by_id.get(chunk.chunk_id)
-            if stored is None or stored[0] != chunk.normalized_text_hash:
+            transformed_hash = content_hash(
+                self.embedding.transform_passage(chunk.text)
+            )
+            if stored is None or stored[0] != transformed_hash:
                 raise EmbeddingUnavailable("embedding_missing_or_stale")
             result[chunk.chunk_id] = stored[1]
         return result
@@ -924,6 +995,14 @@ class ProjectRetrievalService:
         if self._artifact_invalidated(row["artifact_id"]):
             raise ProjectRetrievalError("artifact_invalidated")
         artifact = RetrievalEvidenceArtifact.model_validate_json(row["replay_json"])
+        if artifact.embedding_model_identity != self.embedding.identity:
+            raise ProjectRetrievalError("replay_embedding_identity_mismatch")
+        if (
+            artifact.provider_trace is not None
+            and artifact.provider_trace.requested_reranker_identity
+            != self.reranker.identity
+        ):
+            raise ProjectRetrievalError("replay_reranker_identity_mismatch")
         canonical = self.artifacts.verify(
             artifact.artifact_id,
             expected_content_hash=artifact.artifact_hash,
@@ -971,3 +1050,49 @@ def _media_type(path: str) -> str:
         ".md": "text/markdown", ".html": "text/html", ".css": "text/css",
         ".xml": "application/xml", ".yaml": "application/yaml", ".yml": "application/yaml",
     }.get(suffix, "text/plain")
+
+
+def _provider_model_id(provider: object) -> str:
+    spec = getattr(provider, "spec", None)
+    return str(getattr(spec, "model_id", getattr(provider, "identity", "unknown")))
+
+
+def _provider_revision(provider: object) -> str:
+    resolution = getattr(provider, "resolution", None)
+    return str(getattr(resolution, "resolved_revision", getattr(provider, "version", "unknown")))
+
+
+def _provider_readiness(
+    provider: object, kind: str
+) -> RetrievalProviderReadiness:
+    readiness = getattr(provider, "readiness", None)
+    if callable(readiness):
+        return readiness()
+    identity = str(getattr(provider, "identity", "unavailable"))
+    available = identity != "unavailable"
+    dimensions = getattr(provider, "dimensions", None)
+    return RetrievalProviderReadiness(
+        provider_kind=kind,
+        provider_type=identity,
+        configured_model_id=identity,
+        resolved_revision=str(getattr(provider, "version", "unknown")),
+        effective_identity=identity,
+        package_installed=available,
+        model_present_locally=available,
+        ready=available,
+        reason=None if available else f"{kind}_provider_unavailable",
+        requested_device="cpu",
+        admitted_device="cpu" if available else None,
+        dimensions=(
+            int(dimensions)
+            if kind == "embedding" and isinstance(dimensions, int) and dimensions > 0
+            else None
+        ),
+        maximum_sequence_length=None,
+        batch_size=1,
+        maximum_batch_size=20 if kind == "reranker" else MAX_EMBEDDING_BATCH,
+        normalization_required=kind == "embedding",
+        estimated_ram_bytes=0,
+        estimated_vram_bytes=0,
+        last_failure=None,
+    )

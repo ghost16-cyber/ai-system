@@ -146,6 +146,22 @@ class CanonicalArtifactSummary(StrictModel):
     binding_hash: str = Field(min_length=64, max_length=64)
     content_hash: str = Field(min_length=64, max_length=64)
     created_at: str
+    retrieval_evidence: tuple["CanonicalRetrievalCitation", ...] = ()
+    retrieval_mode: str | None = None
+    reranker_identity: str | None = None
+    reranker_fallback: bool | None = None
+    invalidated: bool | None = None
+    advisory_only: bool | None = None
+
+
+class CanonicalRetrievalCitation(StrictModel):
+    evidence_id: str
+    citation_label: str
+    relative_path: str
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    excerpt: str = Field(min_length=1, max_length=8000)
+    trust_class: Literal["untrusted_retrieved_content"]
 
 
 class CanonicalSynthesisProposalSummary(StrictModel):

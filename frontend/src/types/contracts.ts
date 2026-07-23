@@ -354,6 +354,22 @@ export interface CanonicalArtifactSummary {
   binding_hash: string;
   content_hash: string;
   created_at: string;
+  retrieval_evidence?: CanonicalRetrievalCitation[];
+  retrieval_mode?: string | null;
+  reranker_identity?: string | null;
+  reranker_fallback?: boolean | null;
+  invalidated?: boolean | null;
+  advisory_only?: boolean | null;
+}
+
+export interface CanonicalRetrievalCitation {
+  evidence_id: string;
+  citation_label: string;
+  relative_path: string;
+  line_start: number;
+  line_end: number;
+  excerpt: string;
+  trust_class: "untrusted_retrieved_content";
 }
 
 export interface CanonicalProjectReadModel {

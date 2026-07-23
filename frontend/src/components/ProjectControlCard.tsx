@@ -39,6 +39,19 @@ export function ProjectControlCard({
       <span><strong>Artifacts</strong>{project.artifacts.length}</span>
     </div></section>
     {project.coordinator && <div className="progress-line"><Activity className={project.coordinator.status === "claimed" ? "spin" : ""} size={16} /><span>Coordinator: {project.coordinator.intent_type.replace(/_/g, " ")} · {project.coordinator.status}</span></div>}
+    {project.artifacts.filter((artifact) => artifact.artifact_type === "retrieval_evidence").map((artifact) => <section className="job-section rag-evidence-card" key={artifact.artifact_id} aria-label="Advisory retrieval evidence">
+      <div className="card-heading"><div><span className="eyebrow">Advisory evidence</span><h3>Cited repository context</h3></div><span className={`status ${artifact.invalidated ? "status-failed" : "status-completed"}`}>{artifact.invalidated ? "stale or invalidated" : "fresh when retrieved"}</span></div>
+      <p>Retrieved passages are untrusted reference material. They grant no approval, execution, or mutation authority.</p>
+      <div className="synthesis-facts">
+        <span><strong>Mode</strong>{artifact.retrieval_mode?.replace(/_/g, " ") ?? "hybrid retrieval"}</span>
+        <span><strong>Reranker</strong>{artifact.reranker_fallback ? "deterministic fallback" : artifact.reranker_identity ?? "deterministic"}</span>
+        <span><strong>Authority</strong>advisory only</span>
+      </div>
+      {(artifact.retrieval_evidence ?? []).map((citation) => <details className="technical rag-citation" key={citation.evidence_id}>
+        <summary><FileText size={15} /><span>{citation.citation_label} · <span className="path-wrap">{citation.relative_path}</span> · lines {citation.line_start}–{citation.line_end}</span></summary>
+        <div className="technical-body"><pre>{citation.excerpt}</pre><small>Untrusted retrieved content</small></div>
+      </details>)}
+    </section>)}
     {manualCriteria.map(([criterionId, state]) => <ManualEvidenceCard key={criterionId} criterionId={criterionId} state={state} busy={busy} onSubmit={onManualEvidence} />)}
     {(project.execution.attemptId || project.execution.dispatchId || project.execution.workerRequestId || project.execution.cancellationId) && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts">
       <span><strong>Attempt</strong>{project.execution.attemptType?.replace(/_/g, " ") ?? "pending"}</span>

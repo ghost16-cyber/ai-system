@@ -57,6 +57,18 @@ def validate_rerank(
     supplied = {item.chunk_id for item in candidates}
     if set(scores) != supplied:
         raise ValueError("reranker_candidate_set_mismatch")
-    if any(not math.isfinite(score) or score < 0 or score > 1 for score in scores.values()):
+    if any(not math.isfinite(score) for score in scores.values()):
         raise ValueError("invalid_reranker_score")
     return scores
+
+
+def normalize_rerank_scores(scores: dict[str, float]) -> dict[str, float]:
+    """Map arbitrary finite logits to [0, 1] without changing their ordering."""
+    if not scores:
+        return {}
+    if any(not math.isfinite(score) for score in scores.values()):
+        raise ValueError("invalid_reranker_score")
+    return {
+        chunk_id: 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, score))))
+        for chunk_id, score in scores.items()
+    }

@@ -21,7 +21,7 @@ from backend.app.project_retrieval.service import (
 )
 
 
-def run_smoke() -> dict[str, object]:
+def run_smoke(*, embedding_provider=None, reranker=None) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="astra-rag-smoke-") as directory:
         base = Path(directory)
         root = base / "repo"
@@ -71,7 +71,13 @@ def run_smoke() -> dict[str, object]:
             },
             plan={"revision": 1, "acceptance_criteria": [], "work_units": []},
         )
-        retrieval = ProjectRetrievalService(database, control, artifacts)
+        retrieval = ProjectRetrievalService(
+            database,
+            control,
+            artifacts,
+            embedding_provider=embedding_provider,
+            reranker=reranker,
+        )
         retrieval.initialize()
         run = control.get_project(project.project_run_id)
         scope = control.get_scope_revision(run.current_scope_revision_id)
@@ -109,7 +115,15 @@ def run_smoke() -> dict[str, object]:
             created_at=datetime.now(timezone.utc),
         )
         artifact = retrieval.retrieve(request)
+        calls_before_replay = {
+            "embedding": getattr(retrieval.embedding, "call_count", None),
+            "reranker": getattr(retrieval.reranker, "call_count", None),
+        }
         replay = retrieval.retrieve(request)
+        calls_after_replay = {
+            "embedding": getattr(retrieval.embedding, "call_count", None),
+            "reranker": getattr(retrieval.reranker, "call_count", None),
+        }
         retrieval.phase5b_evidence(artifact.artifact_id, request)
         source.write_text("def changed():\n    return True\n", encoding="utf-8")
         stale_rejected = False
@@ -125,6 +139,8 @@ def run_smoke() -> dict[str, object]:
             "artifact_id": artifact.artifact_id,
             "evidence_count": artifact.evidence_count,
             "exact_replay": replay.replayed,
+            "provider_calls_before_replay": calls_before_replay,
+            "provider_calls_after_replay": calls_after_replay,
             "stale_phase5b_rejected": stale_rejected,
             "temporary_resources_removed": True,
         }
