@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from backend.app.local_ai.contracts import AdmissionOutcome, HardwareAdmissionRequest
+from datetime import datetime, timezone
+
+from backend.app.local_ai.contracts import (
+    AdmissionOutcome,
+    Capability,
+    CapabilityStatus,
+    HardwareAdmissionRequest,
+)
 from backend.app.local_ai.service import LocalAIService
 from backend.app.project_retrieval.configuration import RetrievalProviderConfiguration
 from backend.app.project_retrieval.learned import (
@@ -93,4 +100,37 @@ def _cuda_admitted(local_ai: LocalAIService) -> bool:
     }
 
 
-__all__ = ["build_retrieval_providers"]
+def rag_provider_capabilities(embedding, reranker) -> tuple[Capability, ...]:
+    """Bounded capability probe for the learned RAG providers: local cache
+    metadata only, never loads weights or touches the network. Shared by the
+    LocalAIService capability-probe registration and RuntimeManager's
+    ProviderAdapter so there is exactly one implementation."""
+    values: list[Capability] = []
+    for capability_id, provider in (
+        ("rag_embedding_provider", embedding),
+        ("rag_reranker_provider", reranker),
+    ):
+        readiness_method = getattr(provider, "readiness", None)
+        if callable(readiness_method):
+            readiness = readiness_method()
+            values.append(Capability(
+                capability_id=capability_id,
+                status=(
+                    CapabilityStatus.READY
+                    if readiness.ready
+                    else CapabilityStatus.UNAVAILABLE
+                ),
+                version=readiness.resolved_revision,
+                details=readiness.model_dump(mode="json"),
+                reason=readiness.reason,
+                probed_at=datetime.now(timezone.utc),
+                provenance={
+                    "probe": "rag_local_cache_metadata",
+                    "weights_loaded": False,
+                    "network_used": False,
+                },
+            ))
+    return tuple(values)
+
+
+__all__ = ["build_retrieval_providers", "rag_provider_capabilities"]

@@ -48,6 +48,7 @@ import {
 } from "./state/folderAccessState";
 import { actionRunFromStreamEvent } from "./state/chatStreamState";
 import { describeAstraError } from "./state/errorMessage";
+import { summarizeRuntimeStatus } from "./state/runtimeStatus";
 import {
   canonicalConversationTurns,
   clearScrollSnapshot,
@@ -529,12 +530,14 @@ export default function App() {
       return true;
     }
     if (["show system status", "system status"].includes(normalized)) {
-      const [currentHealth, model, rag, localAI, future, providers, models, scheduler] = await Promise.all([
+      const [currentHealth, model, rag, localAI, future, providers, models, scheduler, runtimeStatus, runtimeReadiness, runtimeHealth, runtimeJobs] = await Promise.all([
         client.getHealth(), client.getSelectedSlm(), client.getRagStatus(),
         client.getLocalAICapabilities(), client.getLocalAIFutureStatus(),
         client.getLocalAIProviders(), client.getLocalAIModels(), client.getLocalAIScheduler(),
+        client.getRuntimeStatus(), client.getRuntimeReadiness(), client.getRuntimeHealth(), client.getRuntimeJobs(),
       ]);
       setHealth(currentHealth);
+      const runtimeSummary = summarizeRuntimeStatus(runtimeReadiness, runtimeHealth, null, runtimeJobs);
       const capability = (id: string) => localAI.capabilities.find((item) => item.capability_id === id)?.status ?? "unknown";
       const ollama = providers.items.find((item) => item.provider_id === "ollama-local");
       const productionModel = models.items.find((item) => item.enabled && item.provider_id !== "fake-deterministic");
@@ -556,7 +559,13 @@ export default function App() {
         { label: "Manual Qwen3 command", value: setupCommand },
         { label: "Project RAG", value: future.project_rag.status },
         { label: "Training", value: future.training.status },
-      ], technical: { health: currentHealth, model, rag, localAI, future, providers, models, scheduler } });
+        { label: "Runtime Ready", value: runtimeSummary.runtimeReady ? "Yes" : `No (${runtimeSummary.runtimeState})` },
+        { label: "Corpus Ready", value: runtimeSummary.corpusReady === null ? "N/A (no project selected)" : runtimeSummary.corpusReady ? "Yes" : "No" },
+        { label: "Retrieval provider", value: runtimeSummary.provider },
+        { label: "Retrieval mode", value: runtimeSummary.retrievalMode },
+        { label: "Recovery state", value: runtimeSummary.recoveryState },
+        { label: "Background indexing", value: runtimeSummary.backgroundIndexing ? "Active" : "Idle" },
+      ], technical: { health: currentHealth, model, rag, localAI, future, providers, models, scheduler, runtimeStatus, runtimeReadiness, runtimeHealth, runtimeJobs } });
       return true;
     }
     if (["show my history", "show recent chats", "show my recent chats", "show history"].includes(normalized)) {

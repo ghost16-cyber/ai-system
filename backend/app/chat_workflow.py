@@ -16,6 +16,7 @@ from backend.app.rag.corpus_retrieval import (
     CorpusRetrievalResult,
     retrieve_corpus_context,
 )
+from backend.app.runtime.contracts import RuntimeReadiness
 from backend.app.schemas.api import ChatRunRequest, ChatRunResponse
 from backend.app.slm import gateway as slm_gateway
 from backend.app.specialists.specialist_router import route_specialist_task
@@ -65,6 +66,7 @@ def run_chat_workflow(
     workspace_root: str | Path,
     previous_turns: list[ChatRunResponse] | None = None,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
+    runtime_readiness: RuntimeReadiness | None = None,
 ) -> ChatRunResponse:
     created_at = datetime.now(timezone.utc)
     run_id = str(uuid4())
@@ -90,6 +92,19 @@ def run_chat_workflow(
             "Astra created one consolidated chat run for this message.",
         )
     ]
+    if runtime_readiness is not None and not runtime_readiness.ready:
+        # Readiness gate only: chat still runs and answers using the exact
+        # same retrieval/generation flow below -- this only reports reduced
+        # capability, it never blocks the response.
+        trace.append(
+            _trace(
+                "runtime_degraded",
+                "Runtime is degraded",
+                "One or more runtime subsystems are not fully ready; answering with reduced capability.",
+                {"blocking_reasons": list(runtime_readiness.blocking_reasons)},
+                status="warning",
+            )
+        )
     trace.append(
         _trace(
             "memory",
@@ -246,6 +261,12 @@ def run_chat_workflow(
         memory_summary=memory_summary,
         created_at=created_at,
         trace_summary=trace,
+        runtime_state=(runtime_readiness.state.value if runtime_readiness is not None else None),
+        runtime_ready=(runtime_readiness.ready if runtime_readiness is not None else None),
+        runtime_blocking_reasons=(
+            list(runtime_readiness.blocking_reasons) if runtime_readiness is not None else []
+        ),
+        corpus_ready=(runtime_readiness.corpus_valid if runtime_readiness is not None else None),
     )
 
 

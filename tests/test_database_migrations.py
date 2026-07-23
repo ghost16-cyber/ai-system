@@ -793,6 +793,12 @@ def test_stage2c_project_records_remain_readable_without_emitting_work(
     events_before = control.list_events("existing-project")
     with sqlite3.connect(database) as connection:
         for table in (
+            "runtime_telemetry_snapshots",
+            "runtime_indexing_history",
+            "runtime_cache_statistics",
+            "runtime_recovery_events",
+            "runtime_state_events",
+            "runtime_background_jobs",
             "rag_invalidations",
             "rag_retrieval_replays",
             "rag_retrieval_evidence",
@@ -1010,7 +1016,7 @@ def test_existing_local_ai_generation_data_survives_the_12_to_16_upgrade(
         )
         connection.commit()
 
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:16])
     assert result.applied_versions == (13, 14, 15, 16)
 
     with sqlite3.connect(database) as connection:
@@ -1031,7 +1037,7 @@ def test_schema_migration_registry_has_unique_contiguous_versions(tmp_path: Path
     versions = tuple(migration.version for migration in SCHEMA_MIGRATIONS)
     assert versions == tuple(range(1, len(SCHEMA_MIGRATIONS) + 1))
     assert len(set(versions)) == len(versions)
-    assert LATEST_SCHEMA_VERSION == 16
+    assert LATEST_SCHEMA_VERSION == 17
     assert SCHEMA_MIGRATIONS[11].version == 12
     assert SCHEMA_MIGRATIONS[11].name == "production_safe_local_generation_gateway"
 
@@ -1040,12 +1046,12 @@ def test_migration_16_adds_canonical_rag_schema_and_is_idempotent(tmp_path: Path
     database = tmp_path / "rag-upgrade.db"
     apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:15])
 
-    result = apply_schema_migrations(database)
-    replay = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:16])
+    replay = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:16])
 
     assert result.applied_versions == (16,)
     assert replay.applied_versions == ()
-    assert assert_schema_compatible(database) == 16
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:16]) == 16
     with sqlite3.connect(database) as connection:
         tables = {
             row[0]

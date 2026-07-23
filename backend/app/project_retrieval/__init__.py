@@ -5,7 +5,10 @@ from backend.app.project_retrieval.configuration import (
     RetrievalProviderConfiguration,
     retrieval_configuration_from_environment,
 )
-from backend.app.project_retrieval.providers import build_retrieval_providers
+from backend.app.project_retrieval.providers import (
+    build_retrieval_providers,
+    rag_provider_capabilities,
+)
 from backend.app.project_retrieval.service import ProjectRetrievalError, ProjectRetrievalService
 
 __all__ = [
@@ -16,4 +19,5 @@ __all__ = [
     "RetrievalProviderConfiguration",
     "retrieval_configuration_from_environment",
     "build_retrieval_providers",
+    "rag_provider_capabilities",
 ]

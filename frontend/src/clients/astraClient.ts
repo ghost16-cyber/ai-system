@@ -224,6 +224,11 @@ export interface ChatRunResponse {
   created_at: string;
   trace_summary: ChatTraceEntry[];
   action?: Record<string, unknown> | null;
+  runtime_state?: string | null;
+  runtime_ready?: boolean | null;
+  runtime_blocking_reasons?: string[];
+  corpus_ready?: boolean | null;
+  retrieval_mode?: string | null;
 }
 
 export interface ChatConversationDetail {
@@ -793,6 +798,107 @@ export interface LocalAISchedulerCollection {
   }>;
 }
 
+export interface RuntimeSubsystemHealth {
+  schema_version: "astra.runtime.subsystem-health.v1";
+  subsystem_id: string;
+  capability_id: string;
+  status: string;
+  version?: string | null;
+  details: Record<string, unknown>;
+  reason?: string | null;
+  probed_at: string;
+}
+
+export interface RuntimeHealthReport {
+  schema_version: "astra.runtime.health-report.v1";
+  runtime_state: string;
+  overall: string;
+  subsystems: RuntimeSubsystemHealth[];
+  generated_at: string;
+}
+
+export interface RuntimeReadiness {
+  schema_version: "astra.runtime.readiness.v1";
+  ready: boolean;
+  state: string;
+  blocking_reasons: string[];
+  control_ready: boolean;
+  retrieval_ready: boolean;
+  corpus_valid: boolean | null;
+  providers_healthy: boolean;
+  pending_recovery: boolean;
+  project_id: string | null;
+  generated_at: string;
+}
+
+export interface RuntimeStateTransition {
+  schema_version: "astra.runtime.state-transition.v1";
+  from_state: string;
+  to_state: string;
+  trigger: string;
+  reason: string | null;
+  occurred_at: string;
+}
+
+export interface RuntimeSnapshot {
+  schema_version: "astra.runtime.snapshot.v1";
+  state: string;
+  recent_transitions: RuntimeStateTransition[];
+  generated_at: string;
+}
+
+export interface RuntimeCorpusFreshness {
+  schema_version: "astra.runtime.corpus-freshness.v1";
+  project_id: string;
+  fresh: boolean;
+  reason: string | null;
+  repository_changed: boolean;
+  current_generation_id: string | null;
+  checked_at: string;
+}
+
+export interface RuntimeCorpusStatus {
+  schema_version: "astra.runtime.corpus-status.v1";
+  project_id: string;
+  freshness: RuntimeCorpusFreshness;
+  reindex_scheduled: boolean;
+  generated_at: string;
+}
+
+export interface RuntimeCacheStatistics {
+  schema_version: "astra.runtime.cache-statistics.v1";
+  cache_id: string;
+  hits: number;
+  misses: number;
+  evictions: number;
+  size: number;
+  version_tag?: string | null;
+}
+
+export interface RuntimeCacheStatus {
+  schema_version: "astra.runtime.cache-status.v1";
+  caches: RuntimeCacheStatistics[];
+  generated_at: string;
+}
+
+export interface RuntimeBackgroundJob {
+  schema_version: "astra.runtime.background-job.v1";
+  job_id: string;
+  job_type: string;
+  target_id: string;
+  status: string;
+  priority: number;
+}
+
+export interface RuntimeJobsStatus {
+  schema_version: "astra.runtime.jobs-status.v1";
+  queued: number;
+  claimed: number;
+  running: number;
+  recent: RuntimeBackgroundJob[];
+  generated_at: string;
+}
+
 export interface ManualEvidenceSubmission {
   schema_version: "astra.project-api.manual-evidence.v1";
   conversation_id: string;
@@ -826,6 +932,12 @@ export interface AstraClient {
   getLocalAIProviders(): Promise<LocalAIProviderCollection>;
   getLocalAIModels(): Promise<LocalAIModelCollection>;
   getLocalAIScheduler(): Promise<LocalAISchedulerCollection>;
+  getRuntimeStatus(): Promise<RuntimeSnapshot>;
+  getRuntimeHealth(): Promise<RuntimeHealthReport>;
+  getRuntimeReadiness(projectId?: string): Promise<RuntimeReadiness>;
+  getRuntimeCorpus(projectId: string): Promise<RuntimeCorpusStatus>;
+  getRuntimeCache(): Promise<RuntimeCacheStatus>;
+  getRuntimeJobs(): Promise<RuntimeJobsStatus>;
   submitManualEvidence(projectRunId: string, request: ManualEvidenceSubmission): Promise<CanonicalProjectResponse>;
   getTools(): Promise<RawTool[]>;
   getJobs(limit?: number): Promise<RawJob[]>;
@@ -960,6 +1072,31 @@ export class HttpAstraClient implements AstraClient {
 
   async getLocalAIScheduler() {
     return this.getJson<LocalAISchedulerCollection>("/runtime/local-ai/scheduler");
+  }
+
+  async getRuntimeStatus() {
+    return this.getJson<RuntimeSnapshot>("/runtime");
+  }
+
+  async getRuntimeHealth() {
+    return this.getJson<RuntimeHealthReport>("/runtime/health");
+  }
+
+  async getRuntimeReadiness(projectId?: string) {
+    const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return this.getJson<RuntimeReadiness>(`/runtime/readiness${query}`);
+  }
+
+  async getRuntimeCorpus(projectId: string) {
+    return this.getJson<RuntimeCorpusStatus>(`/runtime/corpus?project_id=${encodeURIComponent(projectId)}`);
+  }
+
+  async getRuntimeCache() {
+    return this.getJson<RuntimeCacheStatus>("/runtime/cache");
+  }
+
+  async getRuntimeJobs() {
+    return this.getJson<RuntimeJobsStatus>("/runtime/jobs");
   }
 
   async submitManualEvidence(projectRunId: string, request: ManualEvidenceSubmission) {

@@ -1192,6 +1192,139 @@ def _phase6_canonical_rag_steps() -> tuple[SchemaMigrationStep, ...]:
     return tuple(_sql_step(step_id, sql) for step_id, sql in _PHASE6_RAG_SQL)
 
 
+_PHASE8_RUNTIME_SQL: tuple[tuple[str, str], ...] = (
+    ("create_runtime_background_jobs", """
+CREATE TABLE runtime_background_jobs (
+    job_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_hash TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('queued', 'claimed', 'running', 'completed', 'failed', 'cancelled')),
+    priority INTEGER NOT NULL,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    job_json TEXT NOT NULL,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""),
+    ("index_runtime_background_jobs_queue", """
+CREATE INDEX idx_runtime_background_jobs_queue
+ON runtime_background_jobs(status, priority, created_at)"""),
+    ("create_runtime_state_events", """
+CREATE TABLE runtime_state_events (
+    event_id TEXT PRIMARY KEY,
+    from_state TEXT NOT NULL,
+    to_state TEXT NOT NULL,
+    transition_trigger TEXT NOT NULL,
+    reason TEXT,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)"""),
+    ("index_runtime_state_events_created", """
+CREATE INDEX idx_runtime_state_events_created
+ON runtime_state_events(created_at)"""),
+    ("protect_runtime_state_events_from_update", """
+CREATE TRIGGER runtime_state_events_no_update
+BEFORE UPDATE ON runtime_state_events
+BEGIN SELECT RAISE(ABORT, 'runtime_state_event_immutable'); END"""),
+    ("protect_runtime_state_events_from_delete", """
+CREATE TRIGGER runtime_state_events_no_delete
+BEFORE DELETE ON runtime_state_events
+BEGIN SELECT RAISE(ABORT, 'runtime_state_event_immutable'); END"""),
+    ("create_runtime_recovery_events", """
+CREATE TABLE runtime_recovery_events (
+    recovery_id TEXT PRIMARY KEY,
+    failure_class TEXT NOT NULL,
+    subsystem_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    recovery_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)"""),
+    ("index_runtime_recovery_events_class", """
+CREATE INDEX idx_runtime_recovery_events_class
+ON runtime_recovery_events(failure_class, created_at)"""),
+    ("protect_runtime_recovery_events_from_update", """
+CREATE TRIGGER runtime_recovery_events_no_update
+BEFORE UPDATE ON runtime_recovery_events
+BEGIN SELECT RAISE(ABORT, 'runtime_recovery_event_immutable'); END"""),
+    ("protect_runtime_recovery_events_from_delete", """
+CREATE TRIGGER runtime_recovery_events_no_delete
+BEFORE DELETE ON runtime_recovery_events
+BEGIN SELECT RAISE(ABORT, 'runtime_recovery_event_immutable'); END"""),
+    ("create_runtime_cache_statistics", """
+CREATE TABLE runtime_cache_statistics (
+    stat_id TEXT PRIMARY KEY,
+    cache_id TEXT NOT NULL,
+    hits INTEGER NOT NULL CHECK(hits >= 0),
+    misses INTEGER NOT NULL CHECK(misses >= 0),
+    evictions INTEGER NOT NULL CHECK(evictions >= 0),
+    size INTEGER NOT NULL CHECK(size >= 0),
+    version_tag TEXT,
+    stat_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)"""),
+    ("index_runtime_cache_statistics_cache", """
+CREATE INDEX idx_runtime_cache_statistics_cache
+ON runtime_cache_statistics(cache_id, created_at)"""),
+    ("protect_runtime_cache_statistics_from_update", """
+CREATE TRIGGER runtime_cache_statistics_no_update
+BEFORE UPDATE ON runtime_cache_statistics
+BEGIN SELECT RAISE(ABORT, 'runtime_cache_statistic_immutable'); END"""),
+    ("protect_runtime_cache_statistics_from_delete", """
+CREATE TRIGGER runtime_cache_statistics_no_delete
+BEFORE DELETE ON runtime_cache_statistics
+BEGIN SELECT RAISE(ABORT, 'runtime_cache_statistic_immutable'); END"""),
+    ("create_runtime_indexing_history", """
+CREATE TABLE runtime_indexing_history (
+    history_id TEXT PRIMARY KEY,
+    project_run_id TEXT NOT NULL,
+    generation_id TEXT,
+    reindex_trigger TEXT NOT NULL,
+    files_changed INTEGER NOT NULL CHECK(files_changed >= 0),
+    duration_ms INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
+    outcome TEXT NOT NULL,
+    history_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id)
+)"""),
+    ("index_runtime_indexing_history_project", """
+CREATE INDEX idx_runtime_indexing_history_project
+ON runtime_indexing_history(project_run_id, created_at)"""),
+    ("protect_runtime_indexing_history_from_update", """
+CREATE TRIGGER runtime_indexing_history_no_update
+BEFORE UPDATE ON runtime_indexing_history
+BEGIN SELECT RAISE(ABORT, 'runtime_indexing_history_immutable'); END"""),
+    ("protect_runtime_indexing_history_from_delete", """
+CREATE TRIGGER runtime_indexing_history_no_delete
+BEFORE DELETE ON runtime_indexing_history
+BEGIN SELECT RAISE(ABORT, 'runtime_indexing_history_immutable'); END"""),
+    ("create_runtime_telemetry_snapshots", """
+CREATE TABLE runtime_telemetry_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)"""),
+    ("index_runtime_telemetry_snapshots_created", """
+CREATE INDEX idx_runtime_telemetry_snapshots_created
+ON runtime_telemetry_snapshots(created_at)"""),
+    ("protect_runtime_telemetry_snapshots_from_update", """
+CREATE TRIGGER runtime_telemetry_snapshots_no_update
+BEFORE UPDATE ON runtime_telemetry_snapshots
+BEGIN SELECT RAISE(ABORT, 'runtime_telemetry_snapshot_immutable'); END"""),
+    ("protect_runtime_telemetry_snapshots_from_delete", """
+CREATE TRIGGER runtime_telemetry_snapshots_no_delete
+BEFORE DELETE ON runtime_telemetry_snapshots
+BEGIN SELECT RAISE(ABORT, 'runtime_telemetry_snapshot_immutable'); END"""),
+)
+
+
+def _phase8_runtime_steps() -> tuple[SchemaMigrationStep, ...]:
+    return tuple(_sql_step(step_id, sql) for step_id, sql in _PHASE8_RUNTIME_SQL)
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -1312,6 +1445,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "canonical_project_rag",
             "astra-schema-migration:canonical-project-rag:v1",
             _phase6_canonical_rag_steps(),
+        ),
+        SchemaMigration(
+            17,
+            "phase8_runtime_orchestration",
+            "astra-schema-migration:phase8-runtime-orchestration:v1",
+            _phase8_runtime_steps(),
         ),
     )
 
@@ -2307,6 +2446,46 @@ REQUIRED_SCHEMA_SHAPE[16] = {
         "columns": ("invalidation_id", "project_run_id", "target_type", "target_id", "reason", "binding_hash", "invalidation_json"),
         "indexes": ("idx_rag_invalidations_target",),
         "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[17] = {
+    **REQUIRED_SCHEMA_SHAPE[16],
+    "runtime_background_jobs": {
+        "present": True,
+        "columns": ("job_id", "idempotency_key", "request_hash", "job_type", "target_id", "status", "priority", "job_json"),
+        "indexes": ("idx_runtime_background_jobs_queue",),
+    },
+    "runtime_state_events": {
+        "present": True,
+        "columns": ("event_id", "from_state", "to_state", "transition_trigger", "event_json", "created_at"),
+        "indexes": ("idx_runtime_state_events_created",),
+        "triggers": ("runtime_state_events_no_update", "runtime_state_events_no_delete"),
+    },
+    "runtime_recovery_events": {
+        "present": True,
+        "columns": ("recovery_id", "failure_class", "subsystem_id", "action", "outcome", "recovery_json"),
+        "indexes": ("idx_runtime_recovery_events_class",),
+        "triggers": ("runtime_recovery_events_no_update", "runtime_recovery_events_no_delete"),
+    },
+    "runtime_cache_statistics": {
+        "present": True,
+        "columns": ("stat_id", "cache_id", "hits", "misses", "evictions", "size", "stat_json"),
+        "indexes": ("idx_runtime_cache_statistics_cache",),
+        "triggers": ("runtime_cache_statistics_no_update", "runtime_cache_statistics_no_delete"),
+    },
+    "runtime_indexing_history": {
+        "present": True,
+        "columns": ("history_id", "project_run_id", "generation_id", "reindex_trigger", "files_changed", "outcome", "history_json"),
+        "indexes": ("idx_runtime_indexing_history_project",),
+        "foreign_keys": (("project_run_id", "project_runs", "project_run_id"),),
+        "triggers": ("runtime_indexing_history_no_update", "runtime_indexing_history_no_delete"),
+    },
+    "runtime_telemetry_snapshots": {
+        "present": True,
+        "columns": ("snapshot_id", "snapshot_json", "created_at"),
+        "indexes": ("idx_runtime_telemetry_snapshots_created",),
+        "triggers": ("runtime_telemetry_snapshots_no_update", "runtime_telemetry_snapshots_no_delete"),
     },
 }
 

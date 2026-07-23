@@ -149,6 +149,11 @@ class ChatRunResponse(BaseModel):
     created_at: datetime
     trace_summary: list[dict[str, Any]] = Field(default_factory=list)
     action: dict[str, Any] | None = None
+    runtime_state: str | None = None
+    runtime_ready: bool | None = None
+    runtime_blocking_reasons: list[str] = Field(default_factory=list)
+    corpus_ready: bool | None = None
+    retrieval_mode: str | None = None
 
 
 

@@ -331,10 +331,13 @@ from backend.app.project_retrieval import (
     ProjectRetrievalService,
     build_retrieval_providers,
     create_project_retrieval_router,
+    rag_provider_capabilities,
     retrieval_configuration_from_environment,
 )
 from backend.app.local_ai.service import LocalAIService
 from backend.app.local_ai.routes import create_local_ai_router
+from backend.app.runtime import build_runtime_manager
+from backend.app.runtime.routes import create_runtime_router
 from backend.app.local_ai.contracts import Capability, CapabilityStatus
 from backend.app.project_coordinator import (
     CoordinatorIntentError,
@@ -865,32 +868,7 @@ def create_app(
         reranker=rag_reranker,
     )
     def _rag_provider_capabilities() -> tuple[Capability, ...]:
-        values = []
-        for capability_id, provider in (
-            ("rag_embedding_provider", rag_embedding),
-            ("rag_reranker_provider", rag_reranker),
-        ):
-            readiness_method = getattr(provider, "readiness", None)
-            if callable(readiness_method):
-                readiness = readiness_method()
-                values.append(Capability(
-                    capability_id=capability_id,
-                    status=(
-                        CapabilityStatus.READY
-                        if readiness.ready
-                        else CapabilityStatus.UNAVAILABLE
-                    ),
-                    version=readiness.resolved_revision,
-                    details=readiness.model_dump(mode="json"),
-                    reason=readiness.reason,
-                    probed_at=datetime.now(timezone.utc),
-                    provenance={
-                        "probe": "rag_local_cache_metadata",
-                        "weights_loaded": False,
-                        "network_used": False,
-                    },
-                ))
-        return tuple(values)
+        return rag_provider_capabilities(rag_embedding, rag_reranker)
     local_ai_service.set_additional_capability_probe(_rag_provider_capabilities)
     delivery_control = ProjectDeliveryControlAdapter(
         project_control, project_artifact_store
@@ -935,20 +913,34 @@ def create_app(
     delivery_lock = threading.Lock()
     engagement_lock = threading.Lock()
 
+    runtime_manager = build_runtime_manager(
+        database_path=configured_path,
+        repository=repository,
+        project_control=project_control,
+        project_artifact_store=project_artifact_store,
+        project_retrieval_service=project_retrieval_service,
+        local_ai_service=local_ai_service,
+        project_worker_queue=project_worker_queue,
+        project_mutation_engine=project_mutation_engine,
+        project_coordinator=project_coordinator,
+        synthesis_proposal_store=synthesis_proposal_store,
+        job_queue=job_queue,
+        rag_embedding=rag_embedding,
+        rag_reranker=rag_reranker,
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        repository.initialize()
-        project_control.initialize()
-        project_artifact_store.initialize()
-        project_retrieval_service.initialize()
-        project_worker_queue.initialize()
-        project_mutation_engine.initialize()
-        project_coordinator.initialize()
-        synthesis_proposal_store.initialize()
-        local_ai_service.initialize()
-        project_coordinator.recover_expired_leases()
-        job_queue.initialize()
+        # RuntimeManager is now the sole lifecycle authority: it calls each
+        # subsystem's initialize() in the same order this block used to
+        # (repository, project_control, project_artifact_store,
+        # project_retrieval, project_worker_queue, project_mutation_engine,
+        # project_coordinator, synthesis_proposal_store, local_ai, then
+        # job_queue last), plus a startup recovery pass covering what
+        # project_coordinator.recover_expired_leases() used to do alone.
+        runtime_manager.initialize()
         yield
+        runtime_manager.shutdown()
 
     application = FastAPI(
         title="AI Coding Assistant",
@@ -984,9 +976,11 @@ def create_app(
     application.state.cancellation_dispatcher = cancellation_dispatcher
     application.state.job_queue = job_queue
     application.state.workspace_root = configured_workspace_root
+    application.state.runtime_manager = runtime_manager
     application.include_router(specialists_router)
     application.include_router(project_validation_router)
     application.include_router(create_local_ai_router(local_ai_service))
+    application.include_router(create_runtime_router(runtime_manager))
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -6343,6 +6337,7 @@ def create_app(
             request,
             workspace_root=configured_workspace_root,
             previous_turns=previous_turns,
+            runtime_readiness=runtime_manager.readiness(),
         )
         repository.store_chat_run(run)
         _log_training_example(run)
@@ -6523,6 +6518,7 @@ def create_app(
                         workspace_root=configured_workspace_root,
                         previous_turns=previous_turns,
                         event_sink=events.put,
+                        runtime_readiness=runtime_manager.readiness(),
                     )
                 repository.store_chat_run(run, request_id=durable_request.request_id)
                 if (engagement_request or engagement_clarification or engagement_change) and run.action is not None:
