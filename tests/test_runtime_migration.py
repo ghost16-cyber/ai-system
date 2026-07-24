@@ -117,5 +117,63 @@ def test_runtime_background_jobs_table_is_mutable_for_queue_transitions(
 
 def test_schema_migration_registry_still_contiguous_after_migration_18() -> None:
     versions = tuple(migration.version for migration in SCHEMA_MIGRATIONS)
-    assert versions == tuple(range(1, 19))
+    assert versions == tuple(range(1, 20))
     assert len(set(versions)) == len(versions)
+
+
+def test_migration_19_is_chat_active_project_selection() -> None:
+    assert SCHEMA_MIGRATIONS[18].version == 19
+    assert SCHEMA_MIGRATIONS[18].name == "chat_active_project_selection"
+
+
+def test_migrations_1_through_18_checksums_are_unchanged_by_migration_19() -> None:
+    """Same regression guard as migration 17/18's checksum tests: migration
+    19 must be purely additive and must never alter an already-applied
+    migration's checksum."""
+    rebuilt = build_schema_migrations()
+    for version in range(1, 19):
+        original = SCHEMA_MIGRATIONS[version - 1]
+        again = rebuilt[version - 1]
+        assert original.version == version
+        assert again.checksum == original.checksum
+
+
+def test_migration_19_applies_on_fresh_database_and_adds_active_project_column(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "fresh19.db"
+    result = apply_schema_migrations(database)
+    assert result.applied_versions == tuple(range(1, LATEST_SCHEMA_VERSION + 1))
+    assert assert_schema_compatible(database) == LATEST_SCHEMA_VERSION
+
+    with sqlite3.connect(database) as connection:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(chat_conversations)")
+        }
+    assert "active_project_run_id" in columns
+
+
+def test_migration_19_upgrades_an_existing_18_database_without_losing_data(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "upgrade19.db"
+    apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:18])
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:18]) == 18
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO chat_conversations (conversation_id, created_at, updated_at) "
+            "VALUES ('conversation-1', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+        )
+        connection.commit()
+
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:19])
+    assert result.applied_versions == (19,)
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:19]) == 19
+
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT active_project_run_id FROM chat_conversations WHERE conversation_id = 'conversation-1'"
+        ).fetchone()
+    assert row["active_project_run_id"] is None

@@ -125,6 +125,11 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .attach-button { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 9px; color: var(--muted); }
 .attach-button:hover { color: var(--green-dark); background: var(--green-soft); }
 
+.active-project-bar { display: flex; align-items: center; gap: 7px; margin: 0 6px 8px; color: var(--muted); font-size: .78rem; }
+.active-project-select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; color: #17221d; background: white; font-size: .78rem; max-width: 260px; }
+.active-project-indicator { padding: 3px 8px; border-radius: 99px; color: var(--green-dark); background: var(--green-soft); font-size: .68rem; font-weight: 700; text-transform: uppercase; white-space: nowrap; }
+.active-project-stale { color: var(--red); font-size: .72rem; }
+
 .composer { position: fixed; z-index: 5; left: 50%; bottom: 0; width: min(900px, 100%); padding: 15px clamp(15px, 3vw, 28px) 20px; transform: translateX(-50%); background: linear-gradient(to bottom, rgb(244 247 245 / 0%), #f4f7f5 25%); }
 .composer-box { display: flex; align-items: flex-end; gap: 10px; padding: 10px 10px 10px 15px; border: 1px solid #bdcec4; border-radius: 16px; background: white; box-shadow: 0 10px 30px rgb(21 48 34 / 12%); }
 .composer textarea { flex: 1; min-height: 30px; max-height: 150px; padding: 5px 0; resize: none; border: 0; outline: 0; color: #17221d; background: transparent; line-height: 1.45; }

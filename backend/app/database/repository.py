@@ -1416,8 +1416,14 @@ class AnalysisRepository:
     ) -> ChatConversationDetail:
         turns = self.list_chat_runs_for_conversation(conversation_id)
         requests = self.list_chat_requests_for_conversation(conversation_id)
-        if not turns and not requests and not self.chat_conversation_exists(conversation_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT active_project_run_id FROM chat_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if row is None and not turns and not requests:
             raise LookupError("Conversation not found.")
+        active_project_run_id = str(row["active_project_run_id"]) if row is not None and row["active_project_run_id"] else None
         latest_summary = next(
             (turn.memory_summary for turn in reversed(turns) if turn.memory_summary),
             None,
@@ -1430,7 +1436,24 @@ class AnalysisRepository:
             turns=turns,
             requests=requests,
             projects=projects or [],
+            active_project_run_id=active_project_run_id,
         )
+
+    def set_conversation_active_project(
+        self, conversation_id: str, project_run_id: str | None
+    ) -> None:
+        timestamp = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_conversations
+                SET active_project_run_id = ?, updated_at = ?
+                WHERE conversation_id = ?
+                """,
+                (project_run_id, timestamp, conversation_id),
+            )
+            if cursor.rowcount == 0:
+                raise LookupError("Conversation not found.")
 
     def delete_chat_conversation(self, conversation_id: str) -> int:
         with self._connect() as connection:

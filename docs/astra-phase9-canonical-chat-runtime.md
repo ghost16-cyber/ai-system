@@ -142,6 +142,12 @@ queued/claimed/running `corpus_reindex` job for the target project
 
 No automatic model enablement, role assignment, corpus ingestion, package
 installation, model download, execution, or approval was added anywhere in this phase.
-No project selection UI was added to the frontend — `project_run_id` is wired through
-the type system and API client, but choosing one currently requires an external
-caller (or a future frontend project-selector, out of scope here).
+
+**Update (Phase 9B):** a frontend project selector now exists (a compact control above
+the composer, `frontend/src/state/chatProjectSelectionState.ts`) and the selection is
+durably persisted per-conversation via `chat_conversations.active_project_run_id`
+(migration 19, `PUT /chat/conversations/{conversation_id}/active-project`). Selecting a
+project only updates this pointer — it creates no project, grants no approval, and does
+not itself feed retrieval; the frontend still sends an explicit `project_run_id` on each
+`/chat/run`/`/chat/stream` request, captured at request-creation time exactly as Phase 9
+already required.

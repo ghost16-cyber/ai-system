@@ -253,8 +253,9 @@ Chat now answers exclusively through the canonical chat runtime
 `LocalAIService.execute_generation`, and retrieval is project-bound only, with no
 generic workspace-scan fallback. See
 [`docs/astra-phase9-canonical-chat-runtime.md`](docs/astra-phase9-canonical-chat-runtime.md)
-for the full integration. Remaining open work: a frontend project-selector so chat
-users can attach a `project_run_id` from the UI, and configuring a chat role through
-the durable role-mapping API in a real deployment (it is never seeded automatically).
-Model or classifier output remains non-authoritative for approval and verification
-decisions.
+for the full integration. A compact frontend project selector now lets chat users pick
+a canonical project, which is durably remembered per-conversation and attached as
+`project_run_id` to future messages. Remaining open work: configuring a chat role
+through the durable role-mapping API in a real deployment (it is never seeded
+automatically). Model or classifier output remains non-authoritative for approval and
+verification decisions.

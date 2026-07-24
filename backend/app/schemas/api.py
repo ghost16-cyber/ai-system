@@ -100,6 +100,10 @@ class ChatRunRequest(BaseModel):
     project_run_id: str | None = None
 
 
+class ActiveProjectSelectionRequest(BaseModel):
+    project_run_id: str | None = None
+
+
 class ChatRequestRecord(BaseModel):
     request_id: str
     conversation_id: str
@@ -299,6 +303,7 @@ class ChatConversationDetail(BaseModel):
     project_jobs: list[dict[str, Any]] = Field(default_factory=list)
     project_deliveries: list[dict[str, Any]] = Field(default_factory=list)
     projects: list[CanonicalProjectHydrationResponse] = Field(default_factory=list)
+    active_project_run_id: str | None = None
 
 
 class ChatConversationDeleteResponse(BaseModel):

@@ -1567,6 +1567,26 @@ def _phase9_chat_runtime_steps() -> tuple[SchemaMigrationStep, ...]:
     return tuple(steps)
 
 
+# Phase 9B: which canonical project a conversation's future chat messages
+# should attach for retrieval. Nullable, mutable (unlike chat_runtime_links,
+# this is a live "current selection" pointer, not immutable per-request
+# lineage), and deliberately carries no FK -- chat_conversations is an
+# ALTER-only-adopted table (see _PHASE9_CHAT_REQUESTS_COLUMN_REPAIRS above),
+# and SQLite cannot add a FK constraint via ALTER TABLE ADD COLUMN. Existence
+# and conversation-binding are validated at the application layer instead,
+# the same way project_run_id is already validated at generation time in
+# CanonicalChatRuntimeService._retrieve.
+def _phase9b_active_project_steps() -> tuple[SchemaMigrationStep, ...]:
+    return (
+        _add_column_if_missing_step(
+            "add_chat_conversations_active_project_run_id",
+            "chat_conversations",
+            "active_project_run_id",
+            "TEXT",
+        ),
+    )
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -1699,6 +1719,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "canonical_chat_runtime_lineage",
             "astra-schema-migration:canonical-chat-runtime-lineage:v1",
             _phase9_chat_runtime_steps(),
+        ),
+        SchemaMigration(
+            19,
+            "chat_active_project_selection",
+            "astra-schema-migration:chat-active-project-selection:v1",
+            _phase9b_active_project_steps(),
         ),
     )
 
@@ -2781,6 +2807,14 @@ REQUIRED_SCHEMA_SHAPE[18] = {
         ),
         "sql_contains": ("CHECK(response_mode IN ('local_ai', 'deterministic_fallback'))",),
         "triggers": ("chat_runtime_links_no_update",),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[19] = {
+    **REQUIRED_SCHEMA_SHAPE[18],
+    "chat_conversations": {
+        "present": True,
+        "columns": ("conversation_id", "created_at", "updated_at", "active_project_run_id"),
     },
 }
 

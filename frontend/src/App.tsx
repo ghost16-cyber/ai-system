@@ -90,7 +90,12 @@ import {
   exactProjectMutationRequest,
   type CanonicalProjectAction,
 } from "./state/projectControlState";
-import type { CanonicalProjectActionDescriptor } from "./types/contracts";
+import type { CanonicalProjectActionDescriptor, CanonicalProjectResponse } from "./types/contracts";
+import {
+  chatProjectRequestField,
+  deriveProjectOptions,
+  resolveActiveProjectSelection,
+} from "./state/chatProjectSelectionState";
 
 interface Settings {
   apiUrl: string;
@@ -141,6 +146,9 @@ export default function App() {
   const [scrollRestoreConversation, setScrollRestoreConversation] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [activeProjectRunId, setActiveProjectRunId] = useState<string | null>(null);
+  const [availableProjects, setAvailableProjects] = useState<CanonicalProjectResponse[]>([]);
+  const [staleProjectNotice, setStaleProjectNotice] = useState<string | null>(null);
   const [awaitingAssignment, setAwaitingAssignment] = useState(false);
   const [assignmentResult, setAssignmentResult] = useState<AssignmentCopilotResult | null>(null);
   const [selectedAssignmentFile, setSelectedAssignmentFile] = useState<File | null>(null);
@@ -294,6 +302,12 @@ export default function App() {
       setConversationId(selectedConversationId);
       setMessages(restored);
       setScrollRestoreConversation(selectedConversationId);
+      const selection = resolveActiveProjectSelection(detail.active_project_run_id, detail.projects);
+      setAvailableProjects(detail.projects);
+      setActiveProjectRunId(selection.projectRunId);
+      setStaleProjectNotice(
+        selection.stale ? "The previously selected project is no longer available. Choose another or clear the selection." : null,
+      );
     } catch (caught) {
       if (caught instanceof AstraHttpError && shouldClearActiveConversation(caught.status)) {
         const marker = readStreamRecovery(sessionStorage);
@@ -319,6 +333,9 @@ export default function App() {
       const detail = await client.createChatConversation();
       setConversationId(detail.conversation_id);
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, detail.conversation_id);
+      setAvailableProjects([]);
+      setActiveProjectRunId(null);
+      setStaleProjectNotice(null);
       stickToBottomRef.current = true;
       window.scrollTo({ top: 0, behavior: "auto" });
     } catch (caught) {
@@ -424,12 +441,20 @@ export default function App() {
     let streamBegan = false;
     let assistantAdded = false;
     try {
+      const isNewConversation = conversationId === null;
       const activeConversationId = conversationId ?? (await client.createChatConversation()).conversation_id;
+      if (isNewConversation && activeProjectRunId) {
+        // The project was selected before any message existed for this
+        // conversation -- persist it now that a conversation_id exists.
+        await client.setActiveProject(activeConversationId, activeProjectRunId).catch(() => undefined);
+      }
+      const projectRunIdField = chatProjectRequestField({ projectRunId: activeProjectRunId, stale: false }).project_run_id;
       const pendingRequest = await client.createChatRequest({
         message: prompt,
         use_rag: settings.ragEnabled,
         safety_mode: settings.safetyMode,
         conversation_id: activeConversationId,
+        project_run_id: projectRunIdField,
       });
       setConversationId(pendingRequest.conversation_id);
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, pendingRequest.conversation_id);
@@ -447,6 +472,7 @@ export default function App() {
         safety_mode: settings.safetyMode,
         conversation_id: pendingRequest.conversation_id,
         request_id: pendingRequest.request_id,
+        project_run_id: projectRunIdField,
       }, (event) => {
         if (!streamBegan) {
           streamBegan = true;
@@ -1357,6 +1383,35 @@ export default function App() {
     await hydrateConversation(selectedConversationId);
   }
 
+  async function refreshAvailableProjects() {
+    if (!conversationId) return;
+    try {
+      const collection = await client.listCanonicalProjects(conversationId);
+      setAvailableProjects(collection.items);
+    } catch {
+      // The selector keeps showing its last known list; this is a
+      // best-effort refresh, not something that should surface an error.
+    }
+  }
+
+  async function selectActiveProject(projectRunId: string | null) {
+    setStaleProjectNotice(null);
+    if (!conversationId) {
+      // No conversation exists yet (the user is picking a project before
+      // sending the first message) -- keep it in local state only; it is
+      // persisted once the first send establishes a conversation_id.
+      setActiveProjectRunId(projectRunId);
+      return;
+    }
+    try {
+      const detail = await client.setActiveProject(conversationId, projectRunId);
+      setActiveProjectRunId(detail.active_project_run_id);
+      setAvailableProjects(detail.projects);
+    } catch (caught) {
+      setError(`I could not update the active project: ${cleanError(caught)}`);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -1375,6 +1430,24 @@ export default function App() {
           <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
         </section>
         <form ref={composerRef} className="composer" onSubmit={submit} aria-busy={loading || hydrationStatus === "loading"}>
+          <div className="active-project-bar">
+            <FolderOpen size={14} />
+            <select
+              className="active-project-select"
+              value={activeProjectRunId ?? ""}
+              onFocus={() => void refreshAvailableProjects()}
+              onChange={(event) => void selectActiveProject(event.target.value || null)}
+              disabled={loading || hydrationStatus === "loading"}
+              aria-label="Active project for future messages"
+            >
+              <option value="">No project selected</option>
+              {deriveProjectOptions(availableProjects).map((option) => (
+                <option key={option.projectRunId} value={option.projectRunId}>{option.label}</option>
+              ))}
+            </select>
+            {activeProjectRunId && <span className="active-project-indicator">Attached to new messages</span>}
+            {staleProjectNotice && <span className="active-project-stale">{staleProjectNotice}</span>}
+          </div>
           {error && <div className="composer-error"><CircleAlert size={15} />{error}</div>}
           {selectedAssignmentFile && <div className="attachment-chip"><FileText size={16} /><span><strong>{selectedAssignmentFile.name}</strong><small>{formatFileSize(selectedAssignmentFile.size)}</small></span><button type="button" onClick={clearAssignmentFile} aria-label="Remove attached assignment"><X size={15} /></button></div>}
           <div className="composer-box">

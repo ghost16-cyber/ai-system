@@ -163,6 +163,7 @@ from backend.app.rag.evaluation import (
 from backend.app.orchestrator.approvals import approve_pending_patch
 from backend.app.orchestrator.policy import PolicyError
 from backend.app.schemas.api import (
+    ActiveProjectSelectionRequest,
     AnalyzeFileRequest,
     AnalyzeProjectRequest,
     AnalyzeRequest,
@@ -6758,6 +6759,29 @@ def create_app(
             "project_deliveries": deliveries,
             "projects": projects,
         })
+
+    @application.put(
+        "/chat/conversations/{conversation_id}/active-project",
+        response_model=ChatConversationDetail,
+    )
+    def set_active_project(
+        conversation_id: str, request: ActiveProjectSelectionRequest
+    ) -> ChatConversationDetail:
+        if request.project_run_id is not None:
+            try:
+                run = canonical_project_service.get_project(request.project_run_id)
+            except ProjectControlError as error:
+                raise _control_http_error(error) from error
+            if run.conversation_id != conversation_id:
+                raise _control_http_error(ProjectControlError(
+                    ProjectControlErrorCode.CONVERSATION_MISMATCH,
+                    "The selected project does not belong to this conversation.",
+                ))
+        try:
+            repository.set_conversation_active_project(conversation_id, request.project_run_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return chat_conversation(conversation_id)
 
     @application.delete(
         "/chat/conversations/{conversation_id}",

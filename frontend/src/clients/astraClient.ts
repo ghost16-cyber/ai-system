@@ -235,6 +235,7 @@ export interface ChatConversationDetail {
   project_jobs: Array<Record<string, unknown>>;
   project_deliveries: Array<Record<string, unknown>>;
   projects: CanonicalProjectResponse[];
+  active_project_run_id: string | null;
 }
 
 export class AstraHttpError extends Error {
@@ -965,6 +966,7 @@ export interface AstraClient {
   getChatRuns(limit?: number): Promise<ChatRunResponse[]>;
   createChatConversation(): Promise<ChatConversationDetail>;
   getChatConversation(conversationId: string): Promise<ChatConversationDetail>;
+  setActiveProject(conversationId: string, projectRunId: string | null): Promise<ChatConversationDetail>;
   getTrainingDatasetStatus(): Promise<TrainingDatasetStatus>;
   getTrainingExamples(limit?: number): Promise<TrainingExamplesResponse>;
   labelTrainingExample(exampleId: string, request: TrainingLabelRequest): Promise<{ updated: boolean; example: TrainingExample }>;
@@ -1255,6 +1257,13 @@ export class HttpAstraClient implements AstraClient {
   async getChatConversation(conversationId: string) {
     return this.getJson<ChatConversationDetail>(
       `/chat/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  }
+
+  async setActiveProject(conversationId: string, projectRunId: string | null) {
+    return this.putJson<ChatConversationDetail>(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/active-project`,
+      { project_run_id: projectRunId },
     );
   }
 
@@ -1743,6 +1752,16 @@ export class HttpAstraClient implements AstraClient {
   private async patchJson<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new AstraHttpError(response.status, await response.text());
+    return response.json() as Promise<T>;
+  }
+
+  private async putJson<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

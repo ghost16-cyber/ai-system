@@ -1038,7 +1038,7 @@ def test_schema_migration_registry_has_unique_contiguous_versions(tmp_path: Path
     versions = tuple(migration.version for migration in SCHEMA_MIGRATIONS)
     assert versions == tuple(range(1, len(SCHEMA_MIGRATIONS) + 1))
     assert len(set(versions)) == len(versions)
-    assert LATEST_SCHEMA_VERSION == 18
+    assert LATEST_SCHEMA_VERSION == 19
     assert SCHEMA_MIGRATIONS[11].version == 12
     assert SCHEMA_MIGRATIONS[11].name == "production_safe_local_generation_gateway"
 
