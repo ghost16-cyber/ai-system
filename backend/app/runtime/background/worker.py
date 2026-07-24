@@ -44,13 +44,26 @@ class RuntimeWorker:
             return False
         handler = self._handlers.get(job.job_type)
         if handler is None:
-            self._queue.complete_job(job.job_id, worker_id=self.worker_id, succeeded=False)
+            self._queue.complete_job(
+                job.job_id, worker_id=self.worker_id, succeeded=False,
+                error="unregistered_job_type",
+            )
             return True
+        # Transitioning to running before the handler runs (rather than
+        # jumping straight from claimed to completed/failed) makes a crash
+        # mid-handler observable as "was actually executing" on the next
+        # recover_expired_jobs pass, not indistinguishable from "never
+        # started".
+        self._queue.mark_running(job.job_id, worker_id=self.worker_id)
+        error: str | None = None
         try:
             succeeded = handler(job.target_id, job.payload)
-        except Exception:
+        except Exception as exc:
             succeeded = False
-        self._queue.complete_job(job.job_id, worker_id=self.worker_id, succeeded=succeeded)
+            error = f"{type(exc).__name__}: {exc}"[:500]
+        self._queue.complete_job(
+            job.job_id, worker_id=self.worker_id, succeeded=succeeded, error=error,
+        )
         return True
 
     def _loop(self) -> None:

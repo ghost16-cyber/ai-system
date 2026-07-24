@@ -53,7 +53,10 @@ from backend.app.local_ai.hardware import (
 )
 from backend.app.local_ai.generation import LocalGenerationGateway
 from backend.app.local_ai.generation_contracts import (
+    ChatGenerationTarget,
+    ChatGenerationTargetStatus,
     GenerationFailureReason,
+    GenerationPurpose,
     GenerationState,
     LocalAIAdvisoryResponse,
     LocalAIExecutionRequest,
@@ -377,6 +380,52 @@ class LocalAIService:
                 ModelProfile.model_validate_json(row["profile_json"]), report
             )
             for row in rows
+        )
+
+    def resolve_chat_generation_target(self) -> ChatGenerationTarget:
+        """Read-only resolution of the exact model to use for GenerationPurpose.CHAT.
+
+        The chat runtime must call this rather than querying local_ai_* tables
+        directly. A chat role mapping is never seeded or assigned automatically,
+        so every absence path here (unconfigured static role, no matching
+        enabled model profile, a mismatched durable role mapping) returns a
+        typed status instead of raising -- the caller turns that into a
+        deterministic fallback.
+        """
+
+        configured_model = self.configuration.model_for_role(GenerationPurpose.CHAT.value)
+        if configured_model is None:
+            return ChatGenerationTarget(status=ChatGenerationTargetStatus.CHAT_ROLE_NOT_CONFIGURED)
+        with self._connect() as connection:
+            mapping_row = connection.execute(
+                "SELECT model_profile_id FROM local_ai_role_mappings WHERE role_id = ?",
+                (GenerationPurpose.CHAT.value,),
+            ).fetchone()
+            model_rows = connection.execute(
+                "SELECT model_profile_id, config_version, enabled, profile_json FROM local_ai_models"
+            ).fetchall()
+        matched = None
+        for row in model_rows:
+            profile = ModelProfile.model_validate_json(row["profile_json"])
+            if profile.provider_model_id == configured_model:
+                matched = (row, profile)
+                break
+        if matched is None:
+            return ChatGenerationTarget(status=ChatGenerationTargetStatus.MODEL_PROFILE_NOT_FOUND)
+        row, profile = matched
+        if mapping_row is not None and mapping_row["model_profile_id"] != row["model_profile_id"]:
+            return ChatGenerationTarget(status=ChatGenerationTargetStatus.ROLE_MAPPING_MISMATCH)
+        if not bool(row["enabled"]):
+            return ChatGenerationTarget(status=ChatGenerationTargetStatus.MODEL_PROFILE_DISABLED)
+        return ChatGenerationTarget(
+            status=ChatGenerationTargetStatus.RESOLVED,
+            model_profile_id=str(row["model_profile_id"]),
+            exact_model_tag=profile.provider_model_id,
+            configuration_version=int(row["config_version"]),
+            estimated_model_bytes=profile.estimated_model_bytes,
+            operational_context=profile.operational_context,
+            maximum_output_tokens=profile.maximum_output_tokens,
+            gpu_support=profile.gpu_support,
         )
 
     def configuration_state(self) -> LocalAIConfigurationState:

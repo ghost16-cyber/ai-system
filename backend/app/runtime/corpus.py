@@ -84,6 +84,14 @@ class CorpusManager:
             checked_at=_now(),
         )
 
+    def reindex_scheduled(self, project_id: str) -> bool:
+        """Whether a corpus_reindex job for this project is actually queued,
+        claimed, or running -- distinct from staleness (check_freshness):
+        a corpus can be stale with no reindex scheduled yet, and a reindex
+        can be scheduled for a corpus that is not (or no longer) stale."""
+
+        return self._job_queue.has_active_job(job_type="corpus_reindex", target_id=project_id)
+
     def schedule_reindex(
         self,
         binding: CorpusIngestionRequest,

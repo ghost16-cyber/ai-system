@@ -47,6 +47,11 @@ import {
   type FolderAccessAction,
 } from "./state/folderAccessState";
 import { actionRunFromStreamEvent } from "./state/chatStreamState";
+import {
+  describeGenerationProvenance,
+  describeRetrievalMode,
+  summarizeChatCitations,
+} from "./state/chatRuntimeState";
 import { describeAstraError } from "./state/errorMessage";
 import { summarizeRuntimeStatus } from "./state/runtimeStatus";
 import {
@@ -591,29 +596,6 @@ export default function App() {
       const enabled = normalized === "enable rag";
       setSettings((current) => ({ ...current, ragEnabled: enabled }));
       setMessages((current) => [...current, makeMessage("assistant", `RAG is now ${enabled ? "enabled" : "disabled"} for future chat responses.`)]);
-      return true;
-    }
-    if (["change the selected model", "change model"].includes(normalized)) {
-      const profiles = await client.getSlmProfiles();
-      const options = profiles.profiles.map((profile) => {
-        const id = String(profile.profile_id ?? profile.id ?? profile.name ?? "");
-        return { id, label: String(profile.display_name ?? profile.name ?? id) };
-      }).filter((option) => option.id);
-      setMessages((current) => [...current, {
-        ...makeMessage("assistant", ""),
-        action: {
-          actionType: "system_configuration",
-          title: "Change the selected model",
-          summary: "Choose a model profile, then explicitly approve the configuration change.",
-          steps: ["Choose a profile", "Approve the change", "Confirm the active model"],
-          safetyInformation: { approval_required: true },
-          status: "awaiting_approval",
-          approvalRequired: true,
-          technicalDetails: { available_profile_count: options.length },
-          options,
-          selectedOption: options[0]?.id,
-        },
-      }]);
       return true;
     }
     return false;
@@ -1271,18 +1253,6 @@ export default function App() {
       } finally { locks.current.delete(`project-rollback:${patchId}`); }
       return;
     }
-    if (action.actionType === "system_configuration") {
-      const lockId = `model:${action.selectedOption ?? ""}`;
-      if (!action.selectedOption || !tryLockCommandAction(locks.current, lockId)) return;
-      try {
-        updateAction(messageId, (current) => ({ ...current, status: "approving", error: undefined }));
-        await client.selectSlmProfile(action.selectedOption);
-        updateAction(messageId, (current) => ({ ...current, status: "completed", resultSummary: `Selected model changed to ${action.selectedOption}.` }));
-      } catch (caught) {
-        updateAction(messageId, (current) => ({ ...current, status: "failed", error: cleanError(caught) }));
-      } finally { locks.current.delete(lockId); }
-      return;
-    }
     const plan = action.commandPlan;
     const jobId = projectJobIdFromAction(action);
     const deliveryId = projectDeliveryIdFromAction(action);
@@ -1340,10 +1310,6 @@ export default function App() {
       } catch (caught) {
         updateAction(messageId, (current) => ({ ...current, error: cleanError(caught) }));
       } finally { locks.current.delete(`project-cancel:${rawId}`); }
-      return;
-    }
-    if (action.actionType === "system_configuration") {
-      updateAction(messageId, (current) => ({ ...current, status: "cancelled", resultSummary: "Action cancelled. No setting was changed." }));
       return;
     }
     const plan = action.commandPlan;
@@ -1778,7 +1744,9 @@ function InfoCardView({ card, onContinue }: { card: InfoCard; onContinue: (conve
 }
 
 function RunDetails({ run }: { run: ChatRunResponse }) {
-  return <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-grid"><span>Model: {run.slm_model ?? run.slm_provider}</span><span>Specialist: {run.selected_specialist}</span><span>RAG: {run.rag_used ? `${run.rag_context_count} sources` : "not used"}</span><span>Safety: {run.safety_decision}</span><span>Latency: {run.slm_latency_ms === null ? "—" : `${run.slm_latency_ms}ms`}</span><span>Run: {run.run_id}</span></div></details>;
+  const provenance = describeGenerationProvenance(run);
+  const citations = summarizeChatCitations(run);
+  return <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-grid"><span>Model: {provenance.model ?? provenance.provider}</span><span>Specialist: {run.selected_specialist}</span><span>Retrieval: {describeRetrievalMode(run)}</span><span>Safety: {run.safety_decision}</span><span>Latency: {provenance.latencyMs === null ? "—" : `${provenance.latencyMs}ms`}</span><span>Run: {run.run_id}</span></div>{citations.length > 0 && <ul className="citation-list">{citations.map((citation) => <li key={`${citation.path}:${citation.lineRange ?? ""}`}><code>{citation.path}</code>{citation.lineRange ? ` (${citation.lineRange})` : ""}</li>)}</ul>}</details>;
 }
 
 function ProjectSources({ paths }: { paths: string[] }) {

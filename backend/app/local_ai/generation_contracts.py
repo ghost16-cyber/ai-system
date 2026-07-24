@@ -28,6 +28,7 @@ class GenerationPurpose(StrEnum):
     CODING = "coding"
     PLANNING = "planning"
     REVIEW = "review"
+    CHAT = "chat"
 
 
 class GenerationState(StrEnum):
@@ -222,7 +223,65 @@ class LocalAIExecutionResult(StrictModel):
     authority_granted: Literal[False] = False
 
 
+class ChatGenerationTargetStatus(StrEnum):
+    """Outcome of resolving the exact model to use for GenerationPurpose.CHAT.
+
+    Absence at any step (no configured role, no matching enabled profile) is a
+    typed result, not an exception -- chat role mapping is never seeded or
+    assigned automatically, so callers must be able to turn an unconfigured
+    chat role into a deterministic fallback rather than a crash.
+    """
+
+    RESOLVED = "resolved"
+    CHAT_ROLE_NOT_CONFIGURED = "chat_role_not_configured"
+    MODEL_PROFILE_NOT_FOUND = "model_profile_not_found"
+    MODEL_PROFILE_DISABLED = "model_profile_disabled"
+    ROLE_MAPPING_MISMATCH = "role_mapping_mismatch"
+
+
+class ChatGenerationTarget(StrictModel):
+    """Read-only resolution of the chat generation target.
+
+    Returned by LocalAIService.resolve_chat_generation_target() -- the only
+    sanctioned way for chat code to learn which exact model, model profile,
+    and configuration version apply to GenerationPurpose.CHAT. Chat code must
+    never query local_ai_* tables directly.
+    """
+
+    schema_version: Literal["astra.local-ai.chat-generation-target.v1"] = (
+        "astra.local-ai.chat-generation-target.v1"
+    )
+    status: ChatGenerationTargetStatus
+    model_profile_id: str | None = None
+    exact_model_tag: str | None = None
+    configuration_version: int | None = Field(default=None, ge=1)
+    estimated_model_bytes: int | None = Field(default=None, ge=0)
+    operational_context: int | None = Field(default=None, ge=1)
+    maximum_output_tokens: int | None = Field(default=None, ge=1)
+    gpu_support: bool | None = None
+
+    @model_validator(mode="after")
+    def resolved_fields_present(self) -> "ChatGenerationTarget":
+        resolved = self.status == ChatGenerationTargetStatus.RESOLVED
+        fields = (
+            self.model_profile_id,
+            self.exact_model_tag,
+            self.configuration_version,
+            self.estimated_model_bytes,
+            self.operational_context,
+            self.maximum_output_tokens,
+            self.gpu_support,
+        )
+        if resolved and any(field is None for field in fields):
+            raise ValueError("resolved_chat_generation_target_missing_fields")
+        if not resolved and any(field is not None for field in fields):
+            raise ValueError("unresolved_chat_generation_target_has_fields")
+        return self
+
+
 __all__ = [
+    "ChatGenerationTarget",
+    "ChatGenerationTargetStatus",
     "GenerationContextItem",
     "GenerationCorrelation",
     "GenerationFailureReason",

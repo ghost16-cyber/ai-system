@@ -7,11 +7,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.app.project_control.contracts import canonical_json, content_hash
-from backend.app.runtime.contracts import BackgroundJob, BackgroundJobStatus
+from backend.app.runtime.contracts import BackgroundJob, BackgroundJobResult, BackgroundJobStatus
 
 _JOB_COLUMNS = (
     "job_id, idempotency_key, job_type, target_id, status, priority, "
-    "job_json, lease_owner, lease_expires_at, created_at, updated_at"
+    "job_json, lease_owner, lease_expires_at, result_json, created_at, updated_at"
 )
 
 MAX_QUEUE_DEPTH = 500
@@ -38,6 +38,10 @@ def _row_to_job(row: sqlite3.Row) -> BackgroundJob:
         lease_expires_at=(
             datetime.fromisoformat(row["lease_expires_at"])
             if row["lease_expires_at"] else None
+        ),
+        result=(
+            BackgroundJobResult.model_validate_json(row["result_json"])
+            if row["result_json"] else None
         ),
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -172,8 +176,40 @@ class RuntimeJobQueue:
             connection.execute("COMMIT")
             return _row_to_job(row)
 
-    def complete_job(self, job_id: str, *, worker_id: str, succeeded: bool) -> BackgroundJob:
+    def mark_running(self, job_id: str, *, worker_id: str) -> BackgroundJob:
+        """Transition a claimed job to running before its handler is invoked,
+        so a crash mid-handler is observable as 'running' (not still
+        'claimed') on the next recover_expired_jobs pass -- the lease itself
+        is untouched, only the status changes."""
+
         now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE runtime_background_jobs SET status = 'running', updated_at = ? "
+                "WHERE job_id = ? AND status = 'claimed' AND lease_owner = ?",
+                (now.isoformat(), job_id, worker_id),
+            )
+            if cursor.rowcount != 1:
+                connection.execute("COMMIT")
+                raise RuntimeJobQueueError("lease_mismatch")
+            row = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM runtime_background_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            connection.execute("COMMIT")
+            return _row_to_job(row)
+
+    def complete_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        succeeded: bool,
+        error: str | None = None,
+    ) -> BackgroundJob:
+        now = _now()
+        result = BackgroundJobResult(succeeded=succeeded, error=error)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -187,17 +223,36 @@ class RuntimeJobQueue:
             if job.status in {BackgroundJobStatus.COMPLETED, BackgroundJobStatus.FAILED}:
                 connection.execute("COMMIT")
                 return job
-            if job.status != BackgroundJobStatus.CLAIMED or job.lease_owner != worker_id:
+            if (
+                job.status not in {BackgroundJobStatus.CLAIMED, BackgroundJobStatus.RUNNING}
+                or job.lease_owner != worker_id
+            ):
                 connection.execute("COMMIT")
                 raise RuntimeJobQueueError("lease_mismatch")
             new_status = BackgroundJobStatus.COMPLETED if succeeded else BackgroundJobStatus.FAILED
             connection.execute(
                 "UPDATE runtime_background_jobs SET status = ?, lease_owner = NULL, "
-                "lease_expires_at = NULL, updated_at = ? WHERE job_id = ?",
-                (new_status.value, now.isoformat(), job_id),
+                "lease_expires_at = NULL, result_json = ?, updated_at = ? WHERE job_id = ?",
+                (new_status.value, result.model_dump_json(), now.isoformat(), job_id),
             )
             connection.execute("COMMIT")
-            return job.model_copy(update={"status": new_status, "lease_owner": None, "lease_expires_at": None})
+            return job.model_copy(update={
+                "status": new_status, "lease_owner": None, "lease_expires_at": None, "result": result,
+            })
+
+    def has_active_job(self, *, job_type: str, target_id: str) -> bool:
+        """Whether a queued/claimed/running job for this exact target
+        already exists -- the only correct source of truth for "is a reindex
+        actually scheduled", as opposed to merely "the corpus is stale"."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM runtime_background_jobs "
+                "WHERE job_type = ? AND target_id = ? AND status IN ('queued', 'claimed', 'running') "
+                "LIMIT 1",
+                (job_type, target_id),
+            ).fetchone()
+        return row is not None
 
     def status_summary(self, *, recent_limit: int = 20) -> dict:
         with self._connect() as connection:

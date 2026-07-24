@@ -97,6 +97,7 @@ from backend.app.commands import (
     validate_assignment_command_execution,
 )
 from backend.app.core.path_utils import resolve_user_path
+from backend.app.chat_runtime.service import CanonicalChatRuntimeService
 from backend.app.chat_workflow import run_chat_workflow
 from backend.app.chat_actions import DetectedChatAction, detect_chat_action
 from backend.app.database.repository import AnalysisRepository
@@ -870,6 +871,11 @@ def create_app(
     def _rag_provider_capabilities() -> tuple[Capability, ...]:
         return rag_provider_capabilities(rag_embedding, rag_reranker)
     local_ai_service.set_additional_capability_probe(_rag_provider_capabilities)
+    chat_runtime_service = CanonicalChatRuntimeService(
+        local_ai_service=local_ai_service,
+        project_control=project_control,
+        project_retrieval_service=project_retrieval_service,
+    )
     delivery_control = ProjectDeliveryControlAdapter(
         project_control, project_artifact_store
     )
@@ -6193,11 +6199,16 @@ def create_app(
         if request.conversation_id and not repository.chat_conversation_exists(conversation_id):
             raise HTTPException(status_code=404, detail={"code": "conversation_not_found", "message": "Conversation not found."})
         request_id = uuid4().hex
+        # The stored payload must reflect the resolved conversation_id, not
+        # the possibly-None value the caller sent -- otherwise a later exact
+        # request_fingerprint replay/conflict comparison would spuriously
+        # mismatch every request that omitted conversation_id.
+        resolved_request = request.model_copy(update={"conversation_id": conversation_id})
         return repository.create_chat_request(
             request_id=request_id,
             conversation_id=conversation_id,
             user_message=request.message,
-            request_payload=request.model_dump(mode="json", exclude={"request_id"}),
+            request_payload=resolved_request.model_dump(mode="json", exclude={"request_id"}),
             created_at=datetime.now(timezone.utc),
         )
 
@@ -6333,13 +6344,40 @@ def create_app(
             )
             repository.store_chat_run(run)
             return run
+        # Not _create_pending_chat_request: unlike /chat/requests and
+        # /chat/stream, /chat/run has always accepted (and auto-vivified) any
+        # conversation_id without requiring it to already exist -- that
+        # permissive fallback semantics must not change here.
+        durable_conversation_id = request.conversation_id or uuid4().hex
+        durable_request = repository.create_chat_request(
+            request_id=uuid4().hex,
+            conversation_id=durable_conversation_id,
+            user_message=request.message,
+            request_payload=request.model_copy(
+                update={"conversation_id": durable_conversation_id}
+            ).model_dump(mode="json", exclude={"request_id"}),
+            created_at=datetime.now(timezone.utc),
+        )
+        request = request.model_copy(update={
+            "conversation_id": durable_request.conversation_id,
+            "request_id": durable_request.request_id,
+        })
+        durable_request = repository.claim_chat_request(durable_request.request_id)
+        captured_lineage: list = []
         run = run_chat_workflow(
             request,
             workspace_root=configured_workspace_root,
+            chat_runtime=chat_runtime_service,
+            chat_request_id=durable_request.request_id,
             previous_turns=previous_turns,
             runtime_readiness=runtime_manager.readiness(),
+            lineage_sink=captured_lineage.append,
         )
-        repository.store_chat_run(run)
+        repository.store_chat_run(run, request_id=durable_request.request_id)
+        if captured_lineage:
+            repository.record_chat_runtime_link(
+                captured_lineage[0], project_run_id=request.project_run_id
+            )
         _log_training_example(run)
         return run
 
@@ -6350,8 +6388,9 @@ def create_app(
                 durable_request = repository.get_chat_request(request.request_id)
             except LookupError as error:
                 raise HTTPException(status_code=404, detail={"code": "request_not_found", "message": str(error)}) from error
-            if durable_request.conversation_id != request.conversation_id or durable_request.user_message != request.message:
-                raise HTTPException(status_code=409, detail={"code": "request_binding_mismatch", "message": "The stream request does not match its persisted conversation and message."})
+            incoming_fingerprint = content_hash(request.model_dump(mode="json", exclude={"request_id"}))
+            if incoming_fingerprint != durable_request.request_fingerprint:
+                raise HTTPException(status_code=409, detail={"code": "request_binding_mismatch", "message": "The stream request does not match its persisted message, conversation, project, RAG preference, or safety settings."})
         else:
             durable_request = _create_pending_chat_request(request)
             request = request.model_copy(update={
@@ -6426,6 +6465,7 @@ def create_app(
         )
         events: queue.Queue[dict | object] = queue.Queue()
         done = object()
+        captured_lineage: list = []
 
         def worker() -> None:
             try:
@@ -6516,11 +6556,18 @@ def create_app(
                     run = run_chat_workflow(
                         request,
                         workspace_root=configured_workspace_root,
+                        chat_runtime=chat_runtime_service,
+                        chat_request_id=durable_request.request_id,
                         previous_turns=previous_turns,
                         event_sink=events.put,
                         runtime_readiness=runtime_manager.readiness(),
+                        lineage_sink=captured_lineage.append,
                     )
                 repository.store_chat_run(run, request_id=durable_request.request_id)
+                if captured_lineage:
+                    repository.record_chat_runtime_link(
+                        captured_lineage[0], project_run_id=request.project_run_id
+                    )
                 if (engagement_request or engagement_clarification or engagement_change) and run.action is not None:
                     events.put({"event": "client_engagement_updated", "data": {"run": run.model_dump(mode="json"), "engagement": run.action.get("technical_details", {}).get("client_engagement", {})}})
                 if (delivery_request or delivery_clarification) and run.action is not None:

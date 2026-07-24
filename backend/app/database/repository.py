@@ -5,12 +5,29 @@ import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from backend.app.database.migrations import (
     assert_schema_compatible,
     initialize_stage3a_schema,
 )
+
+if TYPE_CHECKING:
+    # Deferred to avoid a circular import: chat_runtime -> local_ai ->
+    # project_control -> backend.app.database (this package's own __init__
+    # re-exports AnalysisRepository from this module).
+    from backend.app.chat_runtime.contracts import ChatRuntimeLineage
+
+
+def _content_hash(value: Any) -> str:
+    """Local copy of project_control.contracts.content_hash -- importing that
+    module here would reintroduce the same repository <-> project_control
+    circular import that the deferred ChatRuntimeLineage import above avoids.
+    """
+
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 from backend.app.schemas.api import (
     AnalysisHistoryItem,
@@ -183,145 +200,13 @@ class AnalysisRepository:
                 ON patch_proposals (finding_ref)
                 """
             )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_runs (
-                    run_id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    user_message TEXT NOT NULL,
-                    assistant_response TEXT NOT NULL,
-                    selected_specialist TEXT NOT NULL,
-                    intent TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    rag_used INTEGER NOT NULL,
-                    rag_skip_reason TEXT,
-                    rag_context_count INTEGER NOT NULL,
-                    rag_sources_json TEXT NOT NULL DEFAULT '[]',
-                    source_count INTEGER NOT NULL DEFAULT 0,
-                    source_paths_json TEXT NOT NULL DEFAULT '[]',
-                    grounding_status TEXT NOT NULL DEFAULT 'none',
-                    corpus_retrieval_used INTEGER NOT NULL DEFAULT 0,
-                    corpus_retrieval_skip_reason TEXT,
-                    corpus_context_count INTEGER NOT NULL DEFAULT 0,
-                    corpus_sources_json TEXT NOT NULL DEFAULT '[]',
-                    runtime_decision TEXT NOT NULL,
-                    safety_decision TEXT NOT NULL,
-                    used_real_slm INTEGER NOT NULL DEFAULT 0,
-                    slm_provider TEXT NOT NULL DEFAULT 'fallback',
-                    slm_model TEXT,
-                    slm_fallback_reason TEXT,
-                    slm_latency_ms INTEGER,
-                    memory_used INTEGER NOT NULL DEFAULT 0,
-                    memory_summary TEXT,
-                    created_at TEXT NOT NULL,
-                    trace_summary_json TEXT NOT NULL,
-                    action_json TEXT
-                )
-                """
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "used_real_slm", "INTEGER NOT NULL DEFAULT 0"
-            )
-            self._add_column_if_missing(connection, "chat_runs", "rag_skip_reason", "TEXT")
-            self._add_column_if_missing(
-                connection, "chat_runs", "rag_sources_json", "TEXT NOT NULL DEFAULT '[]'"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "source_count", "INTEGER NOT NULL DEFAULT 0"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "source_paths_json", "TEXT NOT NULL DEFAULT '[]'"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "grounding_status", "TEXT NOT NULL DEFAULT 'none'"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "corpus_retrieval_used", "INTEGER NOT NULL DEFAULT 0"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "corpus_retrieval_skip_reason", "TEXT"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "corpus_context_count", "INTEGER NOT NULL DEFAULT 0"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "corpus_sources_json", "TEXT NOT NULL DEFAULT '[]'"
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"
-            )
-            self._add_column_if_missing(connection, "chat_runs", "slm_model", "TEXT")
-            self._add_column_if_missing(connection, "chat_runs", "slm_fallback_reason", "TEXT")
-            self._add_column_if_missing(connection, "chat_runs", "slm_latency_ms", "INTEGER")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_conversations (
-                    conversation_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO chat_conversations (conversation_id, created_at, updated_at)
-                SELECT conversation_id, MIN(created_at), MAX(created_at)
-                FROM chat_runs
-                GROUP BY conversation_id
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_requests (
-                    request_id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    user_message TEXT NOT NULL,
-                    request_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    run_id TEXT UNIQUE,
-                    execution_attempts INTEGER NOT NULL DEFAULT 0,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY (conversation_id) REFERENCES chat_conversations (conversation_id) ON DELETE CASCADE,
-                    FOREIGN KEY (run_id) REFERENCES chat_runs (run_id)
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_chat_requests_conversation
-                ON chat_requests (conversation_id, created_at ASC, request_id ASC)
-                """
-            )
-            restart_timestamp = datetime.now().astimezone().isoformat()
-            connection.execute(
-                """
-                UPDATE chat_requests
-                SET status = 'interrupted',
-                    error = 'Backend restarted before this active request completed.',
-                    updated_at = ?
-                WHERE status = 'active'
-                """,
-                (restart_timestamp,),
-            )
-            self._add_column_if_missing(
-                connection, "chat_runs", "memory_used", "INTEGER NOT NULL DEFAULT 0"
-            )
-            self._add_column_if_missing(connection, "chat_runs", "memory_summary", "TEXT")
-            self._add_column_if_missing(connection, "chat_runs", "action_json", "TEXT")
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
-                ON chat_runs (created_at DESC)
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation
-                ON chat_runs (conversation_id, created_at ASC)
-                """
-            )
+            # chat_runs/chat_conversations/chat_requests are owned by schema
+            # migration 18 (canonical_chat_runtime_lineage) via
+            # initialize_stage3a_schema() above -- this repository no longer
+            # creates or repairs them. Recovery of requests left 'active' by a
+            # prior process is explicit chat-runtime recovery (see
+            # recover_interrupted_chat_requests), not an implicit side effect
+            # of every repository initialize().
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_patches (
@@ -1029,6 +914,79 @@ class AnalysisRepository:
             raise RuntimeError("Chat request could not be claimed.")
         return record
 
+    def recover_interrupted_chat_requests(self) -> int:
+        """Mark requests left 'active' by a prior process as 'interrupted'.
+
+        This must be invoked explicitly by chat-runtime startup recovery (not
+        by every AnalysisRepository.initialize()) so that recovery is a
+        visible, ordered step rather than an implicit side effect of opening
+        the database.
+        """
+
+        timestamp = datetime.now().astimezone().isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_requests
+                SET status = 'interrupted',
+                    error = 'Backend restarted before this active request completed.',
+                    updated_at = ?
+                WHERE status = 'active'
+                """,
+                (timestamp,),
+            )
+            return cursor.rowcount
+
+    def record_chat_runtime_link(
+        self, lineage: "ChatRuntimeLineage", *, project_run_id: str | None = None
+    ) -> None:
+        """Persist one immutable chat_runtime_links row for a terminal chat turn.
+
+        This is the only place canonical chat lineage is written -- the table
+        is trigger-protected against UPDATE/DELETE, so exact citations and
+        generation provenance survive conversation reload untouched.
+        """
+
+        from backend.app.chat_runtime.contracts import ChatResponseMode
+
+        generation = lineage.generation
+        retrieval = lineage.retrieval
+        terminal_outcome = (
+            "succeeded"
+            if lineage.response_mode == ChatResponseMode.LOCAL_AI
+            else f"deterministic_fallback:{lineage.failure.reason.value if lineage.failure else 'unknown'}"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chat_runtime_links (
+                    link_id, chat_request_id, chat_run_id, request_fingerprint,
+                    project_run_id, retrieval_artifact_id, retrieval_artifact_hash,
+                    scheduler_job_id, generation_id, provenance_execution_id,
+                    model_profile_id, model_configuration_version, response_mode,
+                    terminal_outcome, lineage_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    lineage.chat_request_id,
+                    lineage.chat_run_id,
+                    lineage.request_fingerprint,
+                    project_run_id,
+                    retrieval.retrieval_artifact_id if retrieval is not None else None,
+                    retrieval.retrieval_artifact_hash if retrieval is not None else None,
+                    generation.scheduler_job_id if generation is not None else None,
+                    generation.generation_id if generation is not None else None,
+                    generation.provenance_execution_id if generation is not None else None,
+                    generation.model_profile_id if generation is not None else None,
+                    generation.configuration_version if generation is not None else None,
+                    lineage.response_mode.value,
+                    terminal_outcome,
+                    lineage.model_dump_json(),
+                    lineage.created_at.isoformat(),
+                ),
+            )
+
     def update_chat_request_status(
         self,
         request_id: str,
@@ -1476,8 +1434,14 @@ class AnalysisRepository:
 
     def delete_chat_conversation(self, conversation_id: str) -> int:
         with self._connect() as connection:
-            request_count = int(connection.execute(
-                "SELECT COUNT(*) FROM chat_requests WHERE conversation_id = ?",
+            # A "turn" is one chat_runs row (completed request+response), plus
+            # any request that never completed into a run (e.g. interrupted).
+            # A completed request always has a paired run, so counting both
+            # tables unconditionally would double-count every completed turn
+            # now that both /chat/run and /chat/stream create durable
+            # requests for every turn, not just /chat/stream.
+            orphaned_request_count = int(connection.execute(
+                "SELECT COUNT(*) FROM chat_requests WHERE conversation_id = ? AND run_id IS NULL",
                 (conversation_id,),
             ).fetchone()[0])
             connection.execute("DELETE FROM chat_requests WHERE conversation_id = ?", (conversation_id,))
@@ -1486,7 +1450,7 @@ class AnalysisRepository:
                 (conversation_id,),
             )
             connection.execute("DELETE FROM chat_conversations WHERE conversation_id = ?", (conversation_id,))
-        return int(cursor.rowcount) + request_count
+        return int(cursor.rowcount) + orphaned_request_count
 
     def store_project_patch(self, proposal: dict[str, Any], snapshot: list[dict[str, Any]] | None = None) -> None:
         now = datetime.now().astimezone().isoformat()
@@ -2523,6 +2487,7 @@ class AnalysisRepository:
             error=str(row["error"]) if row["error"] else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            request_fingerprint=_content_hash(json.loads(row["request_json"])),
         )
 
     def store_patch_proposals(self, proposals: list[PatchProposalResponse]) -> None:

@@ -97,6 +97,7 @@ class ChatRunRequest(BaseModel):
     safety_mode: str = "read_only"
     conversation_id: str | None = None
     request_id: str | None = None
+    project_run_id: str | None = None
 
 
 class ChatRequestRecord(BaseModel):
@@ -109,6 +110,7 @@ class ChatRequestRecord(BaseModel):
     error: str | None = None
     created_at: datetime
     updated_at: datetime
+    request_fingerprint: str = ""
 
 
 class RagSourceMetadata(BaseModel):

@@ -248,7 +248,13 @@ shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Complete Stage 3D coordinator artifact processing, one-repair orchestration, expanded
-multi-file synthesis evidence, and the checked-in MVP benchmark gates. Model or
-classifier output remains non-authoritative for approval and verification
+Chat now answers exclusively through the canonical chat runtime
+(`CanonicalChatRuntimeService`): local generation goes only through
+`LocalAIService.execute_generation`, and retrieval is project-bound only, with no
+generic workspace-scan fallback. See
+[`docs/astra-phase9-canonical-chat-runtime.md`](docs/astra-phase9-canonical-chat-runtime.md)
+for the full integration. Remaining open work: a frontend project-selector so chat
+users can attach a `project_run_id` from the UI, and configuring a chat role through
+the durable role-mapping API in a real deployment (it is never seeded automatically).
+Model or classifier output remains non-authoritative for approval and verification
 decisions.

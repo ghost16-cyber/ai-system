@@ -5,68 +5,34 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from backend.app.chat_runtime.prompts import ASTRA_CAPABILITY_SUMMARY
+from backend.app.chat_runtime.service import CanonicalChatRuntimeService
 from backend.app.local_runtime import (
     build_execution_profile,
     build_runtime_context,
     validate_task_plan,
 )
 from backend.app.local_runtime.task_optimizer import classify_task
-from backend.app.rag import context_service as rag_context_service
+from backend.app.project_control.contracts import content_hash
 from backend.app.rag.corpus_retrieval import (
     CorpusRetrievalResult,
     retrieve_corpus_context,
 )
 from backend.app.runtime.contracts import RuntimeReadiness
 from backend.app.schemas.api import ChatRunRequest, ChatRunResponse
-from backend.app.slm import gateway as slm_gateway
 from backend.app.specialists.specialist_router import route_specialist_task
-
-
-ASTRA_CAPABILITY_SUMMARY = (
-    "Astra is a local prototype assistant for this repository.",
-    "It can route a chat request to a specialist such as code, RAG, runtime, safety, or training.",
-    "It can use read-only RAG over safe local project files when the question needs project context.",
-    "It can check backend/runtime health, selected SLM profile, RAG status, tools, jobs, and recent runs.",
-    "It can explain, inspect, and draft safe plans; destructive actions remain blocked or require explicit confirmation.",
-)
-
-RAG_STOPWORDS = {
-    "about",
-    "again",
-    "answer",
-    "astra",
-    "bullet",
-    "bullets",
-    "can",
-    "currently",
-    "detail",
-    "does",
-    "explain",
-    "give",
-    "hello",
-    "help",
-    "hi",
-    "please",
-    "simple",
-    "system",
-    "thanks",
-    "that",
-    "this",
-    "what",
-    "with",
-    "would",
-    "you",
-    "your",
-}
 
 
 def run_chat_workflow(
     request: ChatRunRequest,
     *,
     workspace_root: str | Path,
+    chat_runtime: CanonicalChatRuntimeService,
+    chat_request_id: str,
     previous_turns: list[ChatRunResponse] | None = None,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
     runtime_readiness: RuntimeReadiness | None = None,
+    lineage_sink: Callable[[Any], None] | None = None,
 ) -> ChatRunResponse:
     created_at = datetime.now(timezone.utc)
     run_id = str(uuid4())
@@ -135,12 +101,9 @@ def run_chat_workflow(
             "confidence": _float(route.get("confidence"), 0.0),
         },
     )
-    rag_results = _retrieve_context(
-        request.message,
-        use_rag=request.use_rag,
-        workspace_root=workspace_root,
-        route=route,
-        trace=trace,
+    project_run_id = request.project_run_id
+    use_rag_effective, rag_gate_reason = _rag_gate(
+        request.message, use_rag=request.use_rag, route=route, project_run_id=project_run_id,
     )
     corpus_enabled = (
         request.use_rag
@@ -153,17 +116,6 @@ def run_chat_workflow(
         enabled=corpus_enabled,
     )
     trace.append(_corpus_retrieval_trace(corpus_retrieval))
-    _emit_event(
-        event_sink,
-        "rag_completed",
-        {
-            "run_id": run_id,
-            "conversation_id": conversation_id,
-            "rag_used": bool(rag_results),
-            "rag_skip_reason": _rag_skip_reason(trace),
-            "rag_context_count": len(rag_results),
-        },
-    )
     runtime_context, validation, profile = _runtime_decision(
         request.message,
         trace=trace,
@@ -179,26 +131,51 @@ def run_chat_workflow(
             "runtime_decision": _runtime_label(validation, profile),
         },
     )
-    slm_result = _call_slm_gateway(
-        request.message,
-        trace=trace,
-        route=route,
-        rag_results=rag_results,
-        corpus_retrieval=corpus_retrieval,
-        validation=validation,
-        profile=profile,
-        safety_mode=request.safety_mode,
-        memory_summary=memory_summary if memory_used else None,
+    request_fingerprint = content_hash(
+        request.model_dump(mode="json", exclude={"request_id"})
     )
-    slm_response_for_text = slm_result if slm_result.get("used_real_slm") else None
-    assistant_response = _assistant_response(
+    answer = chat_runtime.answer(
+        chat_request_id=chat_request_id,
+        chat_run_id=run_id,
+        conversation_id=conversation_id,
+        message=request.message,
+        project_run_id=project_run_id,
+        specialist=str(route.get("recommended_specialist") or "general_specialist"),
+        intent=str(route.get("task_type") or classify_task(request.message)),
+        confidence=_float(route.get("confidence"), 0.0),
+        safety_decision=validation.decision,
+        runtime_decision=_runtime_label(validation, profile),
+        memory_summary=memory_summary if memory_used else None,
+        use_rag=use_rag_effective,
+        request_fingerprint=request_fingerprint,
+        corpus_context=corpus_retrieval.prompt_context or None,
+    )
+    if lineage_sink is not None:
+        lineage_sink(answer.lineage)
+    retrieval = answer.lineage.retrieval
+    citations = retrieval.citations if retrieval is not None else ()
+    rag_skip_reason = None if retrieval is not None else (rag_gate_reason or "retrieval_unavailable")
+    trace.append(_rag_outcome_trace(rag_gate_reason, retrieval))
+    trace.append(_generation_trace(answer))
+    _emit_event(
+        event_sink,
+        "rag_completed",
+        {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "rag_used": bool(citations),
+            "rag_skip_reason": rag_skip_reason,
+            "rag_context_count": len(citations),
+        },
+    )
+
+    assistant_response = answer.assistant_response or _assistant_response(
         request.message,
         route=route,
-        rag_results=rag_results,
+        citations=citations,
         corpus_retrieval=corpus_retrieval,
         validation=validation,
         profile=profile,
-        slm_response=slm_response_for_text,
         runtime_context=runtime_context,
         memory_summary=memory_summary if memory_used else None,
         previous_turns=prior_turns,
@@ -214,10 +191,8 @@ def run_chat_workflow(
             },
         )
 
-    grounding_metadata = _grounding_metadata(
-        rag_requested=request.use_rag,
-        rag_results=rag_results,
-        trace=trace,
+    grounding_metadata = _grounding_metadata_from_citations(
+        citations, rag_requested=request.use_rag, skip_reason=rag_skip_reason,
     )
     return ChatRunResponse(
         run_id=run_id,
@@ -227,9 +202,9 @@ def run_chat_workflow(
         selected_specialist=str(route.get("recommended_specialist") or "general_specialist"),
         intent=str(route.get("task_type") or classify_task(request.message)),
         confidence=_float(route.get("confidence"), 0.0),
-        rag_used=bool(rag_results),
-        rag_skip_reason=_rag_skip_reason(trace),
-        rag_context_count=len(rag_results),
+        rag_used=bool(citations),
+        rag_skip_reason=rag_skip_reason,
+        rag_context_count=len(citations),
         rag_sources=grounding_metadata["rag_sources"],
         source_count=grounding_metadata["source_count"],
         source_paths=grounding_metadata["source_paths"],
@@ -240,23 +215,11 @@ def run_chat_workflow(
         corpus_sources=corpus_retrieval.sources,
         runtime_decision=_runtime_label(validation, profile),
         safety_decision=validation.decision,
-        used_real_slm=bool(slm_result.get("used_real_slm")),
-        slm_provider=str(slm_result.get("provider") or "fallback"),
-        slm_model=(
-            str(slm_result.get("model"))
-            if slm_result.get("model") is not None
-            else None
-        ),
-        slm_fallback_reason=(
-            str(slm_result.get("fallback_reason"))
-            if slm_result.get("fallback_reason") is not None
-            else None
-        ),
-        slm_latency_ms=(
-            int(slm_result["latency_ms"])
-            if isinstance(slm_result.get("latency_ms"), int)
-            else None
-        ),
+        used_real_slm=answer.used_real_slm,
+        slm_provider=answer.provider,
+        slm_model=answer.model,
+        slm_fallback_reason=answer.fallback_reason,
+        slm_latency_ms=answer.latency_ms,
         memory_used=memory_used,
         memory_summary=memory_summary,
         created_at=created_at,
@@ -267,6 +230,7 @@ def run_chat_workflow(
             list(runtime_readiness.blocking_reasons) if runtime_readiness is not None else []
         ),
         corpus_ready=(runtime_readiness.corpus_valid if runtime_readiness is not None else None),
+        retrieval_mode=("canonical_project" if project_run_id is not None else "none"),
     )
 
 
@@ -309,72 +273,75 @@ def _route_message(message: str, trace: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
 
-def _retrieve_context(
+def _rag_gate(
     message: str,
     *,
     use_rag: bool,
-    workspace_root: str | Path,
     route: dict[str, Any],
-    trace: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    project_run_id: str | None,
+) -> tuple[bool, str | None]:
+    """Decide whether project-bound retrieval should be attempted.
+
+    Returns (effective_use_rag, gate_reason). gate_reason is only set when
+    effective_use_rag is False, and is exactly the reason retrieval was never
+    attempted (as opposed to attempted-and-unavailable, which the caller
+    detects separately from the canonical answer's lineage).
+    """
+
     if not use_rag:
-        trace.append(
-            _rag_trace("disabled", "RAG was disabled for this chat request.")
-        )
-        return []
+        return False, "disabled"
     gate = _rag_gate_reason(message, route)
     if gate:
-        trace.append(_rag_trace(gate, f"RAG skipped: {gate.replace('_', ' ')}."))
-        return []
-    try:
-        search = rag_context_service.rag_search(workspace_root, query=message, limit=4)
-        results = search.get("results") if isinstance(search, dict) else []
-        if not isinstance(results, list):
-            results = []
-        filtered, rejected = _filter_relevant_rag_results(message, route, results)
-        if not filtered:
-            trace.append(
-                _rag_trace(
-                    "low_relevance",
-                    "RAG skipped: low relevance.",
-                    {"retrieved_count": len(results), "rejected_count": rejected},
-                )
-            )
-            return []
-        trace.append(
-            _trace(
-                "rag",
-                "RAG context retrieved",
-                f"{len(filtered)} relevant local context item(s) were retrieved.",
-                {
-                    "count": len(filtered),
-                    "retrieved_count": len(results),
-                    "rejected_count": rejected,
-                    "reason": "project_context_relevant",
-                    "sources": [
-                        {
-                            "path": item.get("path"),
-                            "start_line": item.get("start_line"),
-                            "end_line": item.get("end_line"),
-                            "score": item.get("score"),
-                        }
-                        for item in filtered
-                    ],
-                },
-            )
+        return False, gate
+    if project_run_id is None:
+        return False, "no_canonical_project"
+    return True, None
+
+
+def _rag_outcome_trace(gate_reason: str | None, retrieval: Any) -> dict[str, Any]:
+    if retrieval is not None:
+        return _trace(
+            "rag",
+            "Project retrieval used",
+            f"{retrieval.evidence_count} project-bound evidence item(s) were retrieved and attached as citations.",
+            {
+                "count": retrieval.evidence_count,
+                "reason": "project_context_relevant",
+                "sources": [
+                    {
+                        "path": citation.relative_path,
+                        "start_line": citation.line_start,
+                        "end_line": citation.line_end,
+                        "citation_label": citation.citation_label,
+                    }
+                    for citation in retrieval.citations
+                ],
+            },
         )
-        return filtered
-    except Exception as error:
-        trace.append(
-            _trace(
-                "rag",
-                "RAG unavailable",
-                f"RAG failed gracefully: {error}",
-                {"count": 0},
-                status="warning",
-            )
+    reason = gate_reason or "retrieval_unavailable"
+    return _rag_trace(reason, f"RAG skipped: {reason.replace('_', ' ')}.")
+
+
+def _generation_trace(answer: Any) -> dict[str, Any]:
+    if answer.used_real_slm:
+        return _trace(
+            "slm",
+            "Local AI response generated",
+            f"Local AI: {answer.provider}/{answer.model}",
+            data={"provider": answer.provider, "model": answer.model, "used_real_slm": True},
+            status="passed",
         )
-        return []
+    return _trace(
+        "slm",
+        "Local AI fallback",
+        f"Deterministic assistant response used: {answer.fallback_reason}",
+        data={
+            "provider": answer.provider,
+            "used_real_slm": False,
+            "fallback_reason": answer.fallback_reason,
+        },
+        status="warning",
+    )
 
 
 def _runtime_decision(
@@ -429,161 +396,18 @@ def _runtime_decision(
     return context, validation, profile
 
 
-def _call_slm_gateway(
-    message: str,
-    *,
-    trace: list[dict[str, Any]],
-    route: dict[str, Any],
-    rag_results: list[dict[str, Any]],
-    corpus_retrieval: CorpusRetrievalResult,
-    validation,
-    profile,
-    safety_mode: str,
-    memory_summary: str | None,
-) -> dict[str, Any]:
-    prompt = build_chat_prompt(
-        message,
-        route=route,
-        rag_results=rag_results,
-        corpus_retrieval=corpus_retrieval,
-        validation=validation,
-        profile=profile,
-        memory_summary=memory_summary,
-    )
-    try:
-        response = slm_gateway.chat_with_slm(
-            message,
-            {
-                "prompt": prompt,
-                "selected_specialist": route.get("recommended_specialist"),
-                "rag_context": rag_context_service.compact_context(rag_results),
-                "corpus_context": corpus_retrieval.prompt_context,
-                "corpus_sources": [
-                    source.model_dump(mode="json")
-                    for source in corpus_retrieval.sources
-                ],
-                "runtime_decision": _runtime_label(validation, profile),
-                "safety_decision": validation.decision,
-                "safety_mode": safety_mode,
-                "conversation_memory": memory_summary,
-            },
-        )
-    except Exception as error:
-        response = {
-            "used_real_slm": False,
-            "provider": "fallback",
-            "fallback_reason": f"gateway_exception:{error}",
-        }
-        trace.append(
-            _trace(
-                "slm",
-                "SLM unavailable",
-                f"Deterministic assistant response used: {error}",
-                data={"provider": "fallback", "used_real_slm": False},
-                status="warning",
-            )
-        )
-        return response
-
-    used_real = response.get("used_real_slm", False)
-    provider = response.get("provider", "fallback")
-    model = response.get("model")
-    reason = response.get("fallback_reason")
-
-    if used_real:
-        title = "SLM response generated"
-        detail = f"SLM: {provider}/{model}"
-        status = "passed"
-    else:
-        title = "SLM gateway fallback"
-        detail = f"SLM: fallback ({reason})"
-        status = "warning"
-
-    trace.append(
-        _trace(
-            "slm",
-            title,
-            detail,
-            data={
-                "provider": provider,
-                "model": model,
-                "used_real_slm": used_real,
-                "fallback_reason": reason,
-                "latency_ms": response.get("latency_ms"),
-            },
-            status=status,
-        )
-    )
-    return response
-
-
-def build_chat_prompt(
-    message: str,
-    *,
-    route: dict[str, Any],
-    rag_results: list[dict[str, Any]],
-    corpus_retrieval: CorpusRetrievalResult,
-    validation,
-    profile,
-    memory_summary: str | None = None,
-) -> str:
-    capability_lines = "\n".join(f"- {line}" for line in ASTRA_CAPABILITY_SUMMARY)
-    rag_block = (
-        rag_context_service.compact_context(rag_results)
-        if rag_results
-        else "No RAG context is attached for this request."
-    )
-    corpus_block = (
-        corpus_retrieval.prompt_context
-        if corpus_retrieval.prompt_context
-        else "No persistent corpus context is attached for this request."
-    )
-    memory_block = (
-        "Conversation context (local to this conversation; use only if it helps, and answer the latest user message first):\n"
-        f"{memory_summary}\n\n"
-        if memory_summary
-        else ""
-    )
-    return (
-        "You are Astra, a local prototype assistant UI backed by this backend.\n"
-        "Answer the user's actual question first. Keep the answer concise unless the user asks for detail.\n"
-        "Do not invent capabilities. RAG context is optional supporting evidence, not the main instruction.\n"
-        "If RAG context conflicts with the user's question, ignore the RAG context and answer from the request and capability summary.\n"
-        "Do not claim files were changed, patches applied, or tools executed from chat.\n\n"
-        "Astra capability summary:\n"
-        f"{capability_lines}\n\n"
-        "Routing and safety context:\n"
-        f"- Selected specialist: {route.get('recommended_specialist') or 'general_specialist'}\n"
-        f"- Intent: {route.get('task_type') or classify_task(message)}\n"
-        f"- Confidence: {round(_float(route.get('confidence')) * 100)}%\n"
-        f"- Safety decision: {validation.decision}\n"
-        f"- Runtime decision: {_runtime_label(validation, profile)}\n\n"
-        "Optional RAG context:\n"
-        f"{rag_block}\n\n"
-        "Optional persistent corpus context:\n"
-        f"{corpus_block}\n\n"
-        f"{memory_block}"
-        "User message:\n"
-        f"{message}\n"
-    )
-
-
 def _assistant_response(
     message: str,
     *,
     route: dict[str, Any],
-    rag_results: list[dict[str, Any]],
+    citations: tuple[Any, ...],
     corpus_retrieval: CorpusRetrievalResult,
     validation,
     profile,
-    slm_response: dict[str, Any] | None,
     runtime_context,
     memory_summary: str | None,
     previous_turns: list[ChatRunResponse],
 ) -> str:
-    if slm_response and slm_response.get("assistant_response"):
-        return str(slm_response["assistant_response"])
-
     memory_answer = _memory_followup_answer(message, previous_turns)
     if memory_summary and memory_answer:
         return memory_answer
@@ -601,8 +425,8 @@ def _assistant_response(
     decision = validation.decision
     runtime = _runtime_label(validation, profile)
     rag_sentence = (
-        f"I used {len(rag_results)} retrieved project context item(s)."
-        if rag_results
+        f"I used {len(citations)} retrieved project context item(s)."
+        if citations
         else "I did not use retrieved project context for this answer."
     )
     corpus_sentence = (
@@ -610,7 +434,7 @@ def _assistant_response(
         if corpus_retrieval.used
         else "I did not use persistent corpus context for this answer."
     )
-    context_hint = _context_hint(rag_results)
+    context_hint = _context_hint(citations)
     corpus_hint = _corpus_context_hint(corpus_retrieval)
     next_step = _next_step(str(specialist), str(intent), decision)
     hardware = getattr(runtime_context, "hardware", None)
@@ -712,42 +536,25 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
-def _rag_skip_reason(trace: list[dict[str, Any]]) -> str | None:
-    for item in trace:
-        if item.get("phase") != "rag":
-            continue
-        data = item.get("data")
-        if isinstance(data, dict) and data.get("reason"):
-            reason = str(data["reason"])
-            return None if reason == "project_context_relevant" else reason
-    return None
-
-
-def _grounding_metadata(
+def _grounding_metadata_from_citations(
+    citations: tuple[Any, ...],
     *,
     rag_requested: bool,
-    rag_results: list[dict[str, Any]],
-    trace: list[dict[str, Any]],
+    skip_reason: str | None,
 ) -> dict[str, Any]:
     sources = [
         {
-            "path": str(item.get("path") or ""),
-            "start_line": _optional_int(item.get("start_line")),
-            "end_line": _optional_int(item.get("end_line")),
-            "score": _float_unbounded(item.get("score"), 0.0),
+            "path": citation.relative_path,
+            "start_line": citation.line_start,
+            "end_line": citation.line_end,
+            "score": 1.0,
         }
-        for item in rag_results
-        if item.get("path")
+        for citation in citations
     ]
-    positive_sources = [item for item in sources if item["score"] > 0]
-    source_paths = _unique_ordered(
-        str(item["path"]) for item in sources if item.get("path")
-    )
-    rag_reason = _rag_skip_reason(trace)
-    rag_ran_with_low_or_empty_sources = rag_reason == "low_relevance"
-    if positive_sources:
+    source_paths = _unique_ordered(citation.relative_path for citation in citations)
+    if sources:
         grounding_status = "grounded"
-    elif rag_requested and rag_ran_with_low_or_empty_sources:
+    elif rag_requested and skip_reason == "retrieval_unavailable":
         grounding_status = "weak"
     else:
         grounding_status = "none"
@@ -872,54 +679,6 @@ def re_contains_code_topic(lowered: str) -> bool:
     return any(term in lowered for term in ("code", "repo", "file", "backend", "frontend", "test", "bug"))
 
 
-def _filter_relevant_rag_results(
-    message: str,
-    route: dict[str, Any],
-    results: list[Any],
-) -> tuple[list[dict[str, Any]], int]:
-    query_terms = _topic_terms(message)
-    intent = str(route.get("task_type") or classify_task(message))
-    filtered: list[dict[str, Any]] = []
-    rejected = 0
-    for item in results:
-        if not isinstance(item, dict):
-            rejected += 1
-            continue
-        score = _float(item.get("score"), 0.0)
-        haystack = " ".join(
-            str(item.get(key) or "")
-            for key in ("path", "title", "source", "snippet")
-        ).lower()
-        overlap = query_terms & _topic_terms(haystack)
-        intent_match = _rag_item_matches_intent(haystack, intent)
-        if score >= 1.0 and (overlap or intent_match):
-            filtered.append(item)
-        else:
-            rejected += 1
-    return filtered[:4], rejected
-
-
-def _rag_item_matches_intent(haystack: str, intent: str) -> bool:
-    if intent == "rag":
-        return any(term in haystack for term in ("rag", "retrieval", "embedding", "context"))
-    if intent == "code_repair":
-        return any(term in haystack for term in ("test", "bug", "fix", "patch", "code"))
-    if intent == "pytorch_training":
-        return any(term in haystack for term in ("train", "model", "cuda", "gpu", "dataset"))
-    if intent == "classical_ml":
-        return any(term in haystack for term in ("sklearn", "classifier", "regression", "tabular"))
-    return False
-
-
-def _topic_terms(text: str) -> set[str]:
-    normalized = "".join(character.lower() if character.isalnum() else " " for character in text)
-    return {
-        token
-        for token in normalized.split()
-        if len(token) > 2 and token not in RAG_STOPWORDS
-    }
-
-
 def _requested_bullet_count(message: str) -> int | None:
     normalized = "".join(character if character.isdigit() else " " for character in message)
     for token in normalized.split():
@@ -930,14 +689,10 @@ def _requested_bullet_count(message: str) -> int | None:
     return None
 
 
-def _context_hint(rag_results: list[dict[str, Any]]) -> str:
-    if not rag_results:
+def _context_hint(citations: tuple[Any, ...]) -> str:
+    if not citations:
         return ""
-    paths = [
-        str(item.get("path"))
-        for item in rag_results[:3]
-        if item.get("path")
-    ]
+    paths = [citation.relative_path for citation in citations[:3]]
     if not paths:
         return ""
     return f"Relevant local context came from: {', '.join(paths)}. "
@@ -1014,20 +769,6 @@ def _float(value: Any, fallback: float = 0.0) -> float:
     if isinstance(value, (int, float)):
         return max(0.0, min(1.0, float(value)))
     return fallback
-
-
-def _float_unbounded(value: Any, fallback: float = 0.0) -> float:
-    if isinstance(value, (int, float)):
-        return max(0.0, float(value))
-    return fallback
-
-
-def _optional_int(value: Any) -> int | None:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
 
 
 def _unique_ordered(values) -> list[str]:

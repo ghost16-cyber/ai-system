@@ -56,13 +56,6 @@ export interface RawHistoryItem {
   phase: string;
 }
 
-export interface SlmProfilesResponse {
-  profiles: Array<Record<string, unknown>>;
-  count: number;
-  supported_backends: string[];
-  default_profile_id: string;
-}
-
 export interface SelectedSlmResponse {
   selected_profile_id: string;
   profile: Record<string, unknown>;
@@ -170,6 +163,7 @@ export interface ChatRunRequest {
   safety_mode?: string;
   conversation_id?: string | null;
   request_id?: string | null;
+  project_run_id?: string | null;
 }
 
 export interface ChatRequestRecord {
@@ -950,10 +944,8 @@ export interface AstraClient {
   buildExecutionProfile(
     request: ExecutionProfileRequest,
   ): Promise<ExecutionProfile>;
-  getSlmProfiles(): Promise<SlmProfilesResponse>;
   getSelectedSlm(): Promise<SelectedSlmResponse>;
   getSlmStatus(): Promise<SlmStatusResponse>;
-  selectSlmProfile(profileId: string): Promise<Record<string, unknown>>;
   getRagStatus(): Promise<RagStatusResponse>;
   rebuildRagIndex(): Promise<RagProjectIndexBuildResponse>;
   getRagIndexStatus(): Promise<RagProjectIndexStatus>;
@@ -1156,22 +1148,12 @@ export class HttpAstraClient implements AstraClient {
     );
   }
 
-  async getSlmProfiles() {
-    return this.getJson<SlmProfilesResponse>("/runtime/slm/profiles");
-  }
-
   async getSelectedSlm() {
     return this.getJson<SelectedSlmResponse>("/runtime/slm/selected");
   }
 
   async getSlmStatus() {
     return this.getJson<SlmStatusResponse>("/runtime/slm/status");
-  }
-
-  async selectSlmProfile(profileId: string) {
-    return this.postJson<Record<string, unknown>>("/runtime/slm/select", {
-      profile_id: profileId,
-    });
   }
 
   async getRagStatus() {

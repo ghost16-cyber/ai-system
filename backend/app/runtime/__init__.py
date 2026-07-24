@@ -56,7 +56,13 @@ def build_runtime_manager(
     provider_adapter = ProviderAdapter(rag_embedding, rag_reranker, local_ai_service)
     coordinator_adapter = ProjectCoordinatorAdapter(project_coordinator)
 
-    repository_adapter = SimpleInitAdapter("repository", repository)
+    # recover_method turns startup chat-runtime recovery (marking requests a
+    # prior process left 'active' as 'interrupted') into an explicit
+    # RecoveryCoordinator step instead of an implicit side effect of every
+    # repository initialize() -- see AnalysisRepository.recover_interrupted_chat_requests.
+    repository_adapter = SimpleInitAdapter(
+        "repository", repository, recover_method=repository.recover_interrupted_chat_requests
+    )
     artifact_adapter = SimpleInitAdapter("project_artifact_store", project_artifact_store)
     worker_queue_adapter = SimpleInitAdapter("project_worker_queue", project_worker_queue)
     mutation_engine_adapter = SimpleInitAdapter("project_mutation_engine", project_mutation_engine)

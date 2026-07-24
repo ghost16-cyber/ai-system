@@ -246,7 +246,7 @@ class RuntimeManager:
         return RuntimeCorpusStatus(
             project_id=project_id,
             freshness=freshness,
-            reindex_scheduled=not freshness.fresh,
+            reindex_scheduled=self._corpus_manager.reindex_scheduled(project_id),
             generated_at=_now(),
         )
 

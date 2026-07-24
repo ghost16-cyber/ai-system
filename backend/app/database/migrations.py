@@ -1325,6 +1325,248 @@ def _phase8_runtime_steps() -> tuple[SchemaMigrationStep, ...]:
     return tuple(_sql_step(step_id, sql) for step_id, sql in _PHASE8_RUNTIME_SQL)
 
 
+def _add_column_if_missing_step(
+    step_id: str, table: str, column: str, definition: str
+) -> SchemaMigrationStep:
+    """A migration step that adds one column only if it is not already
+    present. Needed (in addition to CREATE TABLE IF NOT EXISTS) because
+    adopting chat_runs/chat_requests into migration ownership must also
+    upgrade genuinely old shapes of those tables (e.g. a chat_runs table
+    created before some of its current columns existed) -- SQLite has no
+    "ADD COLUMN IF NOT EXISTS", so this checks PRAGMA table_info first,
+    exactly like the AnalysisRepository helper it replaces.
+    """
+
+    def apply(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    return SchemaMigrationStep(
+        step_id, f"add_column_if_missing:{table}.{column}:{definition}", apply
+    )
+
+
+# Phase 9 adopts chat_runs/chat_conversations/chat_requests into migration
+# ownership. Unlike every other migration-owned table, these three MUST use
+# "CREATE TABLE IF NOT EXISTS": they already exist on any database that has
+# ever run AnalysisRepository.initialize() before Phase 9 (they were
+# historically service-local DDL, not ledger-owned), so a plain CREATE TABLE
+# would fail with "table already exists" on any real pre-existing database.
+# They may also exist in an OLDER, thinner shape (missing columns added to
+# the base CREATE TABLE over time) -- CREATE TABLE IF NOT EXISTS alone would
+# silently leave such a table incomplete, so the steps below additionally
+# run _add_column_if_missing_step for every column, mirroring exactly what
+# AnalysisRepository._add_column_if_missing used to do at every startup, but
+# applied once, durably, under the migration ledger. A fresh database (or
+# one already in the current full shape) is unaffected either way.
+_PHASE9_CHAT_RUNS_SQL: tuple[tuple[str, str], ...] = (
+    ("create_chat_runs", """
+CREATE TABLE IF NOT EXISTS chat_runs (
+    run_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_message TEXT NOT NULL,
+    assistant_response TEXT NOT NULL,
+    selected_specialist TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    rag_used INTEGER NOT NULL,
+    rag_skip_reason TEXT,
+    rag_context_count INTEGER NOT NULL,
+    rag_sources_json TEXT NOT NULL DEFAULT '[]',
+    source_count INTEGER NOT NULL DEFAULT 0,
+    source_paths_json TEXT NOT NULL DEFAULT '[]',
+    grounding_status TEXT NOT NULL DEFAULT 'none',
+    corpus_retrieval_used INTEGER NOT NULL DEFAULT 0,
+    corpus_retrieval_skip_reason TEXT,
+    corpus_context_count INTEGER NOT NULL DEFAULT 0,
+    corpus_sources_json TEXT NOT NULL DEFAULT '[]',
+    runtime_decision TEXT NOT NULL,
+    safety_decision TEXT NOT NULL,
+    used_real_slm INTEGER NOT NULL DEFAULT 0,
+    slm_provider TEXT NOT NULL DEFAULT 'fallback',
+    slm_model TEXT,
+    slm_fallback_reason TEXT,
+    slm_latency_ms INTEGER,
+    memory_used INTEGER NOT NULL DEFAULT 0,
+    memory_summary TEXT,
+    created_at TEXT NOT NULL,
+    trace_summary_json TEXT NOT NULL,
+    action_json TEXT
+)"""),
+)
+
+# Columns that might be missing if chat_runs already existed in an older,
+# thinner shape (e.g. predating one of these columns being added to the base
+# CREATE TABLE, or the synthetic pre-ledger "stage0" shape used in tests).
+_PHASE9_CHAT_RUNS_COLUMN_REPAIRS: tuple[tuple[str, str, str], ...] = (
+    ("user_message", "TEXT NOT NULL DEFAULT ''"),
+    ("assistant_response", "TEXT NOT NULL DEFAULT ''"),
+    ("selected_specialist", "TEXT NOT NULL DEFAULT ''"),
+    ("intent", "TEXT NOT NULL DEFAULT ''"),
+    ("confidence", "REAL NOT NULL DEFAULT 0"),
+    ("rag_used", "INTEGER NOT NULL DEFAULT 0"),
+    ("rag_skip_reason", "TEXT"),
+    ("rag_context_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("rag_sources_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("source_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_paths_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("grounding_status", "TEXT NOT NULL DEFAULT 'none'"),
+    ("corpus_retrieval_used", "INTEGER NOT NULL DEFAULT 0"),
+    ("corpus_retrieval_skip_reason", "TEXT"),
+    ("corpus_context_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("corpus_sources_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("runtime_decision", "TEXT NOT NULL DEFAULT ''"),
+    ("safety_decision", "TEXT NOT NULL DEFAULT ''"),
+    ("used_real_slm", "INTEGER NOT NULL DEFAULT 0"),
+    ("slm_provider", "TEXT NOT NULL DEFAULT 'fallback'"),
+    ("slm_model", "TEXT"),
+    ("slm_fallback_reason", "TEXT"),
+    ("slm_latency_ms", "INTEGER"),
+    ("memory_used", "INTEGER NOT NULL DEFAULT 0"),
+    ("memory_summary", "TEXT"),
+    ("trace_summary_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("action_json", "TEXT"),
+)
+
+_PHASE9_CHAT_CONVERSATIONS_SQL: tuple[tuple[str, str], ...] = (
+    ("create_chat_conversations", """
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""),
+    ("backfill_chat_conversations_from_chat_runs", """
+INSERT OR IGNORE INTO chat_conversations (conversation_id, created_at, updated_at)
+SELECT conversation_id, MIN(created_at), MAX(created_at)
+FROM chat_runs
+GROUP BY conversation_id"""),
+)
+
+_PHASE9_CHAT_CONVERSATIONS_COLUMN_REPAIRS: tuple[tuple[str, str, str], ...] = (
+    ("created_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'"),
+    ("updated_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'"),
+)
+
+_PHASE9_CHAT_REQUESTS_SQL: tuple[tuple[str, str], ...] = (
+    ("create_chat_requests", """
+CREATE TABLE IF NOT EXISTS chat_requests (
+    request_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_message TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    run_id TEXT UNIQUE,
+    execution_attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES chat_conversations (conversation_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES chat_runs (run_id)
+)"""),
+    ("index_chat_requests_conversation", """
+CREATE INDEX IF NOT EXISTS idx_chat_requests_conversation
+ON chat_requests (conversation_id, created_at ASC, request_id ASC)"""),
+    ("index_chat_runs_created_at", """
+CREATE INDEX IF NOT EXISTS idx_chat_runs_created_at
+ON chat_runs (created_at DESC)"""),
+    ("index_chat_runs_conversation", """
+CREATE INDEX IF NOT EXISTS idx_chat_runs_conversation
+ON chat_runs (conversation_id, created_at ASC)"""),
+)
+
+# request_json/status/run_id/execution_attempts/error/updated_at may be
+# missing from an older chat_requests shape (e.g. the synthetic pre-ledger
+# fixture). run_id's original UNIQUE constraint is added back as a separate
+# index since ALTER TABLE ADD COLUMN cannot declare inline constraints.
+_PHASE9_CHAT_REQUESTS_COLUMN_REPAIRS: tuple[tuple[str, str, str], ...] = (
+    ("user_message", "TEXT NOT NULL DEFAULT ''"),
+    ("request_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("run_id", "TEXT"),
+    ("execution_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("error", "TEXT"),
+    ("updated_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'"),
+)
+
+_PHASE9_CHAT_RUNTIME_LINKS_SQL: tuple[tuple[str, str], ...] = (
+    ("index_chat_requests_run_id_unique", """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_requests_run_id_unique
+ON chat_requests (run_id)
+WHERE run_id IS NOT NULL"""),
+    ("create_chat_runtime_links", """
+CREATE TABLE chat_runtime_links (
+    link_id TEXT PRIMARY KEY,
+    chat_request_id TEXT NOT NULL,
+    chat_run_id TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    project_run_id TEXT,
+    retrieval_artifact_id TEXT,
+    retrieval_artifact_hash TEXT,
+    scheduler_job_id TEXT,
+    generation_id TEXT,
+    provenance_execution_id TEXT,
+    model_profile_id TEXT,
+    model_configuration_version INTEGER,
+    response_mode TEXT NOT NULL CHECK(response_mode IN ('local_ai', 'deterministic_fallback')),
+    terminal_outcome TEXT NOT NULL,
+    lineage_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(chat_request_id, chat_run_id),
+    FOREIGN KEY(chat_request_id) REFERENCES chat_requests(request_id) ON DELETE CASCADE,
+    FOREIGN KEY(chat_run_id) REFERENCES chat_runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY(project_run_id) REFERENCES project_runs(project_run_id),
+    FOREIGN KEY(retrieval_artifact_id) REFERENCES rag_retrieval_artifacts(artifact_id),
+    FOREIGN KEY(scheduler_job_id) REFERENCES local_ai_scheduler_jobs(job_id),
+    FOREIGN KEY(generation_id) REFERENCES local_ai_generation_invocations(generation_id),
+    FOREIGN KEY(provenance_execution_id) REFERENCES local_ai_execution_provenance(execution_id),
+    FOREIGN KEY(model_profile_id) REFERENCES local_ai_models(model_profile_id)
+)"""),
+    ("index_chat_runtime_links_run", """
+CREATE INDEX idx_chat_runtime_links_run
+ON chat_runtime_links (chat_run_id)"""),
+    ("index_chat_runtime_links_project", """
+CREATE INDEX idx_chat_runtime_links_project
+ON chat_runtime_links (project_run_id, created_at)"""),
+    # Update-protected only, not delete-protected: ON DELETE CASCADE above
+    # lets a full conversation purge (delete_chat_conversation) remove a
+    # link's rows together with the chat_request/chat_run it describes --
+    # exactly how chat_runs itself is already purged on conversation
+    # deletion. What must never happen is in-place tampering with a link's
+    # recorded lineage, which this trigger still blocks unconditionally.
+    ("protect_chat_runtime_links_from_update", """
+CREATE TRIGGER chat_runtime_links_no_update
+BEFORE UPDATE ON chat_runtime_links
+BEGIN SELECT RAISE(ABORT, 'chat_runtime_link_immutable'); END"""),
+)
+
+
+def _phase9_chat_runtime_steps() -> tuple[SchemaMigrationStep, ...]:
+    steps: list[SchemaMigrationStep] = []
+    steps.extend(_sql_step(step_id, sql) for step_id, sql in _PHASE9_CHAT_RUNS_SQL)
+    steps.extend(
+        _add_column_if_missing_step(f"repair_chat_runs_{column}", "chat_runs", column, definition)
+        for column, definition in _PHASE9_CHAT_RUNS_COLUMN_REPAIRS
+    )
+    steps.extend(_sql_step(step_id, sql) for step_id, sql in _PHASE9_CHAT_CONVERSATIONS_SQL)
+    steps.extend(
+        _add_column_if_missing_step(
+            f"repair_chat_conversations_{column}", "chat_conversations", column, definition
+        )
+        for column, definition in _PHASE9_CHAT_CONVERSATIONS_COLUMN_REPAIRS
+    )
+    steps.extend(_sql_step(step_id, sql) for step_id, sql in _PHASE9_CHAT_REQUESTS_SQL)
+    steps.extend(
+        _add_column_if_missing_step(
+            f"repair_chat_requests_{column}", "chat_requests", column, definition
+        )
+        for column, definition in _PHASE9_CHAT_REQUESTS_COLUMN_REPAIRS
+    )
+    steps.extend(_sql_step(step_id, sql) for step_id, sql in _PHASE9_CHAT_RUNTIME_LINKS_SQL)
+    return tuple(steps)
+
+
 def build_schema_migrations() -> tuple[SchemaMigration, ...]:
     """Rebuild the registry from explicit immutable identifiers and SQL text."""
 
@@ -1451,6 +1693,12 @@ def build_schema_migrations() -> tuple[SchemaMigration, ...]:
             "phase8_runtime_orchestration",
             "astra-schema-migration:phase8-runtime-orchestration:v1",
             _phase8_runtime_steps(),
+        ),
+        SchemaMigration(
+            18,
+            "canonical_chat_runtime_lineage",
+            "astra-schema-migration:canonical-chat-runtime-lineage:v1",
+            _phase9_chat_runtime_steps(),
         ),
     )
 
@@ -2486,6 +2734,53 @@ REQUIRED_SCHEMA_SHAPE[17] = {
         "columns": ("snapshot_id", "snapshot_json", "created_at"),
         "indexes": ("idx_runtime_telemetry_snapshots_created",),
         "triggers": ("runtime_telemetry_snapshots_no_update", "runtime_telemetry_snapshots_no_delete"),
+    },
+}
+
+REQUIRED_SCHEMA_SHAPE[18] = {
+    **REQUIRED_SCHEMA_SHAPE[17],
+    "chat_runs": {
+        "present": True,
+        "columns": (
+            "run_id", "conversation_id", "user_message", "assistant_response",
+            "selected_specialist", "intent", "confidence", "rag_used",
+            "runtime_decision", "safety_decision", "created_at", "trace_summary_json",
+        ),
+        "indexes": ("idx_chat_runs_created_at", "idx_chat_runs_conversation"),
+    },
+    "chat_conversations": {
+        "present": True,
+        "columns": ("conversation_id", "created_at", "updated_at"),
+    },
+    "chat_requests": {
+        "present": True,
+        "columns": (
+            "request_id", "conversation_id", "user_message", "request_json",
+            "status", "run_id", "execution_attempts", "created_at", "updated_at",
+        ),
+        "indexes": ("idx_chat_requests_conversation", "idx_chat_requests_run_id_unique"),
+        # No "foreign_keys" requirement here: chat_requests is an adopted legacy
+        # table, and SQLite cannot add FK constraints to an existing table via
+        # ALTER TABLE. A genuinely ancient chat_requests (predating the FK-bearing
+        # CREATE TABLE in repository.py) can never be repaired to satisfy one.
+    },
+    "chat_runtime_links": {
+        "present": True,
+        "columns": (
+            "link_id", "chat_request_id", "chat_run_id", "request_fingerprint",
+            "project_run_id", "retrieval_artifact_id", "retrieval_artifact_hash",
+            "scheduler_job_id", "generation_id", "provenance_execution_id",
+            "model_profile_id", "model_configuration_version", "response_mode",
+            "terminal_outcome", "lineage_json", "created_at",
+        ),
+        "indexes": ("idx_chat_runtime_links_run", "idx_chat_runtime_links_project"),
+        "foreign_keys": (
+            ("chat_request_id", "chat_requests", "request_id"),
+            ("chat_run_id", "chat_runs", "run_id"),
+            ("project_run_id", "project_runs", "project_run_id"),
+        ),
+        "sql_contains": ("CHECK(response_mode IN ('local_ai', 'deterministic_fallback'))",),
+        "triggers": ("chat_runtime_links_no_update",),
     },
 }
 

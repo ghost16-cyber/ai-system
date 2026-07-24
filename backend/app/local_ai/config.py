@@ -34,6 +34,7 @@ class LocalAIConfiguration(StrictModel):
     coder_model: str
     planner_model: str | None = None
     reviewer_model: str | None = None
+    chat_model: str | None = None
     connection_timeout_seconds: int = Field(ge=1, le=30)
     generation_timeout_seconds: int = Field(ge=1, le=3600)
     maximum_context_tokens: int = Field(ge=256, le=1_048_576)
@@ -50,6 +51,7 @@ class LocalAIConfiguration(StrictModel):
             ("coder", self.coder_model),
             ("planner", self.planner_model),
             ("reviewer", self.reviewer_model),
+            ("chat", self.chat_model),
         ):
             if tag is not None:
                 _validate_model_tag(tag, role=role)
@@ -64,6 +66,7 @@ class LocalAIConfiguration(StrictModel):
             "planner": self.planner_model,
             "review": self.reviewer_model,
             "reviewer": self.reviewer_model,
+            "chat": self.chat_model,
         }.get(role.strip().lower())
 
     @property
@@ -76,6 +79,7 @@ class LocalAIConfiguration(StrictModel):
                     self.coder_model,
                     self.planner_model,
                     self.reviewer_model,
+                    self.chat_model,
                 )
                 if model is not None
             )
@@ -111,6 +115,10 @@ def load_local_ai_configuration(
     coder_model = _value(env, "ASTRA_LOCAL_AI_CODER_MODEL", default=shared_model)
     planner_model = _optional_role(env, "ASTRA_LOCAL_AI_PLANNER_MODEL", shared_model)
     reviewer_model = _optional_role(env, "ASTRA_LOCAL_AI_REVIEWER_MODEL", shared_model)
+    # Unlike the other roles, chat has no shared-model default: a chat role
+    # must be explicitly configured (env var here, or the durable role-mapping
+    # API), never seeded or assigned automatically.
+    chat_model = _optional_unset_role(env, "ASTRA_LOCAL_AI_CHAT_MODEL")
     try:
         synthesis_enabled = (
             _boolean(env, "ASTRA_PROJECT_SYNTHESIS_ENABLED", default=False)
@@ -133,6 +141,7 @@ def load_local_ai_configuration(
             coder_model=coder_model,
             planner_model=planner_model,
             reviewer_model=reviewer_model,
+            chat_model=chat_model,
             connection_timeout_seconds=_integer(
                 env,
                 ("ASTRA_LOCAL_AI_CONNECTION_TIMEOUT_SECONDS",),
@@ -233,6 +242,16 @@ def _optional_role(env: Mapping[str, str], name: str, default: str) -> str | Non
         return None
     if not value:
         raise LocalAIConfigurationError(f"{name.lower()}_is_empty")
+    return value
+
+
+def _optional_unset_role(env: Mapping[str, str], name: str) -> str | None:
+    """Like _optional_role, but absence means unset rather than a default."""
+    if name not in env:
+        return None
+    value = env[name].strip()
+    if not value or value.lower() in {"none", "unset", "disabled"}:
+        return None
     return value
 
 

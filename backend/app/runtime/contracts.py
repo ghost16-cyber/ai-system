@@ -71,6 +71,14 @@ class BackgroundJobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class BackgroundJobResult(StrictModel):
+    schema_version: Literal["astra.runtime.background-job-result.v1"] = (
+        "astra.runtime.background-job-result.v1"
+    )
+    succeeded: bool
+    error: str | None = Field(default=None, max_length=500)
+
+
 class BackgroundJob(StrictModel):
     schema_version: Literal["astra.runtime.background-job.v1"] = "astra.runtime.background-job.v1"
     job_id: str
@@ -82,6 +90,7 @@ class BackgroundJob(StrictModel):
     payload: dict = Field(default_factory=dict)
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
+    result: BackgroundJobResult | None = None
     created_at: datetime
     updated_at: datetime
 
