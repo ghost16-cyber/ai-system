@@ -4882,6 +4882,140 @@ def create_app(
             repository.store_chat_run(run)
         return run
 
+    def _canonical_project_action_payload(project_run_id: str) -> dict[str, object]:
+        response = build_canonical_project_response(
+            canonical_project_service, project_run_id, coordinator=project_coordinator,
+        )
+        return {"action_type": "canonical_project", **response.model_dump(mode="json")}
+
+    def _active_canonical_project_conflict_run(
+        active_run, message: str, conversation_id: str,
+    ) -> ChatRunResponse:
+        return ChatRunResponse(
+            run_id=uuid4().hex,
+            conversation_id=conversation_id,
+            user_message=message,
+            assistant_response=(
+                f"A project is already active in this conversation "
+                f"({str(active_run.lifecycle_state).replace('_', ' ')}"
+                f"{f', pending: ' + str(active_run.pending_user_action).replace('_', ' ') if active_run.pending_user_action else ''})."
+                " Finish or cancel it before starting a new one."
+            ),
+            selected_specialist="project_orchestrator",
+            intent="project_delivery",
+            confidence=1.0,
+            rag_used=False,
+            rag_context_count=0,
+            runtime_decision="blocked",
+            safety_decision="allow",
+            created_at=datetime.now(timezone.utc),
+            action=_canonical_project_action_payload(active_run.project_run_id),
+        )
+
+    def _start_canonical_project_from_chat(
+        message: str,
+        conversation_id: str,
+        access: dict,
+        *,
+        chat_request_id: str,
+    ) -> ChatRunResponse:
+        """Chat-native entry point into the canonical project pipeline.
+
+        Replaces the legacy chat-triggered delivery flow: the deterministic
+        specification/manifest/plan builder (create_delivery_job) is reused
+        purely for its in-memory analysis -- its own docstring states it
+        "builds a compatibility delivery projection without persistence or
+        lifecycle writes" -- so nothing here ever persists a legacy delivery
+        job or treats legacy delivery state as authoritative. Progress from
+        here on is driven exclusively through the canonical
+        ProjectControlPlane/ProjectCoordinator/ProjectWorkers pipeline.
+        """
+        active_project_run_id = repository.get_conversation_active_project(conversation_id)
+        if active_project_run_id is not None:
+            try:
+                active_run = canonical_project_service.get_project(active_project_run_id)
+            except ProjectControlError as error:
+                if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
+                    raise _control_http_error(error) from error
+                active_run = None
+            if active_run is not None and not active_run.terminal:
+                return _active_canonical_project_conflict_run(active_run, message, conversation_id)
+
+        action_run_id = uuid4().hex
+        # Deterministic and replay-safe: no explicit project_run_id is
+        # passed, so CanonicalProjectService.initialize_project derives one
+        # from content_hash([conversation_id, workspace_id, idempotency_key])
+        # -- an exact retry of the same durable chat request (same
+        # chat_request_id) always resolves to the same project_run_id and
+        # idempotently replays through create_project's existing command
+        # idempotency, exactly like every other canonical caller in this
+        # codebase. No bespoke dedup logic is needed here.
+        idempotency_key = f"chat-canonical-project:{chat_request_id}"
+        folder_authority = {
+            "status": "completed",
+            "action_id": str(access["action_id"]),
+            "conversation_id": conversation_id,
+            "workspace_id": str(access["action_id"]),
+            "repository_root_fingerprint": str(access["root_fingerprint"]),
+            "repository_root": str(access["approved_root"]),
+        }
+        built = create_delivery_job(
+            root=access["approved_root"], conversation_id=conversation_id,
+            folder_access_id=access["action_id"], user_request=message,
+            action_run_id=action_run_id, model_gateway=None,
+        )
+        specification = dict(built["specification"])
+        plan = dict(built["plan"]) if built.get("plan") else None
+        if plan is not None:
+            plan["acceptance_criteria"] = list(specification.get("acceptance_criteria") or [])
+            plan["configured_limits"] = dict(built.get("limits") or {})
+        try:
+            project = canonical_project_service.create_project(
+                conversation_id=conversation_id,
+                workspace_id=str(access["action_id"]),
+                repository_root=str(access["approved_root"]),
+                repository_root_fingerprint=str(access["root_fingerprint"]),
+                actor_id="local-user",
+                idempotency_key=idempotency_key,
+                folder_authority=folder_authority,
+                specification=specification,
+                manifest=dict(built["project_state_manifest"]),
+                plan=plan,
+            )
+        except ProjectControlError as error:
+            raise _control_http_error(error) from error
+        repository.set_conversation_active_project(conversation_id, project.project_run_id)
+        if plan is not None:
+            work_units = len(plan.get("work_units") or [])
+            files_in_scope = len((built["project_state_manifest"] or {}).get("entries") or [])
+            response_text = (
+                "I analysed your repository and prepared a bounded project plan.\n\n"
+                f"Objective: {specification.get('normalized_objective') or message}\n"
+                f"Estimated work units: {work_units}\n"
+                f"Files in scope: {files_in_scope}\n\n"
+                "Approve the plan to begin the first work unit. Nothing has been changed or executed."
+            )
+        else:
+            response_text = (
+                "I need one material clarification before I can plan this as a project. "
+                "The project record is created, but planning is on hold until that's answered."
+            )
+        return ChatRunResponse(
+            run_id=action_run_id,
+            conversation_id=conversation_id,
+            user_message=message,
+            assistant_response=response_text,
+            selected_specialist="project_orchestrator",
+            intent="project_delivery",
+            confidence=1.0,
+            rag_used=False,
+            rag_context_count=0,
+            runtime_decision="allow",
+            safety_decision="approval_bound",
+            created_at=datetime.now(timezone.utc),
+            action=_canonical_project_action_payload(project.project_run_id),
+        )
+
     def _read_project_delivery(
         delivery_job_id: str,
         *,
@@ -6311,10 +6445,25 @@ def create_app(
                 _sync_delivery_action(delivery_stored)
                 return delivery_run
             if _is_delivery_request(request.message):
-                delivery_run = _start_project_delivery(
-                    request.message, request.conversation_id or "", secure_access, persist_run=False,
+                # /chat/run never accepts a client-supplied request_id (its
+                # long-standing permissive auto-vivify contract), so there is
+                # no request identity to reuse here -- create one explicitly
+                # so canonical project creation still has a durable
+                # chat_request_id to anchor its idempotency key on.
+                canonical_durable_request = repository.claim_chat_request(
+                    repository.create_chat_request(
+                        request_id=uuid4().hex,
+                        conversation_id=request.conversation_id or "",
+                        user_message=request.message,
+                        request_payload=request.model_dump(mode="json", exclude={"request_id"}),
+                        created_at=datetime.now(timezone.utc),
+                    ).request_id
                 )
-                repository.store_chat_run(delivery_run)
+                delivery_run = _start_canonical_project_from_chat(
+                    request.message, request.conversation_id or "", secure_access,
+                    chat_request_id=canonical_durable_request.request_id,
+                )
+                repository.store_chat_run(delivery_run, request_id=canonical_durable_request.request_id)
                 return delivery_run
             job_run = _project_job_intercept(request.message, request.conversation_id or "", secure_access)
             if job_run is not None:
@@ -6515,8 +6664,9 @@ def create_app(
                     run = _project_patch_run(proposal)
                 elif delivery_request:
                     secure_access = _completed_project_access(request.conversation_id or "")
-                    run = _start_project_delivery(
-                        request.message, request.conversation_id or "", secure_access, persist_run=False,
+                    run = _start_canonical_project_from_chat(
+                        request.message, request.conversation_id or "", secure_access,
+                        chat_request_id=durable_request.request_id,
                     )
                 elif delivery_clarification:
                     secure_access = _completed_project_access(request.conversation_id or "")
@@ -6571,7 +6721,7 @@ def create_app(
                     )
                 if (engagement_request or engagement_clarification or engagement_change) and run.action is not None:
                     events.put({"event": "client_engagement_updated", "data": {"run": run.model_dump(mode="json"), "engagement": run.action.get("technical_details", {}).get("client_engagement", {})}})
-                if (delivery_request or delivery_clarification) and run.action is not None:
+                if delivery_clarification and run.action is not None:
                     events.put({"event": "project_delivery_updated", "data": {"run": run.model_dump(mode="json"), "delivery": run.action.get("technical_details", {}).get("project_delivery", {})}})
                 if job_request and run.action is not None and run.action.get("action_type") == "project_job":
                     job_payload = run.action.get("technical_details", {}).get("project_job", {})

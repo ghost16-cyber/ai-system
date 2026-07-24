@@ -473,6 +473,21 @@ export interface CanonicalProjectCollection {
   count: number;
 }
 
+export interface CanonicalProjectEventSummary {
+  schema_version: "astra.project-api.event-summary.v1";
+  sequence: number;
+  event_type: string;
+  label: string;
+  occurred_at: string;
+}
+
+export interface CanonicalProjectEventsResponse {
+  schema_version: "astra.project-api.events.v1";
+  project_run_id: string;
+  items: CanonicalProjectEventSummary[];
+  next_after_sequence: number | null;
+}
+
 export interface CanonicalProjectCreateRequest {
   schema_version: "astra.project-api.create.v1";
   conversation_id: string;

@@ -1455,6 +1455,14 @@ class AnalysisRepository:
             if cursor.rowcount == 0:
                 raise LookupError("Conversation not found.")
 
+    def get_conversation_active_project(self, conversation_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT active_project_run_id FROM chat_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return str(row["active_project_run_id"]) if row is not None and row["active_project_run_id"] else None
+
     def delete_chat_conversation(self, conversation_id: str) -> int:
         with self._connect() as connection:
             # A "turn" is one chat_runs row (completed request+response), plus

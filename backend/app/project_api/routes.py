@@ -13,6 +13,8 @@ from backend.app.project_api.contracts import (
     CanonicalProjectActionRequest,
     CanonicalProjectActionDescriptor,
     CanonicalCoordinatorSummary,
+    CanonicalProjectEventSummary,
+    CanonicalProjectEventsResponse,
     CanonicalSynthesisProposalCollection,
     CanonicalSynthesisProposalSummary,
     ManualEvidenceSubmissionRequest,
@@ -169,6 +171,38 @@ def create_project_router(
             return build_canonical_project_response(service, project_run_id, coordinator=coordinator, retrieval=retrieval)
         except ProjectControlError as exc:
             raise _http_error(exc) from exc
+
+    @router.get(
+        "/chat/projects/{project_run_id}/events",
+        response_model=CanonicalProjectEventsResponse,
+    )
+    def list_events(
+        project_run_id: str,
+        after_sequence: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> CanonicalProjectEventsResponse:
+        try:
+            service.get_project(project_run_id)
+            events = [
+                event for event in service.control.list_events(project_run_id)
+                if event.sequence > after_sequence
+            ]
+        except ProjectControlError as exc:
+            raise _http_error(exc) from exc
+        page = events[:limit]
+        items = tuple(
+            CanonicalProjectEventSummary(
+                sequence=event.sequence,
+                event_type=event.event_type,
+                label=_event_label(event.event_type),
+                occurred_at=event.created_at.isoformat(),
+            )
+            for event in page
+        )
+        next_after_sequence = page[-1].sequence if len(events) > len(page) else None
+        return CanonicalProjectEventsResponse(
+            project_run_id=project_run_id, items=items, next_after_sequence=next_after_sequence,
+        )
 
     @router.get("/chat/projects/{project_run_id}/verification/manual-evidence")
     def manual_evidence(project_run_id: str) -> dict[str, Any]:
@@ -340,6 +374,46 @@ def _proposal_summary(proposal, store: SynthesisProposalStore) -> CanonicalSynth
         affected_paths=affected,
         created_at=proposal.created_at.isoformat(),
     )
+
+
+_EVENT_LABELS: dict[str, str] = {
+    "initialize_project": "Project created",
+    "attach_specification": "Specification attached",
+    "register_manifest": "Repository manifest registered",
+    "propose_plan_revision": "Plan proposed",
+    "approve_plan": "Plan approved",
+    "begin_work_unit": "Work unit started",
+    "record_patch_preview": "Patch preview ready",
+    "approve_patch": "Patch approved",
+    "begin_patch_application": "Patch application started",
+    "record_patch_result": "Patch applied",
+    "record_rollback_preview": "Rollback preview ready",
+    "approve_rollback": "Rollback approved",
+    "begin_rollback": "Rollback started",
+    "record_command_preview": "Command preview ready",
+    "approve_command": "Command approved",
+    "begin_command_execution": "Command execution started",
+    "record_command_result": "Command result recorded",
+    "request_verification": "Verification requested",
+    "record_verifier_result": "Verification recorded",
+    "submit_manual_evidence": "Manual evidence submitted",
+    "request_clarification": "Clarification requested",
+    "mark_blocked": "Project paused",
+    "revise_scope": "Scope revised",
+    "initiate_repair": "Repair initiated",
+    "record_rollback": "Rollback recorded",
+    "complete_work_unit": "Work unit completed",
+    "request_handoff": "Handoff requested",
+    "finalize_project": "Project finished",
+    "cancel_project": "Project cancelled",
+    "acknowledge_execution_cancellation": "Execution cancellation acknowledged",
+    "reconcile_legacy": "Legacy record reconciled",
+    "recover_attempt": "Execution attempt recovered",
+}
+
+
+def _event_label(event_type: str) -> str:
+    return _EVENT_LABELS.get(event_type, event_type.replace("_", " ").capitalize())
 
 
 def _http_error(error: ProjectControlError) -> HTTPException:

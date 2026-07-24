@@ -5,6 +5,7 @@ import type {
   CanonicalProjectCreateRequest,
   CanonicalProjectActionDescriptor,
   CanonicalProjectActionRequest,
+  CanonicalProjectEventsResponse,
   CanonicalProjectResponse,
   ExecutionProfile,
   RuntimeContext,
@@ -1434,6 +1435,13 @@ export class HttpAstraClient implements AstraClient {
   async listCanonicalProjects(conversationId: string) {
     return this.getJson<CanonicalProjectCollection>(
       `/chat/conversations/${encodeURIComponent(conversationId)}/projects`,
+    );
+  }
+
+  async getCanonicalProjectEvents(projectRunId: string, afterSequence?: number) {
+    const query = typeof afterSequence === "number" ? `?after_sequence=${afterSequence}` : "";
+    return this.getJson<CanonicalProjectEventsResponse>(
+      `/chat/projects/${encodeURIComponent(projectRunId)}/events${query}`,
     );
   }
 

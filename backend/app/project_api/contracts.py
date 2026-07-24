@@ -20,6 +20,8 @@ CANONICAL_COORDINATOR_SUMMARY_VERSION = "astra.project-api.coordinator-summary.v
 CANONICAL_ARTIFACT_SUMMARY_VERSION = "astra.project-api.artifact-summary.v1"
 CANONICAL_SYNTHESIS_PROPOSAL_SUMMARY_VERSION = "astra.project-api.synthesis-proposal-summary.v1"
 CANONICAL_SYNTHESIS_PROPOSAL_COLLECTION_VERSION = "astra.project-api.synthesis-proposal-collection.v1"
+CANONICAL_PROJECT_EVENT_SUMMARY_VERSION = "astra.project-api.event-summary.v1"
+CANONICAL_PROJECT_EVENTS_RESPONSE_VERSION = "astra.project-api.events.v1"
 MANUAL_EVIDENCE_REQUEST_VERSION = "astra.project-api.manual-evidence.v1"
 MAX_CANONICAL_CREATE_BYTES = 524_288
 
@@ -198,3 +200,23 @@ class CanonicalProjectCollection(StrictModel):
     schema_version: Literal["astra.project-api.collection.v1"] = CANONICAL_PROJECT_COLLECTION_VERSION
     items: tuple[CanonicalProjectResponse, ...] = ()
     count: int = Field(ge=0)
+
+
+class CanonicalProjectEventSummary(StrictModel):
+    """A bounded, typed timeline entry. Never carries the raw ProjectEvent
+    payload -- only a stable sequence number, type, timestamp, and a short
+    human label, so no evidence, metadata, or hash detail can leak through
+    this read surface."""
+
+    schema_version: Literal["astra.project-api.event-summary.v1"] = CANONICAL_PROJECT_EVENT_SUMMARY_VERSION
+    sequence: int = Field(ge=1)
+    event_type: str
+    label: str
+    occurred_at: str
+
+
+class CanonicalProjectEventsResponse(StrictModel):
+    schema_version: Literal["astra.project-api.events.v1"] = CANONICAL_PROJECT_EVENTS_RESPONSE_VERSION
+    project_run_id: str
+    items: tuple[CanonicalProjectEventSummary, ...] = ()
+    next_after_sequence: int | None = None

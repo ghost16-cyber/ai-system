@@ -351,8 +351,8 @@ def test_api_chat_plan_patch_verification_handoff_and_reload(tmp_path: Path) -> 
     app = create_app(tmp_path / "app.db", tmp_path)
     with TestClient(app) as client:
         conversation_id = _connect(client, project)
-        started = client.post("/chat/run", json={
-            "message": f"{TASK} Verify it with pytest.", "conversation_id": conversation_id, "use_rag": True,
+        started = client.post("/chat/projects/deliveries", json={
+            "conversation_id": conversation_id, "user_request": f"{TASK} Verify it with pytest.",
         })
         assert started.status_code == 200, started.text
         action = started.json()["action"]
@@ -511,8 +511,8 @@ def test_api_canonical_rollback_is_queued_and_rehydrates_exact_identity(tmp_path
     app = create_app(tmp_path / "app.db", tmp_path)
     with TestClient(app) as client:
         conversation_id = _connect(client, project)
-        started = client.post("/chat/run", json={
-            "message": TASK, "conversation_id": conversation_id, "use_rag": True,
+        started = client.post("/chat/projects/deliveries", json={
+            "conversation_id": conversation_id, "user_request": TASK,
         }).json()
         delivery = started["action"]["technical_details"]["project_delivery"]
         delivery_id = delivery["delivery_job_id"]
@@ -616,7 +616,8 @@ def test_dataset_artifact_request_routes_to_delivery_in_sync_and_streaming_chat(
         "Date,Time,Global_active_power\n16/12/2006,17:24:00,4.216\n",
         encoding="utf-8",
     )
-    with TestClient(create_app(tmp_path / "app.db", tmp_path)) as client:
+    app = create_app(tmp_path / "app.db", tmp_path)
+    with TestClient(app) as client:
         sync_conversation = _connect(client, project)
         sync = client.post("/chat/run", json={
             "message": DATASET_DELIVERY_REQUEST,
@@ -631,13 +632,14 @@ def test_dataset_artifact_request_routes_to_delivery_in_sync_and_streaming_chat(
         })
 
     assert sync.status_code == 200, sync.text
-    assert sync.json()["action"]["action_type"] == "project_delivery"
-    sync_delivery = sync.json()["action"]["technical_details"]["project_delivery"]
-    assert sync_delivery["status"] == "awaiting_plan_approval"
-    assert sync_delivery["clarifications"] == []
+    sync_action = sync.json()["action"]
+    assert sync_action["action_type"] == "canonical_project"
+    sync_project = sync_action["project"]
+    assert sync_project["pending_user_action"] == "approve_plan"
+    plan_revision = app.state.project_control.get_plan_revision(sync_project["plan_revision_id"])
     planned_files = [
         path
-        for unit in sync_delivery["plan"]["work_units"]
+        for unit in plan_revision.work_units
         for path in unit["expected_files"]
     ]
     assert "household_power_consumption_analysis.py" in planned_files
@@ -648,8 +650,8 @@ def test_dataset_artifact_request_routes_to_delivery_in_sync_and_streaming_chat(
     assert "household_power_consumption.csv" not in planned_files
     events = [json.loads(line) for line in stream.text.splitlines() if line.strip()]
     completed = next(event for event in events if event["event"] == "run_completed")
-    assert completed["data"]["run"]["action"]["action_type"] == "project_delivery"
-    assert any(event["event"] == "project_delivery_updated" for event in events)
+    assert completed["data"]["run"]["action"]["action_type"] == "canonical_project"
+    assert any(event["event"] == "action_required" for event in events)
 
 
 def test_dataset_delivery_request_without_conversation_folder_authority_cannot_access_path(tmp_path: Path) -> None:
@@ -674,8 +676,8 @@ def test_conversation_hydration_returns_current_canonical_delivery_once(tmp_path
     project = _project(tmp_path)
     with TestClient(create_app(tmp_path / "app.db", tmp_path)) as client:
         conversation_id = _connect(client, project)
-        started = client.post("/chat/run", json={
-            "message": TASK, "conversation_id": conversation_id, "use_rag": True,
+        started = client.post("/chat/projects/deliveries", json={
+            "conversation_id": conversation_id, "user_request": TASK,
         }).json()
         delivery = started["action"]["technical_details"]["project_delivery"]
         approved = client.post(

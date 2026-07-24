@@ -1,6 +1,7 @@
 import type {
   CanonicalProjectActionDescriptor,
   CanonicalProjectActionRequest,
+  CanonicalProjectEventSummary,
   CanonicalProjectResponse,
 } from "../types/contracts";
 
@@ -142,6 +143,39 @@ export function exactProjectMutationRequest(
 
 export function shouldRemoveCanonicalProject(httpStatus: number, errorCode?: string): boolean {
   return httpStatus === 404 && errorCode === "project_not_found";
+}
+
+const HUMAN_GATED_PENDING_ACTION_PREFIXES = [
+  "approve_", "review_", "submit_manual_evidence", "answer_clarification", "finalize_project",
+];
+
+/** True only while ProjectCoordinator/ProjectWorkers may still be
+ * progressing this project in the background without further human input
+ * -- never while the project is terminal, and never while it is waiting on
+ * a human-gated pending action (nothing advances until that human acts,
+ * regardless of how often this polls). */
+export function shouldPollCanonicalProject(project: CanonicalProjectAction): boolean {
+  if (project.terminal) return false;
+  const pending = project.pendingUserAction;
+  if (!pending) return true;
+  return !HUMAN_GATED_PENDING_ACTION_PREFIXES.some((prefix) => pending.startsWith(prefix));
+}
+
+/** Stable chronological order for the project timeline, independent of
+ * fetch/arrival order (pagination, retries, or an out-of-order poll
+ * response must never scramble the displayed sequence). */
+export function sortCanonicalProjectEvents(
+  events: CanonicalProjectEventSummary[],
+): CanonicalProjectEventSummary[] {
+  return [...events].sort((a, b) => a.sequence - b.sequence);
+}
+
+export function isCompletedCanonicalProject(project: CanonicalProjectAction): boolean {
+  return project.terminal && project.lifecycleState === "completed";
+}
+
+export function isCancelledCanonicalProject(project: CanonicalProjectAction): boolean {
+  return project.terminal && project.lifecycleState === "cancelled";
 }
 
 function actionMatchesProject(

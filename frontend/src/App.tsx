@@ -88,9 +88,15 @@ import { ProjectControlCard } from "./components/ProjectControlCard";
 import {
   canonicalProjectActionFromResponse,
   exactProjectMutationRequest,
+  mergeCanonicalProjectAction,
+  shouldPollCanonicalProject,
   type CanonicalProjectAction,
 } from "./state/projectControlState";
-import type { CanonicalProjectActionDescriptor, CanonicalProjectResponse } from "./types/contracts";
+import type {
+  CanonicalProjectActionDescriptor,
+  CanonicalProjectEventSummary,
+  CanonicalProjectResponse,
+} from "./types/contracts";
 import {
   chatProjectRequestField,
   deriveProjectOptions,
@@ -123,6 +129,7 @@ interface Message {
   jobAction?: ProjectJobAction;
   deliveryAction?: ProjectDeliveryAction;
   canonicalProject?: CanonicalProjectAction;
+  canonicalProjectEvents?: CanonicalProjectEventSummary[];
   engagementAction?: ClientEngagementAction;
   validationAction?: ProjectValidationAction;
   info?: InfoCard;
@@ -841,12 +848,55 @@ export default function App() {
   }
 
   async function refreshCanonicalProject(projectRunId: string) {
-    const parsed = canonicalProjectActionFromResponse(await client.getCanonicalProject(projectRunId));
+    const [projectResponse, eventsResponse] = await Promise.all([
+      client.getCanonicalProject(projectRunId),
+      client.getCanonicalProjectEvents(projectRunId).catch(() => null),
+    ]);
+    const parsed = canonicalProjectActionFromResponse(projectResponse);
     if (!parsed) throw new AstraHttpError(409, "The canonical project response was invalid.");
+    const events = eventsResponse?.items ?? [];
     setMessages((current) => current.map((item) =>
-      item.canonicalProject?.projectRunId === projectRunId ? { ...item, canonicalProject: parsed } : item,
+      item.canonicalProject?.projectRunId === projectRunId
+        ? { ...item, canonicalProject: parsed, canonicalProjectEvents: events }
+        : item,
     ));
   }
+
+  const activeCanonicalProject = useMemo(
+    () => (activeProjectRunId
+      ? messages.find((item) => item.canonicalProject?.projectRunId === activeProjectRunId)?.canonicalProject ?? null
+      : null),
+    [messages, activeProjectRunId],
+  );
+  // A stable primitive, not the project object itself: refreshCanonicalProject
+  // always produces a new object reference even when nothing changed, and
+  // using that object directly as an effect dependency would tear down and
+  // restart the interval on every single tick -- defeating the 4s spacing
+  // and turning this into a tight poll loop. This only changes value when
+  // the actual polling decision changes (terminal, or the pending action
+  // moves between human-gated and auto-driven).
+  const canonicalPollSignal = activeCanonicalProject ? String(shouldPollCanonicalProject(activeCanonicalProject)) : "none";
+
+  useEffect(() => {
+    if (!activeProjectRunId || canonicalPollSignal === "false") return;
+    let cancelled = false;
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      refreshCanonicalProject(activeProjectRunId)
+        .catch(() => undefined)
+        .finally(() => { inFlight = false; });
+    };
+    tick();
+    const interval = window.setInterval(tick, 4000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+    // refreshCanonicalProject is intentionally omitted: it is a fresh
+    // closure every render, and this effect must only restart when the
+    // polling decision itself changes (see canonicalPollSignal above), not
+    // on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProjectRunId, canonicalPollSignal]);
 
   async function performCanonicalProjectAction(project: CanonicalProjectAction, action: CanonicalProjectActionDescriptor) {
     const request = exactProjectMutationRequest(project, action, newId(`project-${action.action}`));
@@ -1531,7 +1581,7 @@ function ChatMessage({
     {message.folderAction && <FolderAccessCard action={message.folderAction} onApprove={() => void onApproveFolder(message.id, message.folderAction!, message.run?.run_id)} onCancel={() => void onCancelFolder(message.id, message.folderAction!, message.run?.run_id)} onRescan={() => void onRescanFolder(message.id, message.folderAction!, message.run?.run_id)} />}
     {message.jobAction && <ProjectJobCard action={message.jobAction} onPrepare={() => void onPrepareJob(message.jobAction!)} onValidate={() => void onValidateJob(message.jobAction!)} onCancel={() => void onCancelJob(message.jobAction!)} />}
     {message.deliveryAction && <ProjectDeliveryCard action={message.deliveryAction} onApprovePlan={() => void onApproveDeliveryPlan(message.deliveryAction!)} onPrepare={() => void onPrepareDelivery(message.deliveryAction!)} onVerify={() => void onVerifyDelivery(message.deliveryAction!)} onHandoff={() => void onGenerateDeliveryHandoff(message.deliveryAction!)} onCancel={() => void onCancelDelivery(message.deliveryAction!)} />}
-    {message.canonicalProject && <ProjectControlCard project={message.canonicalProject} onAction={(action) => void onCanonicalProjectAction(message.canonicalProject!, action)} onManualEvidence={(criterionId, notes, decision) => void onCanonicalManualEvidence(message.canonicalProject!, criterionId, notes, decision)} />}
+    {message.canonicalProject && <ProjectControlCard project={message.canonicalProject} events={message.canonicalProjectEvents ?? []} onAction={(action) => void onCanonicalProjectAction(message.canonicalProject!, action)} onManualEvidence={(criterionId, notes, decision) => void onCanonicalManualEvidence(message.canonicalProject!, criterionId, notes, decision)} />}
     {message.engagementAction && <ClientEngagementCard action={message.engagementAction} onAnswer={(answers, assumptions) => onAnswerEngagement(message.engagementAction!, answers, assumptions)} onApprove={() => onApproveEngagement(message.engagementAction!)} onReject={() => onRejectEngagement(message.engagementAction!)} onLaunch={() => onLaunchEngagement(message.engagementAction!)} onChange={(change) => onChangeEngagement(message.engagementAction!, change)} onCancel={() => onCancelEngagement(message.engagementAction!)} onStartValidation={() => onStartValidation(message.engagementAction!)} />}
     {message.validationAction && <ProjectValidationCard action={message.validationAction} onOperation={(operation) => onValidationOperation(message.validationAction!, operation)} onReview={(reviewAction, notes) => onValidationReview(message.validationAction!, reviewAction, notes)} />}
     {message.run && (message.run.source_paths?.length ?? 0) > 0 && <ProjectSources paths={message.run.source_paths ?? []} />}
@@ -1839,13 +1889,33 @@ function Status({ status }: { status: ChatActionStatus }) { return <span classNa
 function JsonBlock({ value }: { value: unknown }) { return <pre className="json-block">{JSON.stringify(value, null, 2)}</pre>; }
 function genericActionFromRun(run: ChatRunResponse) { return ["assignment", "folder_access", "project_job", "project_delivery", "client_engagement", "project_validation"].includes(String(run.action?.action_type)) ? null : (run.action ? actionFromPayload(run.action) : null); }
 function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantId: string): Message[] | null {
+  // Explicit action_type discriminator, checked before the shape-validating
+  // parser -- matches how every other branch here is gated, rather than
+  // relying on canonicalProjectActionFromResponse's internal schema_version
+  // check alone to decide whether this run represents a canonical project.
+  if (run.action?.action_type === "canonical_project") {
+    const incomingCanonical = canonicalProjectActionFromResponse(run.action);
+    if (incomingCanonical) {
+      const existing = current.find((item) => item.id !== assistantId && item.canonicalProject?.projectRunId === incomingCanonical.projectRunId);
+      return current.map((item) => {
+        if (existing && item.id === existing.id) return { ...item, canonicalProject: mergeCanonicalProjectAction(existing.canonicalProject, incomingCanonical) };
+        if (item.id !== assistantId) return item;
+        return {
+          ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run,
+          canonicalProject: existing ? undefined : incomingCanonical, action: undefined,
+          workspaceAction: undefined, folderAction: undefined, jobAction: undefined,
+          deliveryAction: undefined, engagementAction: undefined, validationAction: undefined,
+        };
+      });
+    }
+  }
   const incomingValidation = run.action ? projectValidationActionFromPayload(run.action) : null;
   if (incomingValidation) {
     const existing = current.find((item) => item.id !== assistantId && item.validationAction?.campaignId === incomingValidation.campaignId);
     return current.map((item) => {
       if (existing && item.id === existing.id) return { ...item, validationAction: incomingValidation, run };
       if (item.id !== assistantId) return item;
-      return { ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run, validationAction: existing ? undefined : incomingValidation, action: undefined, workspaceAction: undefined, folderAction: undefined, jobAction: undefined, deliveryAction: undefined, engagementAction: undefined };
+      return { ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run, validationAction: existing ? undefined : incomingValidation, action: undefined, workspaceAction: undefined, folderAction: undefined, jobAction: undefined, deliveryAction: undefined, engagementAction: undefined, canonicalProject: undefined };
     });
   }
   const incomingEngagement = run.action ? clientEngagementActionFromPayload(run.action) : null;
@@ -1858,6 +1928,7 @@ function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantI
         ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run,
         engagementAction: existing ? undefined : incomingEngagement, action: undefined,
         workspaceAction: undefined, folderAction: undefined, jobAction: undefined, deliveryAction: undefined,
+        canonicalProject: undefined,
       };
     });
   }
@@ -1871,6 +1942,7 @@ function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantI
         ...item, text: existing ? run.assistant_response : "", createdAt: run.created_at, run,
         deliveryAction: existing ? undefined : incomingDelivery, action: undefined,
         workspaceAction: undefined, folderAction: undefined, jobAction: undefined,
+        canonicalProject: undefined,
       };
     });
   }
@@ -1889,6 +1961,7 @@ function mergeProjectJobRun(current: Message[], run: ChatRunResponse, assistantI
       action: undefined,
       workspaceAction: undefined,
       folderAction: undefined,
+      canonicalProject: undefined,
     };
   });
 }

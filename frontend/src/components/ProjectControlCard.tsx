@@ -1,15 +1,22 @@
-import { Activity, CheckCircle2, ChevronDown, CircleAlert, FileText, ShieldCheck, X } from "lucide-react";
+import { Activity, CheckCircle2, ChevronDown, CircleAlert, FileText, ShieldCheck, X, XCircle } from "lucide-react";
 import { useState } from "react";
-import type { CanonicalProjectActionDescriptor } from "../types/contracts";
-import type { CanonicalProjectAction } from "../state/projectControlState";
+import type { CanonicalProjectActionDescriptor, CanonicalProjectEventSummary } from "../types/contracts";
+import {
+  isCancelledCanonicalProject,
+  isCompletedCanonicalProject,
+  sortCanonicalProjectEvents,
+  type CanonicalProjectAction,
+} from "../state/projectControlState";
 
 export function ProjectControlCard({
   project,
+  events = [],
   busy = false,
   onAction,
   onManualEvidence,
 }: {
   project: CanonicalProjectAction;
+  events?: CanonicalProjectEventSummary[];
   busy?: boolean;
   onAction: (action: CanonicalProjectActionDescriptor) => void;
   onManualEvidence?: (criterionId: string, notes: string, decision: "passed" | "failed") => void;
@@ -63,7 +70,11 @@ export function ProjectControlCard({
     {project.blockedReason && <div className="result failed"><CircleAlert size={17} /><div><strong>Project paused safely</strong><p>{project.blockedReason}</p></div></div>}
     {project.execution.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Execution failure</strong><p>{project.execution.failureClassification.replace(/_/g, " ")}</p></div></div>}
     {project.projection.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Projection recovery required</strong><p>{project.projection.failureClassification.replace(/_/g, " ")}</p></div></div>}
-    {project.terminal && project.lifecycleState === "completed" && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Canonical project completed</strong><p>The durable control plane recorded the terminal state.</p></div></div>}
+    {isCompletedCanonicalProject(project) && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Canonical project completed</strong><p>The durable control plane recorded the terminal state.</p></div></div>}
+    {isCancelledCanonicalProject(project) && <div className="result cancelled"><XCircle size={17} /><div><strong>Canonical project cancelled</strong><p>The durable control plane recorded the terminal state. No further work will occur.</p></div></div>}
+    {events.length > 0 && <details className="technical project-timeline"><summary><ChevronDown size={15} />Timeline</summary><ol className="technical-body">
+      {sortCanonicalProjectEvents(events).map((event) => <li key={event.sequence}><CheckCircle2 size={13} /><span>{event.label}</span><small>{new Date(event.occurred_at).toLocaleString()}</small></li>)}
+    </ol></details>}
     <div className="button-row">
       {project.nextPermittedActions.map((action) => <button
         key={`${action.action}:${action.expected_state_version}:${action.artifact_id ?? "none"}`}

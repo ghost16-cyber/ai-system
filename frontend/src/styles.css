@@ -115,6 +115,11 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .citation-list { display: grid; gap: 4px; margin: 10px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: .72rem; }
 .citation-list code { color: var(--green-dark); }
 
+.project-timeline ol { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.project-timeline li { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .76rem; }
+.project-timeline li svg { flex: 0 0 auto; color: var(--green-dark); }
+.project-timeline li small { margin-left: auto; color: var(--muted); font-size: .68rem; white-space: nowrap; }
+
 .attachment-chip { display: flex; align-items: center; gap: 9px; width: max-content; max-width: 100%; margin: 0 6px 8px; padding: 8px 10px; border: 1px solid #cfe0d6; border-radius: 10px; color: var(--green-dark); background: var(--green-soft); }
 .attachment-chip > span { display: grid; min-width: 0; }
 .attachment-chip strong { max-width: min(420px, 60vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
