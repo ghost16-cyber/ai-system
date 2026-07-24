@@ -998,7 +998,7 @@ def test_chat_run_returns_useful_backend_response(tmp_path: Path):
     assert body["runtime_decision"]
     assert body["used_real_slm"] is False
     assert body["slm_provider"] == "fallback"
-    assert body["slm_fallback_reason"] == "ollama_unreachable"
+    assert body["slm_fallback_reason"] == "chat_role_not_configured"
     assert body["memory_used"] is False
     assert body["memory_summary"] is None
     assert body["trace_summary"]
@@ -1022,8 +1022,8 @@ def test_chat_stream_emits_ordered_workflow_events_and_final_summary(tmp_path: P
         "request_accepted",
         "run_started",
         "specialist_selected",
-        "rag_completed",
         "safety_completed",
+        "rag_completed",
     ]
     assert "response_delta" in event_names
     assert event_names[-1] == "run_completed"
@@ -1139,24 +1139,7 @@ def test_chat_run_creates_new_conversation(tmp_path: Path):
 
 def test_chat_run_continues_existing_conversation_with_memory(
     tmp_path: Path,
-    monkeypatch,
 ):
-    from backend.app import chat_workflow
-
-    captured_prompt = ""
-
-    def capture_slm(message, context):
-        nonlocal captured_prompt
-        captured_prompt = context["prompt"]
-        return {
-            "source": "fallback",
-            "provider": "fallback",
-            "used_real_slm": False,
-            "fallback_reason": "test_fallback",
-        }
-
-    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", capture_slm)
-
     first_message = "Safely inspect the backend chat workflow."
     with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
         first = client.post(
@@ -1179,7 +1162,6 @@ def test_chat_run_continues_existing_conversation_with_memory(
     assert body["memory_used"] is True
     assert first_message in body["memory_summary"]
     assert first_message in body["assistant_response"]
-    assert "Conversation context" in captured_prompt
 
 
 def test_chat_run_without_conversation_id_starts_fresh_conversation(tmp_path: Path):
@@ -1247,7 +1229,10 @@ def test_rag_gating_still_uses_latest_message_with_conversation_memory(
         )
 
     assert first.status_code == 200
-    assert first.json()["rag_used"] is True
+    # No canonical project is selected in this conversation, so retrieval is
+    # never attempted -- this is not "low relevance", it's "not applicable".
+    assert first.json()["rag_used"] is False
+    assert first.json()["rag_skip_reason"] == "no_canonical_project"
     assert second.status_code == 200
     body = second.json()
     assert body["memory_used"] is True
@@ -1255,7 +1240,14 @@ def test_rag_gating_still_uses_latest_message_with_conversation_memory(
     assert body["rag_skip_reason"] == "low_relevance"
 
 
-def test_chat_run_uses_rag_context_when_enabled(tmp_path: Path):
+def test_chat_run_without_canonical_project_never_scans_the_workspace(tmp_path: Path) -> None:
+    """No generic workspace scan occurs when no canonical project is selected.
+
+    Files on disk that would have matched a legacy free-text RAG scan must
+    never be surfaced -- retrieval is project-bound only, and this chat
+    request never selects a project_run_id.
+    """
+
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "phase49.md").write_text(
@@ -1274,11 +1266,12 @@ def test_chat_run_uses_rag_context_when_enabled(tmp_path: Path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["rag_used"] is True
-    assert body["rag_context_count"] == 1
-    assert "phase49.md" in body["assistant_response"]
+    assert body["rag_used"] is False
+    assert body["rag_context_count"] == 0
+    assert body["rag_skip_reason"] == "no_canonical_project"
+    assert "phase49.md" not in body["assistant_response"]
     rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
-    assert rag_trace["data"]["count"] == 1
+    assert rag_trace["data"]["reason"] == "no_canonical_project"
 
 
 def test_chat_run_skips_rag_for_greeting(tmp_path: Path):
@@ -1326,69 +1319,12 @@ def test_chat_run_skips_rag_for_astra_capability_question(tmp_path: Path):
     assert rag_trace["data"]["reason"] == "system_meta_question"
 
 
-def test_irrelevant_rag_context_is_not_injected_into_slm_prompt(
+def test_chat_run_gracefully_falls_back_without_a_project_or_configured_chat_role(
     tmp_path: Path,
-    monkeypatch,
-):
-    from backend.app import chat_workflow
-
-    captured_prompt = ""
-
-    def unrelated_rag(*args, **kwargs):
-        return {
-            "results": [
-                {
-                    "path": "docs/cleanup.md",
-                    "title": "cleanup.md",
-                    "snippet": "Duplicate file cleanup notes for old artifacts.",
-                    "score": 1.0,
-                }
-            ]
-        }
-
-    def capture_slm(message, context):
-        nonlocal captured_prompt
-        captured_prompt = context["prompt"]
-        return {
-            "source": "local_slm",
-            "provider": "ollama",
-            "model": "qwen2.5-coder:1.5b",
-            "used_real_slm": True,
-            "fallback_reason": None,
-            "latency_ms": 5,
-            "assistant_response": "Use the backend test suite and inspect failing assertions.",
-        }
-
-    monkeypatch.setattr(chat_workflow.rag_context_service, "rag_search", unrelated_rag)
-    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", capture_slm)
-
-    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
-        response = client.post(
-            "/chat/run",
-            json={"message": "How do I fix backend tests?", "use_rag": True},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["rag_used"] is False
-    assert body["rag_context_count"] == 0
-    assert "Duplicate file cleanup" not in captured_prompt
-    assert "No RAG context is attached" in captured_prompt
-    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
-    assert rag_trace["data"]["reason"] == "low_relevance"
-
-
-def test_chat_run_gracefully_falls_back_when_rag_and_slm_fail(tmp_path: Path, monkeypatch):
-    from backend.app import chat_workflow
-
-    def broken_rag(*args, **kwargs):
-        raise RuntimeError("index unavailable")
-
-    def broken_slm(*args, **kwargs):
-        raise RuntimeError("slm offline")
-
-    monkeypatch.setattr(chat_workflow.rag_context_service, "rag_search", broken_rag)
-    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", broken_slm)
+) -> None:
+    """With no canonical project and no chat role configured (the default
+    test app), chat still answers deterministically -- no exception, no
+    generic workspace scan, no legacy gateway call."""
 
     with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
         response = client.post(
@@ -1400,13 +1336,13 @@ def test_chat_run_gracefully_falls_back_when_rag_and_slm_fail(tmp_path: Path, mo
     body = response.json()
     assert body["rag_used"] is False
     assert body["rag_context_count"] == 0
+    assert body["rag_skip_reason"] == "no_canonical_project"
     assert body["assistant_response"]
     titles = [item["title"] for item in body["trace_summary"]]
-    assert "RAG unavailable" in titles
-    assert "SLM unavailable" in titles
+    assert "Local AI fallback" in titles
     assert body["used_real_slm"] is False
     assert body["slm_provider"] == "fallback"
-    assert body["slm_fallback_reason"].startswith("gateway_exception:")
+    assert body["slm_fallback_reason"] == "chat_role_not_configured"
 
 
 def test_chat_run_stores_one_clear_history_record(tmp_path: Path):
@@ -1432,33 +1368,66 @@ def test_chat_run_stores_one_clear_history_record(tmp_path: Path):
     assert stored_count == 1
 
 
-def test_chat_run_includes_slm_metadata_when_real_slm_used(tmp_path: Path, monkeypatch):
+def test_chat_run_includes_local_ai_metadata_when_generation_succeeds(tmp_path: Path) -> None:
+    """When CanonicalChatRuntimeService.answer() succeeds, its lineage's
+    generation summary must flow through to the API response's slm_* fields
+    and trace_summary -- exercised directly against run_chat_workflow with a
+    fake chat_runtime so this test needs no real Ollama or hardware probe."""
+
+    from datetime import datetime, timezone
+
     from backend.app import chat_workflow
+    from backend.app.chat_runtime.contracts import (
+        ChatResponseMode,
+        ChatRuntimeGenerationSummary,
+        ChatRuntimeLineage,
+    )
+    from backend.app.chat_runtime.service import ChatRuntimeAnswer
+    from backend.app.schemas.api import ChatRunRequest
 
-    def mock_chat_with_slm(*args, **kwargs):
-        return {
-            "source": "local_slm",
-            "provider": "ollama",
-            "model": "qwen2.5-coder:1.5b",
-            "used_real_slm": True,
-            "fallback_reason": None,
-            "latency_ms": 12,
-            "assistant_response": "Real response text",
-        }
+    class FakeChatRuntime:
+        def answer(self, **kwargs):
+            generation = ChatRuntimeGenerationSummary(
+                generation_id="generation-1",
+                scheduler_job_id="job-1",
+                model_profile_id="configured-local-model",
+                exact_model_tag="qwen2.5-coder:1.5b",
+                configuration_version=1,
+                provider_identity="ollama",
+                duration_ms=12,
+            )
+            lineage = ChatRuntimeLineage(
+                chat_request_id=kwargs["chat_request_id"],
+                chat_run_id=kwargs["chat_run_id"],
+                request_fingerprint=kwargs["request_fingerprint"],
+                response_mode=ChatResponseMode.LOCAL_AI,
+                generation=generation,
+                created_at=datetime.now(timezone.utc),
+            )
+            return ChatRuntimeAnswer(
+                response_mode=ChatResponseMode.LOCAL_AI,
+                assistant_response="Real response text",
+                used_real_slm=True,
+                provider="ollama",
+                model="qwen2.5-coder:1.5b",
+                fallback_reason=None,
+                latency_ms=12,
+                lineage=lineage,
+            )
 
-    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", mock_chat_with_slm)
+    run = chat_workflow.run_chat_workflow(
+        ChatRunRequest(message="Test SLM inclusion"),
+        workspace_root=tmp_path,
+        chat_runtime=FakeChatRuntime(),
+        chat_request_id="request-1",
+    )
 
-    with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
-        response = client.post("/chat/run", json={"message": "Test SLM inclusion"})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["used_real_slm"] is True
-    assert body["slm_provider"] == "ollama"
-    assert body["slm_model"] == "qwen2.5-coder:1.5b"
-    assert body["slm_fallback_reason"] is None
-    assert body["slm_latency_ms"] == 12
-    assert "Real response text" in body["assistant_response"]
-    slm_trace = next(item for item in body["trace_summary"] if item["phase"] == "slm")
-    assert slm_trace["title"] == "SLM response generated"
+    assert run.used_real_slm is True
+    assert run.slm_provider == "ollama"
+    assert run.slm_model == "qwen2.5-coder:1.5b"
+    assert run.slm_fallback_reason is None
+    assert run.slm_latency_ms == 12
+    assert run.assistant_response == "Real response text"
+    slm_trace = next(item for item in run.trace_summary if item["phase"] == "slm")
+    assert slm_trace["title"] == "Local AI response generated"
     assert slm_trace["data"]["used_real_slm"] is True

@@ -868,6 +868,7 @@ def test_active_request_becomes_interrupted_after_backend_restart(tmp_path: Path
 
     reloaded = AnalysisRepository(database)
     reloaded.initialize()
+    reloaded.recover_interrupted_chat_requests()
     interrupted = reloaded.get_chat_request(request.request_id)
 
     assert interrupted.status == "interrupted"

@@ -112,6 +112,8 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 .technical pre, .json-block { max-height: 280px; margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; color: #34443b; background: #f1f5f2; font-size: .72rem; }
 .action-card .technical-body label pre { max-height: 220px; overflow-y: auto; font-weight: 400; }
 .action-card .technical-body > .json-block { display: none; }
+.citation-list { display: grid; gap: 4px; margin: 10px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: .72rem; }
+.citation-list code { color: var(--green-dark); }
 
 .attachment-chip { display: flex; align-items: center; gap: 9px; width: max-content; max-width: 100%; margin: 0 6px 8px; padding: 8px 10px; border: 1px solid #cfe0d6; border-radius: 10px; color: var(--green-dark); background: var(--green-soft); }
 .attachment-chip > span { display: grid; min-width: 0; }

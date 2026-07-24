@@ -105,3 +105,35 @@ def test_record_indexing_outcome_is_queryable_by_project(tmp_path: Path) -> None
     assert len(history) == 1
     assert history[0]["files_changed"] == 2
     assert history[0]["outcome"] == "completed"
+
+
+def test_reindex_scheduled_reflects_an_actual_queued_job_not_mere_staleness(
+    tmp_path: Path,
+) -> None:
+    """A stale corpus with nothing queued must report reindex_scheduled as
+    False -- staleness and "a reindex job actually exists" are independent
+    facts, and reporting the former as the latter is dishonest telemetry."""
+
+    root, _source, database, _control, _artifacts, retrieval, binding = _fixture(tmp_path)
+    queue = RuntimeJobQueue(database)
+    manager = CorpusManager(retrieval, queue)
+    _ingest(retrieval, binding)
+    retrieval.retrieve(_request(binding))
+    manager.invalidate(binding["project_id"], reason="scope_changed", binding_hash="a" * 64)
+
+    assert manager.check_freshness(binding["project_id"]).fresh is False
+    assert manager.reindex_scheduled(binding["project_id"]) is False
+
+    request = CorpusIngestionRequest(**binding, idempotency_key="reindex-scheduled-check")
+    manager.schedule_reindex(request)
+    assert manager.reindex_scheduled(binding["project_id"]) is True
+
+    handlers = DictHandlerRegistry()
+    handlers.register("corpus_reindex", make_corpus_reindex_handler(retrieval))
+    worker = RuntimeWorker(queue, handlers, worker_id="corpus-worker")
+    worker.run_once()
+
+    # Once the job completes, it is no longer active -- scheduled goes back
+    # to False even though the corpus may still show as stale until the next
+    # freshness check observes the new generation.
+    assert manager.reindex_scheduled(binding["project_id"]) is False

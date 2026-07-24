@@ -80,7 +80,6 @@ test("removed product areas have chat-native request handlers", () => {
     "what model are you using",
     "show rag status",
     "show settings",
-    "change the selected model",
     "read this assignment",
     "check assignment readiness",
   ]) {

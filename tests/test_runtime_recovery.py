@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.app.database.repository import AnalysisRepository
 from backend.app.local_ai.contracts import (
     AdmissionOutcome,
     HardwareAdmissionDecision,
@@ -61,6 +63,36 @@ def test_expired_lease_and_job_recovery_is_self_healing_and_not_pending(
     assert readiness.pending_recovery is False
     assert readiness.ready is True
     assert manager.state == RuntimeState.READY
+
+
+def test_interrupted_chat_requests_recover_as_part_of_startup_recovery(
+    tmp_path: Path,
+) -> None:
+    """Startup recovery of active chat requests moves into explicit
+    chat-runtime recovery (via the repository adapter's recover_method)
+    instead of being an implicit side effect of AnalysisRepository.initialize()."""
+
+    manager, persistence, database = _runtime(tmp_path)
+    manager.initialize()
+    repository = AnalysisRepository(database)
+    repository.create_chat_conversation(
+        conversation_id="conversation-1", created_at=datetime.now(timezone.utc),
+    )
+    request = repository.create_chat_request(
+        request_id="request-1", conversation_id="conversation-1",
+        user_message="hello", request_payload={"message": "hello"},
+        created_at=datetime.now(timezone.utc),
+    )
+    repository.claim_chat_request(request.request_id)
+
+    coordinator = RecoveryCoordinator(persistence)
+    manager._recovery_coordinator = coordinator
+    readiness = manager.recover()
+
+    assert readiness.pending_recovery is False
+    assert repository.get_chat_request(request.request_id).status == "interrupted"
+    events = persistence.recent_recovery_events()
+    assert any(row["subsystem_id"] == "repository" for row in events)
 
 
 def test_recover_is_a_safe_no_op_outside_ready_or_degraded(tmp_path: Path) -> None:

@@ -15,8 +15,7 @@ from backend.app.database.migrations import (
 )
 
 
-def test_latest_schema_version_is_17(tmp_path: Path) -> None:
-    assert LATEST_SCHEMA_VERSION == 17
+def test_migration_17_is_still_phase8_runtime_orchestration(tmp_path: Path) -> None:
     assert SCHEMA_MIGRATIONS[16].version == 17
     assert SCHEMA_MIGRATIONS[16].name == "phase8_runtime_orchestration"
 
@@ -37,10 +36,10 @@ def test_migration_17_applies_on_fresh_database_and_creates_runtime_tables(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "fresh.db"
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:17])
     assert result.applied_versions == tuple(range(1, 18))
     assert result.current_version == 17
-    assert assert_schema_compatible(database) == 17
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:17]) == 17
 
     with sqlite3.connect(database) as connection:
         tables = {
@@ -67,9 +66,9 @@ def test_migration_17_upgrades_an_existing_16_database_without_losing_data(
     apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:16])
     assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:16]) == 16
 
-    result = apply_schema_migrations(database)
+    result = apply_schema_migrations(database, migrations=SCHEMA_MIGRATIONS[:17])
     assert result.applied_versions == (17,)
-    assert assert_schema_compatible(database) == 17
+    assert assert_schema_compatible(database, migrations=SCHEMA_MIGRATIONS[:17]) == 17
 
 
 def test_append_only_runtime_tables_reject_update_and_delete(tmp_path: Path) -> None:
@@ -116,7 +115,7 @@ def test_runtime_background_jobs_table_is_mutable_for_queue_transitions(
     assert status == "claimed"
 
 
-def test_schema_migration_registry_still_contiguous_after_migration_17() -> None:
+def test_schema_migration_registry_still_contiguous_after_migration_18() -> None:
     versions = tuple(migration.version for migration in SCHEMA_MIGRATIONS)
-    assert versions == tuple(range(1, 18))
+    assert versions == tuple(range(1, 19))
     assert len(set(versions)) == len(versions)

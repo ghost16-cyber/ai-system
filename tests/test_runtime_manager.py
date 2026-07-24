@@ -51,7 +51,9 @@ def _runtime(tmp_path: Path, *, name: str = "runtime.db"):
     retrieval_adapter = RetrievalAdapter(retrieval_service)
     coordinator_adapter = ProjectCoordinatorAdapter(coordinator)
     provider_adapter = ProviderAdapter(embedding, reranker, local_ai_service)
-    repository_adapter = SimpleInitAdapter("repository", repository)
+    repository_adapter = SimpleInitAdapter(
+        "repository", repository, recover_method=repository.recover_interrupted_chat_requests
+    )
     artifact_adapter = SimpleInitAdapter("project_artifact_store", artifacts)
 
     registrations = (

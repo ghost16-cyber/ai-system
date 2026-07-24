@@ -139,6 +139,75 @@ def test_worker_run_once_fails_closed_for_unregistered_job_type(tmp_path: Path) 
     assert summary["recent"][0].status == BackgroundJobStatus.FAILED
 
 
+def test_worker_transitions_claimed_to_running_before_invoking_the_handler(
+    tmp_path: Path,
+) -> None:
+    queue = _queue(tmp_path)
+    observed_status: list[BackgroundJobStatus] = []
+
+    def _handler(target_id: str, payload: dict) -> bool:
+        observed_status.append(queue.status_summary()["recent"][0].status)
+        return True
+
+    handlers = DictHandlerRegistry()
+    handlers.register("corpus_reindex", _handler)
+    worker = RuntimeWorker(queue, handlers, worker_id="test-worker")
+    queue.enqueue(job_type="corpus_reindex", target_id="project-1", idempotency_key="k1", payload={})
+
+    worker.run_once()
+
+    assert observed_status == [BackgroundJobStatus.RUNNING]
+
+
+def test_mark_running_requires_the_claiming_worker(tmp_path: Path) -> None:
+    queue = _queue(tmp_path)
+    job = queue.enqueue(job_type="cleanup", target_id="t1", idempotency_key="k1", payload={})
+    queue.claim_next(worker_id="w1")
+
+    with pytest.raises(RuntimeJobQueueError, match="lease_mismatch"):
+        queue.mark_running(job.job_id, worker_id="w2")
+
+    running = queue.mark_running(job.job_id, worker_id="w1")
+    assert running.status == BackgroundJobStatus.RUNNING
+
+
+def test_completed_job_persists_bounded_terminal_result(tmp_path: Path) -> None:
+    queue = _queue(tmp_path)
+    ok_job = queue.enqueue(job_type="cleanup", target_id="t-ok", idempotency_key="k-ok", payload={})
+    queue.claim_next(worker_id="w1")
+    completed = queue.complete_job(ok_job.job_id, worker_id="w1", succeeded=True)
+    assert completed.result is not None
+    assert completed.result.succeeded is True
+    assert completed.result.error is None
+
+    fail_job = queue.enqueue(job_type="cleanup", target_id="t-fail", idempotency_key="k-fail", payload={})
+    queue.claim_next(worker_id="w1")
+    failed = queue.complete_job(fail_job.job_id, worker_id="w1", succeeded=False, error="boom")
+    assert failed.result is not None
+    assert failed.result.succeeded is False
+    assert failed.result.error == "boom"
+
+
+def test_worker_captures_handler_exception_as_a_terminal_error(tmp_path: Path) -> None:
+    queue = _queue(tmp_path)
+
+    def _broken_handler(target_id: str, payload: dict) -> bool:
+        raise RuntimeError("handler exploded")
+
+    handlers = DictHandlerRegistry()
+    handlers.register("cleanup", _broken_handler)
+    worker = RuntimeWorker(queue, handlers, worker_id="test-worker")
+    queue.enqueue(job_type="cleanup", target_id="t1", idempotency_key="k1", payload={})
+
+    worker.run_once()
+
+    recent = queue.status_summary()["recent"][0]
+    assert recent.status == BackgroundJobStatus.FAILED
+    assert recent.result is not None
+    assert recent.result.succeeded is False
+    assert "handler exploded" in recent.result.error
+
+
 def test_worker_thread_start_and_stop_is_reload_safe(tmp_path: Path) -> None:
     """The thread itself is disposable -- the durable queue (not thread
     state) is what survives a restart. Starting/stopping must not lose or

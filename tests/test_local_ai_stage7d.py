@@ -19,6 +19,7 @@ from backend.app.local_ai.contracts import (
 )
 from backend.app.local_ai.generation import LocalGenerationGateway
 from backend.app.local_ai.generation_contracts import (
+    ChatGenerationTargetStatus,
     GenerationFailureReason,
     GenerationParameters,
     GenerationPurpose,
@@ -79,7 +80,7 @@ class FakeProvider:
         )
 
 
-def _configuration() -> LocalAIConfiguration:
+def _configuration(*, chat_model: str | None = None) -> LocalAIConfiguration:
     return LocalAIConfiguration(
         generation_enabled=True,
         provider_type="ollama",
@@ -88,6 +89,7 @@ def _configuration() -> LocalAIConfiguration:
         coder_model=MODEL_TAG,
         planner_model=MODEL_TAG,
         reviewer_model=MODEL_TAG,
+        chat_model=chat_model,
         connection_timeout_seconds=2,
         generation_timeout_seconds=10,
         maximum_context_tokens=4096,
@@ -405,3 +407,92 @@ def test_admission_rejection_is_scheduled_but_never_invokes_provider(
     assert result.generation_result is None
     assert result.provenance is None
     assert provider.inspect_calls == provider.generate_calls == 0
+
+
+def _chat_service(tmp_path: Path, *, chat_model: str | None = None) -> LocalAIService:
+    database = tmp_path / "chat-target.db"
+    apply_schema_migrations(database)
+    configuration = _configuration(chat_model=chat_model)
+    service = LocalAIService(
+        database,
+        configuration=configuration,
+        probe=lambda: _capabilities(),
+        generation_gateway=LocalGenerationGateway(
+            database, configuration=configuration, provider_client=FakeProvider()
+        ),
+    )
+    service.initialize()
+    service.capability_report(refresh=True)
+    return service
+
+
+def test_resolve_chat_generation_target_is_not_configured_by_default(tmp_path: Path) -> None:
+    service = _chat_service(tmp_path)
+
+    target = service.resolve_chat_generation_target()
+
+    assert target.status == ChatGenerationTargetStatus.CHAT_ROLE_NOT_CONFIGURED
+    assert target.model_profile_id is None
+    assert target.exact_model_tag is None
+
+
+def test_resolve_chat_generation_target_resolves_an_enabled_matching_profile(
+    tmp_path: Path,
+) -> None:
+    service = _chat_service(tmp_path, chat_model=MODEL_TAG)
+    version = service.configuration_state().configuration_version.model_profiles[
+        MODEL_PROFILE_ID
+    ]
+    service.set_model_enabled(
+        MODEL_PROFILE_ID,
+        enabled=True,
+        actor_id="test-user",
+        expected_version=version,
+        idempotency_key="enable-chat-model",
+    )
+
+    target = service.resolve_chat_generation_target()
+
+    assert target.status == ChatGenerationTargetStatus.RESOLVED
+    assert target.model_profile_id == MODEL_PROFILE_ID
+    assert target.exact_model_tag == MODEL_TAG
+    assert target.configuration_version is not None
+    assert target.estimated_model_bytes is not None and target.estimated_model_bytes > 0
+
+
+def test_resolve_chat_generation_target_reports_disabled_model(tmp_path: Path) -> None:
+    service = _chat_service(tmp_path, chat_model=MODEL_TAG)
+
+    target = service.resolve_chat_generation_target()
+
+    assert target.status == ChatGenerationTargetStatus.MODEL_PROFILE_DISABLED
+
+
+def test_resolve_chat_generation_target_reports_role_mapping_mismatch(
+    tmp_path: Path,
+) -> None:
+    service = _chat_service(tmp_path, chat_model=MODEL_TAG)
+    version = service.configuration_state().configuration_version.model_profiles[
+        MODEL_PROFILE_ID
+    ]
+    service.set_model_enabled(
+        MODEL_PROFILE_ID,
+        enabled=True,
+        actor_id="test-user",
+        expected_version=version,
+        idempotency_key="enable-chat-model-mismatch",
+    )
+    role_version = service.configuration_state().configuration_version.role_mappings.get(
+        "chat", 0
+    )
+    service.set_role_mapping(
+        "chat",
+        "fake-deterministic",
+        actor_id="test-user",
+        expected_version=role_version,
+        idempotency_key="map-chat-to-fake-deterministic",
+    )
+
+    target = service.resolve_chat_generation_target()
+
+    assert target.status == ChatGenerationTargetStatus.ROLE_MAPPING_MISMATCH

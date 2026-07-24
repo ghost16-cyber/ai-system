@@ -302,7 +302,13 @@ def test_rag_evaluation_persists_latest_result(tmp_path: Path):
     assert status.json()["latest_evaluation"]["created_at"] == evaluation.json()["created_at"]
 
 
-def test_chat_workflow_uses_project_index_and_stores_one_run(tmp_path: Path):
+def test_chat_workflow_without_canonical_project_never_uses_the_legacy_project_index(
+    tmp_path: Path,
+) -> None:
+    """Canonical chat retrieval is project-bound only (see Phase 9): even
+    with a populated legacy /rag/index and a clearly project-shaped
+    question, no canonical project_run_id means no retrieval occurs."""
+
     database_path = tmp_path / "app.db"
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "phase52.md").write_text(
@@ -320,18 +326,10 @@ def test_chat_workflow_uses_project_index_and_stores_one_run(tmp_path: Path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["rag_used"] is True
-    assert body["rag_context_count"] == 1
-    assert body["grounding_status"] == "grounded"
-    assert body["source_count"] == 1
-    assert body["source_paths"] == ["docs/phase52.md"]
-    assert body["rag_sources"][0]["path"] == "docs/phase52.md"
-    assert body["rag_sources"][0]["start_line"] == 1
-    assert body["rag_sources"][0]["score"] > 0
-    rag_trace = next(item for item in body["trace_summary"] if item["phase"] == "rag")
-    assert rag_trace["data"]["sources"][0]["path"] == "docs/phase52.md"
-    assert rag_trace["data"]["sources"][0]["start_line"] == 1
+    assert body["rag_used"] is False
+    assert body["rag_context_count"] == 0
+    assert body["rag_skip_reason"] == "no_canonical_project"
+    assert body["source_count"] == 0
     items = runs.json()["items"]
     assert len(items) == 1
     assert items[0]["run_id"] == body["run_id"]
-    assert items[0]["grounding_status"] == "grounded"

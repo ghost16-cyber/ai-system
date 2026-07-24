@@ -19,7 +19,6 @@ export type ChatActionType =
   | "project_patch"
   | "project_rollback"
   | "project_command"
-  | "system_configuration"
   | "report_generation"
   | "file_creation"
   | "dataset_operation";

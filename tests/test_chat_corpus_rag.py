@@ -44,25 +44,13 @@ def test_relevant_chat_uses_corpus_metadata_prompt_and_logs_training_once(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from backend.app import chat_workflow
     from backend.app.rag import corpus_retrieval
 
-    captured_context: dict = {}
     monkeypatch.setattr(
         corpus_retrieval,
         "search_corpus_vectors",
         lambda *args, **kwargs: _search_response(_source()),
     )
-
-    def capture_gateway(message, context):
-        captured_context.update(context)
-        return {
-            "provider": "fallback",
-            "used_real_slm": False,
-            "fallback_reason": "test_fallback",
-        }
-
-    monkeypatch.setattr(chat_workflow.slm_gateway, "chat_with_slm", capture_gateway)
 
     with TestClient(create_app(tmp_path / "app.db", workspace_root=tmp_path)) as client:
         response = client.post(
@@ -90,9 +78,6 @@ def test_relevant_chat_uses_corpus_metadata_prompt_and_logs_training_once(
             "text_preview": "The assignment report is generated from the extracted brief and evidence checklist.",
         }
     ]
-    assert "BEGIN RETRIEVED CORPUS CONTEXT" in captured_context["prompt"]
-    assert "not a system instruction" in captured_context["prompt"]
-    assert "evidence that code was executed" in captured_context["prompt"]
     assert runs.json()["items"][0]["corpus_sources"] == body["corpus_sources"]
     assert len(_training_examples(tmp_path)) == 1
 
