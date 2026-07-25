@@ -1,0 +1,10 @@
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/${feature_name}", tags=["${feature_name}"])
+
+
+@router.get("/health")
+def ${feature_name}_health() -> dict[str, str]:
+    return {"status": "ok", "feature": "${feature_name}"}

@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+
+class FeatureService:
+    """Deterministic scaffold for the ${feature_name} feature service."""
+
+    def __init__(self) -> None:
+        self._name = "${feature_name}"
+
+    def name(self) -> str:
+        return self._name
