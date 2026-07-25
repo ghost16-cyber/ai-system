@@ -911,7 +911,7 @@ def create_app(
     )
     job_queue = JobQueue(configured_path)
     synthesis_gateway = project_synthesis_gateway or build_synthesis_gateway_from_environment(
-        configured_path
+        configured_path, local_ai_service=local_ai_service
     )
     diagnosis_gateway = project_diagnosis_gateway or synthesis_gateway
     engagement_service = EngagementService(repository, model_gateway=synthesis_gateway)

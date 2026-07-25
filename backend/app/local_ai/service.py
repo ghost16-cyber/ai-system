@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from backend.app.database.migrations import assert_schema_compatible
 from backend.app.local_ai.contracts import (
     AdmissionOutcome,
@@ -489,6 +491,20 @@ class LocalAIService:
         self, request: LocalAIExecutionRequest
     ) -> LocalAIExecutionResult:
         """Compose existing admission, scheduler, gateway and provenance authorities."""
+        return self.execute_structured_generation(request, LocalAIAdvisoryResponse)
+
+    def execute_structured_generation(
+        self, request: LocalAIExecutionRequest, target_schema: type[BaseModel]
+    ) -> LocalAIExecutionResult:
+        """Like `execute_generation`, but for any structured-output schema.
+
+        Every consumer of local generation -- chat (`execute_generation`,
+        which targets `LocalAIAdvisoryResponse`) and canonical project
+        synthesis/diagnosis (which target their own response schemas) --
+        must go through this one admission/scheduler/gateway/provenance
+        composition, so they share one durable GPU-exclusivity gate instead
+        of contending for the GPU with no coordination.
+        """
         binding_hash = content_hash(request.model_dump(mode="json"))
         scheduler_key = f"runtime-execution:{request.idempotency_key}"
         existing = self._scheduler_job_for_idempotency(scheduler_key)
@@ -549,14 +565,14 @@ class LocalAIService:
             system_instruction=request.system_instruction,
             user_content=request.user_content,
             context=request.context,
-            expected_response_schema_identity=(
-                "astra.local-ai.advisory-response.v1"
-            ),
+            expected_response_schema_identity=request.expected_response_schema_identity,
             timeout_seconds=request.timeout_seconds,
             parameters=request.parameters,
             correlation={
                 "actor_id": request.actor_id,
                 "conversation_id": request.conversation_id,
+                "project_run_id": request.project_run_id,
+                "coordinator_intent_id": request.coordinator_intent_id,
                 "attributes": {
                     "model_profile_id": request.model_profile_id,
                     "scheduler_job_id": job.job_id,
@@ -595,7 +611,7 @@ class LocalAIService:
 
         generation = self._generation_gateway.generate(
             generation_request,
-            LocalAIAdvisoryResponse,
+            target_schema,
             cancelled=lambda: self._scheduler_job(job.job_id).status
             == SchedulerStatus.CANCELLED,
         )
@@ -652,6 +668,10 @@ class LocalAIService:
             generation_result=generation,
             provenance=provenance,
         )
+
+    def generation_diagnostic(self, generation_id: str) -> dict[str, object]:
+        """Read-only passthrough to the underlying generation gateway's diagnostic."""
+        return self._generation_gateway.safe_generation_diagnostic(generation_id)
 
     def _execution_model_profile(
         self, request: LocalAIExecutionRequest

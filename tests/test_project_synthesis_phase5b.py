@@ -16,8 +16,19 @@ from backend.app.database.migrations import (
     assert_schema_compatible,
 )
 from backend.app.local_ai.config import LocalAIConfiguration
+from backend.app.local_ai.contracts import (
+    AdmissionOutcome,
+    CapabilityStatus,
+    HardwareAdmissionDecision,
+    MemoryCapability,
+    OllamaCapability,
+    ResourceRequest,
+    SchedulerStatus,
+    VRAMCapability,
+)
 from backend.app.local_ai.generation import LocalGenerationGateway
 from backend.app.local_ai.provider import ProviderGenerationResponse, ProviderInspection
+from backend.app.local_ai.service import LocalAIService
 from backend.app.project_analysis.model_synthesis.gateway import (
     PHASE5B_PATCH_PROMPT_VERSION,
     Phase5ALocalSynthesisGateway,
@@ -313,6 +324,53 @@ class _Provider:
         )
 
 
+def _fake_capabilities(model_tag: str):
+    now = datetime.now(timezone.utc)
+    return (
+        MemoryCapability(
+            capability_id="memory", status=CapabilityStatus.AVAILABLE,
+            total_bytes=16 * 1024**3, available_bytes=12 * 1024**3, probed_at=now,
+        ),
+        VRAMCapability(
+            capability_id="vram", status=CapabilityStatus.AVAILABLE,
+            total_bytes=4 * 1024**3, free_bytes=4 * 1024**3, probed_at=now,
+        ),
+        OllamaCapability(
+            capability_id="ollama", status=CapabilityStatus.AVAILABLE,
+            endpoint="http://127.0.0.1:11434", configured_models=(model_tag,),
+            installed_models=(model_tag,), provider_reachable=True, probed_at=now,
+        ),
+    )
+
+
+def _synthesis_service(database, configuration: LocalAIConfiguration, provider) -> LocalAIService:
+    """Build the LocalAIService a production Phase5ALocalSynthesisGateway would use,
+    injecting a fake provider client so no real Ollama call is made."""
+    local_gateway = LocalGenerationGateway(
+        database, configuration=configuration, provider_client=provider
+    )
+    service = LocalAIService(
+        database, configuration=configuration, generation_gateway=local_gateway,
+        probe=lambda: _fake_capabilities(configuration.synthesis_model),
+    )
+    service.initialize()
+    service.capability_report(refresh=True)
+    # Model profiles are disabled by default (no auto-start/auto-pull) -- an
+    # explicit enable is required before any generation, exactly as the real
+    # deployment must do once for "configured-local-model".
+    version = service.configuration_state().configuration_version.model_profiles[
+        "configured-local-model"
+    ]
+    service.set_model_enabled(
+        "configured-local-model",
+        enabled=True,
+        actor_id="test-setup",
+        expected_version=version,
+        idempotency_key=f"enable-configured-local-model:{database}",
+    )
+    return service
+
+
 def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(tmp_path) -> None:
     database = tmp_path / "adapter.db"
     apply_schema_migrations(database)
@@ -347,8 +405,8 @@ def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(
         "recommended_validation": [],
     }, separators=(",", ":"))
     provider = _Provider(response)
-    local = LocalGenerationGateway(database, configuration=configuration, provider_client=provider)
-    adapter = Phase5ALocalSynthesisGateway(local, configuration)
+    service = _synthesis_service(database, configuration, provider)
+    adapter = Phase5ALocalSynthesisGateway(service, configuration)
     first = adapter.generate(json.dumps(request_payload, separators=(",", ":")))
     second = adapter.generate(json.dumps(request_payload, separators=(",", ":")))
     assert first.generation_id == second.generation_id
@@ -356,6 +414,7 @@ def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(
     assert first.request_fingerprint and first.endpoint_identity == configuration.endpoint_identity
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM local_ai_generation_invocations").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM local_ai_scheduler_jobs").fetchone()[0] == 1
 
 
 def test_phase5b_failure_exposes_only_bounded_schema_diagnostic(tmp_path) -> None:
@@ -372,9 +431,7 @@ def test_phase5b_failure_exposes_only_bounded_schema_diagnostic(tmp_path) -> Non
     )
     provider = _Provider('{"contract_version":"astra.project-synthesis.response.v1"}')
     adapter = Phase5ALocalSynthesisGateway(
-        LocalGenerationGateway(
-            database, configuration=configuration, provider_client=provider
-        ),
+        _synthesis_service(database, configuration, provider),
         configuration,
     )
     payload = json.dumps({
@@ -405,6 +462,85 @@ def test_phase5b_failure_exposes_only_bounded_schema_diagnostic(tmp_path) -> Non
     assert len(diagnostic["response_schema_hash"]) == 64
     assert diagnostic["prompt_eval_count"] == 7
     assert diagnostic["eval_count"] == 3
+
+
+def _phase5b_configuration() -> LocalAIConfiguration:
+    return LocalAIConfiguration(
+        generation_enabled=True, project_synthesis_enabled=True,
+        provider_type="ollama", endpoint_identity="http://127.0.0.1:11434",
+        synthesis_model="qwen-test:1.5b", coder_model="qwen-test:1.5b",
+        planner_model="qwen-test:1.5b", reviewer_model="qwen-test:1.5b",
+        connection_timeout_seconds=2, generation_timeout_seconds=10,
+        maximum_context_tokens=4096, maximum_output_tokens=512,
+        allow_cpu_fallback=False, gpu_exclusive_concurrency=True,
+    )
+
+
+def _synthesis_request_payload() -> str:
+    return json.dumps({
+        "contract_version": "astra.project-synthesis.request.v1",
+        "request_id": "gpu-admission-request-1",
+    }, separators=(",", ":"))
+
+
+def test_synthesis_generation_is_blocked_while_another_exclusive_job_holds_the_gpu(
+    tmp_path,
+) -> None:
+    """Canonical synthesis must share one GPU-admission gate with chat generation
+    (GPU Admission Unification): a job already claimed with `gpu_exclusive=True`
+    (as chat generation submits) must make a concurrent synthesis call observe
+    contention rather than silently racing it on a 4GB GPU."""
+    database = tmp_path / "contention.db"
+    apply_schema_migrations(database)
+    configuration = _phase5b_configuration()
+    provider = _Provider("{}")
+    service = _synthesis_service(database, configuration, provider)
+
+    gpu_resource = ResourceRequest(backend="cuda", gpu_exclusive=True, estimated_vram_bytes=1)
+    admission = HardwareAdmissionDecision(
+        outcome=AdmissionOutcome.GPU, reason="test setup: simulate chat generation holding the GPU",
+        backend="cuda", device="gpu:0",
+        estimated_required_bytes=1, available_bytes=10_000_000, safety_reserve_bytes=0,
+    )
+    competing = service.enqueue(
+        workload_class="local_generation", resource_request=gpu_resource, admission=admission,
+        idempotency_key="competing-chat-job",
+    )
+    claimed = service._claim_exact_scheduler_job(
+        competing.job_id, worker_id="chat-worker", lease_seconds=60
+    )
+    assert claimed is not None and claimed.status == SchedulerStatus.CLAIMED
+
+    adapter = Phase5ALocalSynthesisGateway(service, configuration)
+    with pytest.raises(SynthesisGatewayError) as caught:
+        adapter.generate(_synthesis_request_payload())
+    assert caught.value.code == "gpu_busy"
+    assert provider.calls == 0
+
+
+def test_synthesis_generation_fails_closed_when_admission_is_blocked(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "blocked.db"
+    apply_schema_migrations(database)
+    configuration = _phase5b_configuration()
+    provider = _Provider("{}")
+    service = _synthesis_service(database, configuration, provider)
+    monkeypatch.setattr(
+        service,
+        "admission_preview",
+        lambda *_a, **_k: HardwareAdmissionDecision(
+            outcome=AdmissionOutcome.BLOCKED_VRAM,
+            reason="test forced admission denial",
+            estimated_required_bytes=1,
+            safety_reserve_bytes=0,
+        ),
+    )
+    adapter = Phase5ALocalSynthesisGateway(service, configuration)
+    with pytest.raises(SynthesisGatewayError) as caught:
+        adapter.generate(_synthesis_request_payload())
+    assert caught.value.code == "provider_unavailable"
+    assert provider.calls == 0
 
 
 def test_model_output_remains_inert_and_cannot_invoke_authorities(tmp_path, monkeypatch) -> None:

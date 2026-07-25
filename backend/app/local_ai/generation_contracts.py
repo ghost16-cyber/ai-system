@@ -180,6 +180,9 @@ class LocalAIExecutionRequest(StrictModel):
     exact_model_tag: str = Field(min_length=1, max_length=300)
     expected_configuration_version: int = Field(ge=1)
     purpose: GenerationPurpose
+    expected_response_schema_identity: str = Field(
+        default="astra.local-ai.advisory-response.v1", min_length=1, max_length=300
+    )
     system_instruction: str = Field(
         min_length=1, max_length=MAX_SYSTEM_INSTRUCTION_CHARS
     )
@@ -193,6 +196,8 @@ class LocalAIExecutionRequest(StrictModel):
     prefer_gpu: bool = True
     approved_admission_outcome: AdmissionOutcome | None = None
     conversation_id: str | None = Field(default=None, min_length=1, max_length=200)
+    project_run_id: str | None = Field(default=None, min_length=1, max_length=200)
+    coordinator_intent_id: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def enforce_aggregate_bounds(self) -> "LocalAIExecutionRequest":

@@ -113,6 +113,16 @@ class _BoundHandler:
                     intent, evidence_artifact, self.provider_profile
                 )
         except CanonicalSynthesisBlocked as exc:
+            if exc.code == "gpu_busy":
+                # GPU contention with another exclusive local-generation request
+                # (see GPU Admission Unification) is transient infrastructure
+                # contention, not a synthesis-domain failure -- let it propagate
+                # as a plain RuntimeError so the executor's existing
+                # infra-vs-domain classification retries it via
+                # release_for_retry, instead of a terminal CoordinatorPolicyBlock.
+                raise RuntimeError(
+                    f"Bounded {purpose} synthesis is temporarily blocked by GPU contention."
+                ) from exc
             raise CoordinatorPolicyBlock(
                 f"Bounded {purpose} synthesis was blocked ({exc.code})."
             ) from exc
