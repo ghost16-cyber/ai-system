@@ -206,7 +206,7 @@ def main() -> int:
             proposal = orchestrator.proposals.get(str(outcome.proposal_id))
             if proposal is None:
                 raise RuntimeError("the immutable synthesis proposal is missing")
-            diagnostic = gateway.local_gateway.safe_generation_diagnostic(
+            diagnostic = gateway.local_ai_service.generation_diagnostic(
                 proposal.generation_id
             )
             allowed = (

@@ -279,11 +279,27 @@ class LocalAIService:
                     )
             for model in default_model_profiles(self.configuration):
                 if model.model_profile_id == "configured-local-model":
+                    # `enabled` is administrator-controlled durable state (set only via
+                    # set_model_enabled), not configuration-derived -- the seed default's
+                    # `enabled=False` must never overwrite an already-persisted row's
+                    # enabled flag. Read the persisted value first (None if the row is
+                    # being created for the first time, in which case the configured
+                    # default applies) and fold it into the candidate profile so the
+                    # `enabled` column and the `enabled` field embedded in profile_json
+                    # stay consistent with each other.
+                    existing = connection.execute(
+                        "SELECT enabled FROM local_ai_models WHERE model_profile_id = ?",
+                        (model.model_profile_id,),
+                    ).fetchone()
+                    persisted_enabled = (
+                        bool(existing["enabled"]) if existing is not None else model.enabled
+                    )
+                    candidate = model.model_copy(update={"enabled": persisted_enabled})
                     connection.execute(
                         "INSERT INTO local_ai_models (model_profile_id, config_version, provider_id, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT(model_profile_id) DO UPDATE SET config_version = local_ai_models.config_version + 1, provider_id = excluded.provider_id, enabled = excluded.enabled, profile_json = excluded.profile_json, updated_at = excluded.updated_at "
-                        "WHERE local_ai_models.provider_id != excluded.provider_id OR local_ai_models.enabled != excluded.enabled OR local_ai_models.profile_json != excluded.profile_json",
-                        (model.model_profile_id, model.provider_id, int(model.enabled), model.model_dump_json(), now, now),
+                        "ON CONFLICT(model_profile_id) DO UPDATE SET config_version = local_ai_models.config_version + 1, provider_id = excluded.provider_id, profile_json = excluded.profile_json, updated_at = excluded.updated_at "
+                        "WHERE local_ai_models.provider_id != excluded.provider_id OR local_ai_models.profile_json != excluded.profile_json",
+                        (candidate.model_profile_id, candidate.provider_id, int(candidate.enabled), candidate.model_dump_json(), now, now),
                     )
                 else:
                     connection.execute(
