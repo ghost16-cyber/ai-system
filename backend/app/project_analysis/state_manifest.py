@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -11,7 +11,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.folders.safety import project_root_fingerprint, safe_relative_path
-from backend.app.folders.scanner import FolderScanLimits, build_inventory, validate_folder_root
+from backend.app.folders.scanner import (
+    FolderScanLimits,
+    build_inventory,
+    is_budget_exempt_dataset_content,
+    read_positive_int_env,
+    validate_folder_root,
+)
 
 
 MANIFEST_VERSION = "astra.project-state-manifest.v1"
@@ -46,10 +52,14 @@ class ProjectStateManifest(ManifestStrictModel):
 
 @dataclass(frozen=True, slots=True)
 class ProjectManifestLimits:
-    max_files: int = 5_000
-    max_file_size_bytes: int = 10 * 1024 * 1024
-    max_total_size_bytes: int = 200 * 1024 * 1024
-    max_depth: int = 24
+    max_files: int = field(default_factory=lambda: read_positive_int_env("ASTRA_MANIFEST_MAX_FILES", 5_000))
+    max_file_size_bytes: int = field(
+        default_factory=lambda: read_positive_int_env("ASTRA_MANIFEST_MAX_FILE_SIZE_BYTES", 10 * 1024 * 1024)
+    )
+    max_total_size_bytes: int = field(
+        default_factory=lambda: read_positive_int_env("ASTRA_MANIFEST_MAX_TOTAL_SIZE_BYTES", 200 * 1024 * 1024)
+    )
+    max_depth: int = field(default_factory=lambda: read_positive_int_env("ASTRA_MANIFEST_MAX_DEPTH", 24))
     stream_chunk_bytes: int = 1024 * 1024
 
 
@@ -85,7 +95,7 @@ def build_project_state_manifest(
         if item.get("status") != "readable":
             reason = str(item.get("ignore_reason") or "ignored")
             excluded[reason] = excluded.get(reason, 0) + 1
-            if reason in {"total_size_limit", "unreadable_or_outside_root"} or (
+            if reason in {"total_size_limit", "unreadable_or_outside_root", "file_count_budget_exceeded"} or (
                 reason == "file_size_limit" and _is_required_manifest_entry(item)
             ):
                 incomplete_reasons.append(reason)
@@ -108,9 +118,9 @@ def build_project_state_manifest(
             file_type=str(item.get("classification") or "other"),
             size=int(item.get("size_bytes") or 0), content_hash=digest, mode=mode,
         ))
-    for warning in scan.get("warnings", []):
-        if "Maximum" in str(warning):
-            incomplete_reasons.append(str(warning))
+    diagnostics = scan.get("diagnostics") if isinstance(scan.get("diagnostics"), dict) else {}
+    if diagnostics.get("max_depth_reached"):
+        incomplete_reasons.append("max_depth_reached")
     entries.sort(key=lambda entry: entry.normalized_relative_path)
     complete = bool(scan.get("complete", True)) and not incomplete_reasons
     content = {
@@ -134,12 +144,35 @@ def build_project_state_manifest(
         **content, generated_at=datetime.now(timezone.utc), manifest_hash=digest,
     )
     if require_complete and not manifest.complete:
-        reasons = "; ".join(manifest.incomplete_reasons[:5]) or "configured scan limit reached"
+        reasons = "; ".join(_describe_incomplete_reason(reason) for reason in manifest.incomplete_reasons[:5])
+        reasons = reasons or "configured scan limit reached"
         raise IncompleteProjectManifestError(
             f"Project state manifest is incomplete: {reasons}. Increase a safe limit and rescan.",
             manifest=manifest,
         )
     return manifest
+
+
+_INCOMPLETE_REASON_HINTS = {
+    "file_count_budget_exceeded": (
+        "the file-count scan limit was reached "
+        "(raise ASTRA_MANIFEST_MAX_FILES and/or ASTRA_SCAN_MAX_FILES)"
+    ),
+    "total_size_limit": (
+        "the aggregate scan size limit was reached "
+        "(raise ASTRA_MANIFEST_MAX_TOTAL_SIZE_BYTES and/or ASTRA_SCAN_MAX_TOTAL_SIZE_BYTES)"
+    ),
+    "max_depth_reached": "the maximum folder depth was reached (raise ASTRA_SCAN_MAX_DEPTH)",
+    "unreadable_or_outside_root": "one or more eligible files could not be safely read",
+}
+
+
+def _describe_incomplete_reason(reason: str) -> str:
+    if reason in _INCOMPLETE_REASON_HINTS:
+        return _INCOMPLETE_REASON_HINTS[reason]
+    if reason == "file_size_limit" or reason.startswith("unreadable:") or reason.startswith("unsafe_file:"):
+        return f"{reason} (raise ASTRA_MANIFEST_MAX_FILE_SIZE_BYTES if this is a required file)"
+    return reason
 
 
 def assert_manifest_fresh(
@@ -168,15 +201,13 @@ def _is_required_manifest_entry(item: dict) -> bool:
     Dataset, assignment, and captured evidence contents are intentionally represented
     by the exclusion policy instead of being loaded into the execution authorization
     manifest. Source, configuration, and general project files remain fail-closed.
+    Reuses the scanner's own dataset-exemption predicate (backend.app.folders.scanner)
+    so the file-count scan budget and manifest completeness never disagree about
+    which content counts as generated/reference data.
     """
     relative = str(item.get("relative_path") or "")
     suffix = str(item.get("extension") or Path(relative).suffix).lower()
-    first = relative.split("/", 1)[0].lower()
-    if first in {"assignment_inputs", "datasets", "evidence"}:
-        return False
-    if suffix in {".csv", ".tsv", ".parquet", ".jsonl", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}:
-        return False
-    return True
+    return not is_budget_exempt_dataset_content(relative, suffix)
 
 
 def _canonical_hash(value: dict) -> str:

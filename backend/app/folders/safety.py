@@ -4,7 +4,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from backend.app.folders.scanner import IGNORED_DIRS, file_ignore_reason, validate_folder_root
+from backend.app.folders.scanner import file_ignore_reason, is_ignored_directory_name, validate_folder_root
 
 
 SAFE_TEXT_SUFFIXES = frozenset(
@@ -89,7 +89,7 @@ def resolve_project_path(
 def project_file_exclusion_reason(path: Path, root: Path, *, size: int | None = None) -> str | None:
     relative = path.relative_to(root).as_posix()
     components = [part.lower() for part in Path(relative).parts]
-    if any(part in IGNORED_DIRS or part in {".svn", ".hg", "vendor"} for part in components[:-1]):
+    if any(is_ignored_directory_name(part) or part == "vendor" for part in components[:-1]):
         return "excluded_directory"
     name = path.name.lower()
     if name == ".env" or name.startswith(".env."):

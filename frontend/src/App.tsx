@@ -1620,14 +1620,22 @@ function FolderAccessCard({
       <span><strong>{action.summary.reports}</strong> reports</span>
       <span><strong>{action.summary.evidenceFiles}</strong> evidence</span>
       <span><strong>{action.summary.configurationFiles}</strong> config</span>
+      <span><strong>{action.diagnostics.exemptDatasetFiles}</strong> exempt dataset</span>
     </div>}
     {completed && <div className="folder-diff"><span>Added {action.diff.added}</span><span>Changed {action.diff.changed}</span><span>Deleted {action.diff.deleted}</span><span>Unchanged {action.diff.unchanged}</span></div>}
     {completed && action.lastScannedAt && <p className="muted">Last scanned: {formatTime(action.lastScannedAt)}</p>}
+    {completed && !action.complete && <div className="result failed"><CircleAlert size={17} /><div><strong>Manifest scan incomplete</strong><p>
+      {action.diagnostics.fileCountBudgetExceeded && <>{action.diagnostics.eligibleOmitted} eligible file(s) exceeded the {action.limits.maxFiles}-file limit. </>}
+      {action.diagnostics.totalSizeBudgetExceeded && <>The total scan size limit was reached. </>}
+      {action.diagnostics.maxDepthReached && <>The maximum folder depth was reached. </>}
+      Increase the configured limit (ASTRA_SCAN_MAX_FILES / ASTRA_SCAN_MAX_TOTAL_SIZE_BYTES / ASTRA_SCAN_MAX_DEPTH) and rescan. Canonical project creation stays blocked until the scan is complete.
+    </p></div></div>}
+    {completed && action.complete && <div className="result completed"><CheckCircle2 size={17} />Manifest-eligible scan complete — canonical project creation can proceed.</div>}
     {completed && action.warnings.length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Scan warnings</strong><ul>{action.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div></div>}
     {completed && <div className="button-row"><button className="secondary-button" onClick={onRescan} disabled={busy}><RefreshCw size={16} />Rescan</button></div>}
     {action.status === "failed" && <div className="result failed"><CircleAlert size={17} /><div><strong>Folder scan failed</strong><pre>{action.error || "Astra could not scan this folder."}</pre></div></div>}
     {completed && <details className="technical folder-inventory-details"><summary><ChevronDown size={15} />Inventory ({action.inventory.length} items)</summary><div className="folder-inventory-list">{action.inventory.map((item) => <div key={item.relativePath} className={`folder-inventory-row ${item.status}`}><code>{item.relativePath}</code><span>{item.classification}</span><small>{item.status === "ignored" ? item.ignoreReason ?? "ignored" : formatFileSize(item.sizeBytes)}</small></div>)}</div></details>}
-    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount }} /></div></details>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body"><span>Mode: approved bounded project reading</span><span>Files are addressed by project-relative paths only; writes and commands require separate approvals.</span><JsonBlock value={{ status: action.status, summary: action.summary, diff: action.diff, warnings: action.warnings, scanCount: action.scanCount, complete: action.complete, diagnostics: action.diagnostics, limits: action.limits }} /></div></details>
   </div>;
 }
 

@@ -33,6 +33,30 @@ export interface FolderDiff {
   unchanged: number;
 }
 
+export interface FolderScanDiagnostics {
+  totalIndexed: number;
+  totalEligible: number;
+  eligibleOmitted: number;
+  exemptDatasetFiles: number;
+  ignoredGenerated: number;
+  ignoredSensitive: number;
+  ignoredUnsupported: number;
+  ignoredTemporary: number;
+  oversized: number;
+  unreadable: number;
+  fileCountBudgetExceeded: boolean;
+  totalSizeBudgetExceeded: boolean;
+  maxDepthReached: boolean;
+  diagnosticCapReached: boolean;
+}
+
+export interface FolderScanLimits {
+  maxFiles: number;
+  maxFileSizeBytes: number;
+  maxTotalSizeBytes: number;
+  maxDepth: number;
+}
+
 export interface FolderAccessAction {
   actionId?: string;
   status: ChatActionStatus | "scanning";
@@ -46,6 +70,9 @@ export interface FolderAccessAction {
   diff: FolderDiff;
   warnings: string[];
   inventory: FolderInventoryItem[];
+  complete: boolean;
+  diagnostics: FolderScanDiagnostics;
+  limits: FolderScanLimits;
 }
 
 export function folderAccessActionFromPayload(
@@ -57,6 +84,8 @@ export function folderAccessActionFromPayload(
   if (!folder) return null;
   const summary = asRecord(folder.summary);
   const diff = asRecord(folder.diff);
+  const diagnostics = asRecord(folder.diagnostics);
+  const limits = asRecord(folder.limits);
   const inventory = Array.isArray(folder.inventory)
     ? folder.inventory.flatMap((item) => {
       const entry = asRecord(item);
@@ -109,6 +138,29 @@ export function folderAccessActionFromPayload(
     },
     warnings: readStringArray(folder.warnings),
     inventory,
+    complete: folder.complete !== false,
+    diagnostics: {
+      totalIndexed: readNumber(diagnostics?.total_indexed),
+      totalEligible: readNumber(diagnostics?.total_eligible),
+      eligibleOmitted: readNumber(diagnostics?.eligible_omitted),
+      exemptDatasetFiles: readNumber(diagnostics?.exempt_dataset_files),
+      ignoredGenerated: readNumber(diagnostics?.ignored_generated),
+      ignoredSensitive: readNumber(diagnostics?.ignored_sensitive),
+      ignoredUnsupported: readNumber(diagnostics?.ignored_unsupported),
+      ignoredTemporary: readNumber(diagnostics?.ignored_temporary),
+      oversized: readNumber(diagnostics?.oversized),
+      unreadable: readNumber(diagnostics?.unreadable),
+      fileCountBudgetExceeded: diagnostics?.file_count_budget_exceeded === true,
+      totalSizeBudgetExceeded: diagnostics?.total_size_budget_exceeded === true,
+      maxDepthReached: diagnostics?.max_depth_reached === true,
+      diagnosticCapReached: diagnostics?.diagnostic_cap_reached === true,
+    },
+    limits: {
+      maxFiles: readNumber(limits?.max_files),
+      maxFileSizeBytes: readNumber(limits?.max_file_size_bytes),
+      maxTotalSizeBytes: readNumber(limits?.max_total_size_bytes),
+      maxDepth: readNumber(limits?.max_depth),
+    },
   };
 }
 

@@ -1791,6 +1791,8 @@ def create_app(
             "scan_count": 1,
             "last_scanned_at": scan.get("scanned_at"),
             "limits": scan.get("limits") or {},
+            "complete": scan.get("complete", True),
+            "diagnostics": scan.get("diagnostics") or {},
             "result_summary": summary,
             "error": None,
         }
@@ -1918,6 +1920,8 @@ def create_app(
                         "scan_count": scan_count,
                         "last_scanned_at": scan.get("scanned_at"),
                         "limits": scan.get("limits") or {},
+                        "complete": scan.get("complete", True),
+                        "diagnostics": scan.get("diagnostics") or {},
                         "result_summary": summary,
                         "error": None,
                     }
@@ -4959,11 +4963,20 @@ def create_app(
             "repository_root_fingerprint": str(access["root_fingerprint"]),
             "repository_root": str(access["approved_root"]),
         }
-        built = create_delivery_job(
-            root=access["approved_root"], conversation_id=conversation_id,
-            folder_access_id=access["action_id"], user_request=message,
-            action_run_id=action_run_id, model_gateway=None,
-        )
+        try:
+            built = create_delivery_job(
+                root=access["approved_root"], conversation_id=conversation_id,
+                folder_access_id=access["action_id"], user_request=message,
+                action_run_id=action_run_id, model_gateway=None,
+            )
+        except IncompleteProjectManifestError as error:
+            _stage0_audit(
+                "project_manifest", str(access.get("action_id") or "unknown"),
+                "incomplete_manifest_rejected", "rejected", {"error_code": error.code},
+            )
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": str(error)}) from error
+        except (ProjectDeliveryError, ProjectAnalysisError, ProjectManifestError, ProjectSafetyError, OSError) as error:
+            raise HTTPException(status_code=409, detail=_controlled_project_error(error)) from error
         specification = dict(built["specification"])
         plan = dict(built["plan"]) if built.get("plan") else None
         if plan is not None:
@@ -6004,7 +6017,28 @@ def create_app(
         warnings = int(summary.get("warning_count") or 0)
         noun = "file" if readable == 1 else "files"
         warning_note = f" with {warnings} warning{'s' if warnings != 1 else ''}" if warnings else ""
-        return f"Scanned {readable} readable {noun} ({ignored} ignored, {total} discovered){warning_note}."
+        base = f"Scanned {readable} readable {noun} ({ignored} ignored, {total} discovered){warning_note}."
+        if scan.get("complete", True):
+            return base
+        diagnostics = scan.get("diagnostics") if isinstance(scan.get("diagnostics"), dict) else {}
+        limits = scan.get("limits") if isinstance(scan.get("limits"), dict) else {}
+        actions: list[str] = []
+        if diagnostics.get("file_count_budget_exceeded"):
+            actions.append(
+                f"{diagnostics.get('eligible_omitted', 0)} eligible file(s) exceeded the "
+                f"{limits.get('max_files', '?')}-file scan limit (raise ASTRA_SCAN_MAX_FILES / "
+                f"ASTRA_MANIFEST_MAX_FILES and rescan)"
+            )
+        if diagnostics.get("total_size_budget_exceeded"):
+            actions.append(
+                "the total scan size limit was reached (raise ASTRA_SCAN_MAX_TOTAL_SIZE_BYTES / "
+                "ASTRA_MANIFEST_MAX_TOTAL_SIZE_BYTES and rescan)"
+            )
+        if diagnostics.get("max_depth_reached"):
+            actions.append("the maximum folder depth was reached (raise ASTRA_SCAN_MAX_DEPTH and rescan)")
+        if not actions:
+            return f"{base} Scan incomplete; rescan after adjusting configured limits."
+        return f"{base} Scan incomplete: {'; '.join(actions)}."
 
     def _run_assignment_copilot_request(
         request: AssignmentCopilotRunRequest,

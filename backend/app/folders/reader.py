@@ -11,7 +11,7 @@ from backend.app.folders.safety import (
     resolve_project_path,
     safe_relative_path,
 )
-from backend.app.folders.scanner import IGNORED_DIRS, validate_folder_root
+from backend.app.folders.scanner import is_ignored_directory_name, validate_folder_root
 
 
 @dataclass(frozen=True)
@@ -86,8 +86,8 @@ def iter_project_files(root: str | Path, *, max_files: int = 500) -> Iterable[Pa
         current_path = Path(current)
         dirnames[:] = [
             name for name in sorted(dirnames)
-            if name not in IGNORED_DIRS
-            and name not in {".svn", ".hg", "vendor"}
+            if not is_ignored_directory_name(name)
+            and name != "vendor"
             and not (current_path / name).is_symlink()
         ]
         for name in sorted(filenames):

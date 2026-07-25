@@ -201,6 +201,12 @@ test("maps persisted folder action states without exposing absolute scanned file
   assert.equal(completed?.summary.readable, 2);
   assert.equal(completed?.diff.added, 2);
   assert.deepEqual(completed?.inventory.map((item) => item.relativePath), ["assignment.md"]);
+  // Payload predates Phase 10.1 diagnostics -- must default to complete rather
+  // than silently reporting an incomplete scan for older persisted actions.
+  assert.equal(completed?.complete, true);
+  assert.equal(completed?.diagnostics.fileCountBudgetExceeded, false);
+  assert.equal(completed?.diagnostics.eligibleOmitted, 0);
+  assert.equal(completed?.limits.maxFiles, 0);
 
   const cancelled = folderAccessActionFromPayload({
     ...folderPayload,
@@ -215,6 +221,43 @@ test("maps persisted folder action states without exposing absolute scanned file
   });
   assert.equal(cancelled?.status, "cancelled");
   assert.equal(cancelled?.resultSummary, "Folder access cancelled. No folder was scanned.");
+});
+
+test("maps Phase 10.1 scan-budget diagnostics and limits from a completed folder action", () => {
+  const incomplete = folderAccessActionFromPayload({
+    ...folderPayload,
+    status: "completed",
+    technical_details: {
+      folder_action: {
+        ...folderPayload.technical_details.folder_action,
+        status: "completed",
+        complete: false,
+        diagnostics: {
+          total_indexed: 3,
+          total_eligible: 10,
+          eligible_omitted: 7,
+          exempt_dataset_files: 4,
+          ignored_generated: 2,
+          ignored_sensitive: 0,
+          ignored_unsupported: 1,
+          ignored_temporary: 0,
+          oversized: 0,
+          unreadable: 0,
+          file_count_budget_exceeded: true,
+          total_size_budget_exceeded: false,
+          max_depth_reached: false,
+          diagnostic_cap_reached: false,
+        },
+        limits: { max_files: 3, max_file_size_bytes: 5_000_000, max_total_size_bytes: 150_000_000, max_depth: 12 },
+      },
+    },
+  });
+
+  assert.equal(incomplete?.complete, false);
+  assert.equal(incomplete?.diagnostics.fileCountBudgetExceeded, true);
+  assert.equal(incomplete?.diagnostics.eligibleOmitted, 7);
+  assert.equal(incomplete?.diagnostics.exemptDatasetFiles, 4);
+  assert.equal(incomplete?.limits.maxFiles, 3);
 });
 
 test("maps failed folder actions to a friendly card error", () => {

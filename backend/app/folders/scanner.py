@@ -11,10 +11,46 @@ from typing import Any
 from backend.app.core.path_utils import normalize_path_for_platform
 
 
-MAX_FILES = 500
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
-MAX_TOTAL_SIZE_BYTES = 50 * 1024 * 1024
-MAX_DEPTH = 12
+class FolderScanConfigError(ValueError):
+    """Raised when a scan-limit environment variable holds an invalid value.
+
+    Configuration errors fail the process at import time rather than
+    silently falling back to an unbounded or nonsensical scan -- there is
+    intentionally no implicit unlimited mode.
+    """
+
+
+def read_positive_int_env(env_name: str, default: int) -> int:
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError as error:
+        raise FolderScanConfigError(f"{env_name}={raw!r} is not a valid integer.") from error
+    if value <= 0:
+        raise FolderScanConfigError(
+            f"{env_name}={raw!r} must be a positive integer; unlimited scanning is not supported."
+        )
+    return value
+
+
+# Astra's own repository (backend + frontend + tests + docs, with generated
+# run-history/caches excluded before budget accounting and its RAG corpus /
+# benchmark fixtures exempted as recognized dataset content) consumes the
+# file-count budget at ~750-800 eligible files -- 1500 leaves substantial
+# headroom without approaching an unbounded scan. See
+# docs/astra-phase10-1-scanner-limits.md.
+MAX_FILES = read_positive_int_env("ASTRA_SCAN_MAX_FILES", 1500)
+MAX_FILE_SIZE_BYTES = read_positive_int_env("ASTRA_SCAN_MAX_FILE_SIZE_BYTES", 5 * 1024 * 1024)
+MAX_TOTAL_SIZE_BYTES = read_positive_int_env("ASTRA_SCAN_MAX_TOTAL_SIZE_BYTES", 150 * 1024 * 1024)
+MAX_DEPTH = read_positive_int_env("ASTRA_SCAN_MAX_DEPTH", 12)
+
+# Hard safety valve on top of the configured file-count budget: scanning
+# still walks the whole tree (bounded by MAX_DEPTH) to report precise
+# omitted-file diagnostics, but never inspects more raw filesystem entries
+# than this, regardless of configuration.
+MAX_SCAN_DIAGNOSTIC_ENTRIES = 50_000
 
 IGNORED_DIRS = {
     ".git",
@@ -27,13 +63,74 @@ IGNORED_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
     ".idea",
-    ".vscode",
     "dist",
     "build",
     "coverage",
     ".next",
     ".cache",
+    # Phase 10.1: additional generic generated/local-artefact directories.
+    ".qa",
+    ".work",
+    "logs",
+    "htmlcov",
+    ".tox",
+    ".nox",
+    ".eggs",
+    ".turbo",
+    ".parcel-cache",
+    ".docusaurus",
+    "checkpoints",
+    # Named (not pattern-matched) generated run-history directories: these
+    # are excluded by exact name wherever they appear in the tree, the same
+    # way node_modules/dist/build already are -- not via a blanket dot-rule.
+    ".runs",
 }
+
+# Phase 10.1.1: hidden directories that hold meaningful repository
+# configuration, not generated/local state. These are never excluded,
+# regardless of what future generic dot-directory heuristics might suggest --
+# excluding them would silently drop CI workflows or dev-container/editor
+# configuration from the manifest while still reporting it "complete".
+ALLOWED_HIDDEN_DIRS = {".github", ".devcontainer", ".vscode"}
+
+
+def is_ignored_directory_name(name: str) -> bool:
+    """Directory-level exclusion, applied before any per-file budget accounting.
+
+    This is a deterministic classification, not a blanket "hidden directories
+    are generated" heuristic: only directories named in IGNORED_DIRS are
+    excluded. An unrecognized hidden directory (e.g. an editor's or a
+    project-specific tool's dotfolder that isn't on either list) is *not*
+    silently treated as generated -- it is scanned like any other directory,
+    so a manifest can never be reported complete while quietly omitting
+    content nobody has actually classified.
+    """
+    if name in ALLOWED_HIDDEN_DIRS:
+        return False
+    return name in IGNORED_DIRS
+
+
+# Reference/dataset content that Astra's manifest-completeness policy
+# already treats as non-authoritative for project execution (see
+# project_analysis.state_manifest's required-entry check, which reuses this
+# same predicate). Exempt content is still scanned and may still appear in
+# the manifest when small enough -- it just never competes with source,
+# config, or test files for the file-count scan budget.
+DATASET_EXEMPT_TOP_LEVEL_DIRS = {"assignment_inputs", "datasets", "evidence", "astra_corpus", "benchmarks"}
+DATASET_EXEMPT_SUFFIXES = {".csv", ".tsv", ".parquet", ".jsonl", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+
+
+def is_budget_exempt_dataset_content(relative_path: str, suffix: str) -> bool:
+    first = relative_path.split("/", 1)[0].lower() if relative_path else ""
+    return first in DATASET_EXEMPT_TOP_LEVEL_DIRS or suffix.lower() in DATASET_EXEMPT_SUFFIXES
+
+
+TEMPORARY_SUFFIXES = {".tmp", ".temp", ".log", ".bak", ".swp", ".swo", ".orig", ".rej"}
+
+
+def _is_temporary_file(name: str, suffix: str) -> bool:
+    return suffix in TEMPORARY_SUFFIXES or name.endswith("~")
+
 
 SENSITIVE_NAMES = {
     ".env",
@@ -125,6 +222,20 @@ def safe_display_path(path: str | Path) -> str:
     return f"{parent}/{name}" if parent else name
 
 
+_IGNORE_REASON_BUCKETS = {
+    "ignored_directory": "ignored_generated",
+    "symlink_directory": "ignored_generated",
+    "symlink_file": "ignored_generated",
+    "symlink_escape": "ignored_generated",
+    "sensitive_file": "ignored_sensitive",
+    "windows_download_metadata": "ignored_sensitive",
+    "blocked_file_type": "ignored_unsupported",
+    "temporary_file": "ignored_temporary",
+    "file_size_limit": "oversized",
+    "unreadable_or_outside_root": "unreadable",
+}
+
+
 def build_inventory(root: Path, *, limits: FolderScanLimits | None = None) -> dict[str, Any]:
     limits = limits or FolderScanLimits(
         max_files=MAX_FILES, max_file_size_bytes=MAX_FILE_SIZE_BYTES,
@@ -134,20 +245,30 @@ def build_inventory(root: Path, *, limits: FolderScanLimits | None = None) -> di
     items: list[dict[str, Any]] = []
     warnings: list[str] = []
     total_size = 0
-    limit_reached = False
+    eligible_seen = 0
+    eligible_omitted = 0
+    total_size_budget_exceeded = False
+    max_depth_reached = False
+    diagnostic_cap_reached = False
+    diagnostic_cap = max(MAX_SCAN_DIAGNOSTIC_ENTRIES, limits.max_files * 20)
+    scanned_entries = 0
+    counts = {bucket: 0 for bucket in set(_IGNORE_REASON_BUCKETS.values())}
+    exempt_dataset_files = 0
 
     for current, dirnames, filenames in os.walk(approved_root, topdown=True, followlinks=False):
         current_path = Path(current)
         depth = len(current_path.relative_to(approved_root).parts)
         if depth >= limits.max_depth:
             dirnames[:] = []
+            max_depth_reached = True
             warnings.append(f"Maximum scan depth reached at {current_path.relative_to(approved_root).as_posix() or '.'}.")
 
         kept_dirs = []
         for dirname in sorted(dirnames):
             directory = current_path / dirname
-            if dirname in IGNORED_DIRS:
+            if is_ignored_directory_name(dirname):
                 items.append(_ignored_item(directory, approved_root, "ignored_directory"))
+                counts["ignored_generated"] += 1
                 continue
             if directory.is_symlink():
                 try:
@@ -155,30 +276,84 @@ def build_inventory(root: Path, *, limits: FolderScanLimits | None = None) -> di
                     target.relative_to(approved_root)
                 except (OSError, ValueError):
                     items.append(_ignored_item(directory, approved_root, "symlink_escape"))
+                    counts["ignored_generated"] += 1
                     continue
                 items.append(_ignored_item(directory, approved_root, "symlink_directory"))
+                counts["ignored_generated"] += 1
                 continue
             kept_dirs.append(dirname)
         dirnames[:] = kept_dirs
 
         for filename in sorted(filenames):
-            path = current_path / filename
-            if len(items) >= limits.max_files:
-                limit_reached = True
+            if scanned_entries >= diagnostic_cap:
+                diagnostic_cap_reached = True
                 break
+            scanned_entries += 1
+            path = current_path / filename
             item = _inventory_item(path, approved_root, max_file_size_bytes=limits.max_file_size_bytes)
-            if item["status"] == "readable":
-                total_size += int(item["size_bytes"])
-                if total_size > limits.max_total_size_bytes:
-                    item["status"] = "ignored"
-                    item["classification"] = "ignored"
-                    item["ignore_reason"] = "total_size_limit"
-                    warnings.append("Maximum total scan size reached; remaining readable files were ignored.")
+            if item["status"] != "readable":
+                bucket = _IGNORE_REASON_BUCKETS.get(str(item.get("ignore_reason") or ""))
+                if bucket:
+                    counts[bucket] += 1
+                items.append(item)
+                continue
+            if is_budget_exempt_dataset_content(str(item["relative_path"]), str(item["extension"])):
+                exempt_dataset_files += 1
+                items.append(item)
+                continue
+            eligible_seen += 1
+            if eligible_seen > limits.max_files:
+                eligible_omitted += 1
+                items.append({
+                    **item,
+                    "status": "ignored",
+                    "classification": "ignored",
+                    "ignore_reason": "file_count_budget_exceeded",
+                })
+                continue
+            total_size += int(item["size_bytes"])
+            if total_size > limits.max_total_size_bytes:
+                total_size_budget_exceeded = True
+                item = {
+                    **item,
+                    "status": "ignored",
+                    "classification": "ignored",
+                    "ignore_reason": "total_size_limit",
+                }
             items.append(item)
-        if limit_reached:
-            warnings.append("Maximum file count reached; scan was truncated.")
+        if diagnostic_cap_reached:
+            warnings.append(f"Scan diagnostics truncated after {diagnostic_cap} filesystem entries.")
             break
 
+    if eligible_omitted:
+        warnings.append(
+            f"Maximum file count reached; scan was truncated. "
+            f"{eligible_omitted} eligible file(s) beyond the {limits.max_files}-file limit were omitted."
+        )
+    if total_size_budget_exceeded:
+        warnings.append("Maximum total scan size reached; remaining readable files were ignored.")
+
+    diagnostics = {
+        "total_indexed": sum(1 for item in items if item.get("status") == "readable"),
+        "total_eligible": eligible_seen,
+        "eligible_omitted": eligible_omitted,
+        "exempt_dataset_files": exempt_dataset_files,
+        "ignored_generated": counts["ignored_generated"],
+        "ignored_sensitive": counts["ignored_sensitive"],
+        "ignored_unsupported": counts["ignored_unsupported"],
+        "ignored_temporary": counts["ignored_temporary"],
+        "oversized": counts["oversized"],
+        "unreadable": counts["unreadable"],
+        "file_count_budget_exceeded": eligible_omitted > 0,
+        "total_size_budget_exceeded": total_size_budget_exceeded,
+        "max_depth_reached": max_depth_reached,
+        "diagnostic_cap_reached": diagnostic_cap_reached,
+    }
+    complete = not (
+        diagnostics["file_count_budget_exceeded"]
+        or diagnostics["total_size_budget_exceeded"]
+        or diagnostics["max_depth_reached"]
+    )
     summary = _summary(items, warnings)
     return {
         "scanned_at": datetime.now(timezone.utc).isoformat(),
@@ -186,7 +361,8 @@ def build_inventory(root: Path, *, limits: FolderScanLimits | None = None) -> di
         "summary": summary,
         "inventory": items,
         "warnings": warnings,
-        "complete": not limit_reached and not any("Maximum scan depth" in item for item in warnings) and not any("Maximum total scan size" in item for item in warnings),
+        "complete": complete,
+        "diagnostics": diagnostics,
         "limits": {
             "max_files": limits.max_files,
             "max_file_size_bytes": limits.max_file_size_bytes,
@@ -305,6 +481,8 @@ def _ignore_reason(path: Path, size: int, *, max_file_size_bytes: int = MAX_FILE
         return "sensitive_file"
     if suffix in BLOCKED_SUFFIXES:
         return "blocked_file_type"
+    if _is_temporary_file(name, suffix):
+        return "temporary_file"
     if size > max_file_size_bytes:
         return "file_size_limit"
     return None
