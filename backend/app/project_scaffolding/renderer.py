@@ -51,7 +51,8 @@ def render_blueprint(
 
         file_records.append(
             GeneratedFileRecord(
-                relative_path=relative_path, content_hash=file_hash, byte_size=byte_size
+                relative_path=relative_path, content_hash=file_hash, byte_size=byte_size,
+                content_template_ref=spec.content_template_ref,
             )
         )
         operations.append(

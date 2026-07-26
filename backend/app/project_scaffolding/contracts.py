@@ -74,6 +74,7 @@ class GeneratedFileRecord(StrictModel):
     relative_path: str = Field(min_length=1, max_length=1000)
     content_hash: str = Field(min_length=64, max_length=64)
     byte_size: int = Field(ge=0)
+    content_template_ref: str = Field(min_length=1, max_length=500)
 
 
 class GeneratedFileManifest(StrictModel):

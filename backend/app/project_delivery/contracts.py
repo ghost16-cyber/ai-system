@@ -169,6 +169,7 @@ class WorkUnit(StrictModel):
     risk_level: Literal["low", "medium", "high"]
     clarification_may_be_required: bool = False
     status: WorkUnitStatus = WorkUnitStatus.PENDING
+    scaffold_hint: dict[str, Any] | None = None
     work_unit_hash: str = Field(min_length=64, max_length=64)
 
 

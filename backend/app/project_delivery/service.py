@@ -39,6 +39,7 @@ from backend.app.project_delivery.contracts import (
     parse_model_specification,
 )
 from backend.app.project_delivery.limits import DeliveryLimits, STAGE9_LIMITS
+from backend.app.project_scaffolding import derive_scaffold_hint
 
 
 class ProjectDeliveryError(ValueError):
@@ -138,6 +139,7 @@ def create_delivery_job(
         analysis,
         limits=limits,
         created_at=builder_timestamp,
+        repository_root=approved,
     )
     status = DeliveryStatus.CLARIFICATION if clarification_questions else DeliveryStatus.AWAITING_PLAN_APPROVAL
     now = builder_timestamp
@@ -203,6 +205,7 @@ def build_execution_plan(
     limits: DeliveryLimits = STAGE9_LIMITS,
     revision: int = 1,
     created_at: str | None = None,
+    repository_root: str | Path | None = None,
 ) -> ExecutionPlan:
     """Build an immutable plan without persistence or lifecycle side effects."""
     if specification.clarification_questions:
@@ -238,6 +241,10 @@ def build_execution_plan(
             "risk_level": "medium" if len(group) > 5 else "low",
             "clarification_may_be_required": False,
             "status": WorkUnitStatus.READY if not units else WorkUnitStatus.PENDING,
+            "scaffold_hint": (
+                derive_scaffold_hint(repository_root=repository_root, expected_files=group)
+                if repository_root is not None else None
+            ),
         }
         data["work_unit_hash"] = immutable_hash({key: value for key, value in data.items() if key != "status"})
         units.append(WorkUnit.model_validate(data))
@@ -374,7 +381,11 @@ def submit_clarification(
         workspace_id=job["folder_access_id"], original_request=prior.original_user_request,
         data=data, source="deterministic", provider_status="not_invoked", revision=prior.revision + 1,
     )
-    plan = build_execution_plan(spec, index, analysis, limits=limits, revision=len(job.get("plan_revisions") or []) + 1)
+    plan = build_execution_plan(
+        spec, index, analysis, limits=limits,
+        revision=len(job.get("plan_revisions") or []) + 1,
+        repository_root=root,
+    )
     updated = _copy(job)
     clarifications = list(updated.get("clarifications") or [])
     if clarifications:
@@ -613,6 +624,7 @@ def revise_scope(
     )
     plan = build_execution_plan(
         spec, index, analysis, limits=limits, revision=len(job.get("plan_revisions") or []) + 1,
+        repository_root=root,
     )
     updated = _copy(job)
     manifest = build_project_state_manifest(root, workspace_id=job["folder_access_id"])

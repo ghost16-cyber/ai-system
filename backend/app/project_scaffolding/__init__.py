@@ -9,6 +9,7 @@ from .contracts import (
     ScaffoldRenderResult,
 )
 from .detector import detect_scaffold_context
+from .hint import derive_scaffold_hint
 from .registry import (
     BLUEPRINT_REGISTRY,
     ScaffoldRegistryError,
@@ -22,6 +23,29 @@ from .renderer import (
     ScaffoldRenderError,
     render_blueprint,
 )
+from .service import (
+    ProjectScaffoldingError,
+    ProjectScaffoldingService,
+    ScaffoldPersistenceService,
+)
+from .validators import (
+    BlueprintNotFoundError,
+    ConflictingDestinationError,
+    DestinationPathError,
+    DuplicateTemplateReferenceError,
+    InvalidBlueprintIdentifierError,
+    RenderIntegrityError,
+    ScaffoldValidationError,
+    UnresolvedPlaceholderError,
+    validate_destination_path,
+    validate_identifier,
+    validate_no_conflicting_destinations,
+    validate_no_duplicate_template_references,
+    validate_no_unresolved_placeholders,
+    validate_render_integrity,
+    validate_render_result,
+    validate_required_inputs,
+)
 
 
 __all__ = [
@@ -34,6 +58,7 @@ __all__ = [
     "ScaffoldDetectionResult",
     "ScaffoldRenderResult",
     "detect_scaffold_context",
+    "derive_scaffold_hint",
     "BLUEPRINT_REGISTRY",
     "ScaffoldRegistryError",
     "register_blueprint",
@@ -43,4 +68,23 @@ __all__ = [
     "MissingRequiredScaffoldInputError",
     "ScaffoldRenderError",
     "render_blueprint",
+    "ProjectScaffoldingError",
+    "ProjectScaffoldingService",
+    "ScaffoldPersistenceService",
+    "BlueprintNotFoundError",
+    "ConflictingDestinationError",
+    "DestinationPathError",
+    "DuplicateTemplateReferenceError",
+    "InvalidBlueprintIdentifierError",
+    "RenderIntegrityError",
+    "ScaffoldValidationError",
+    "UnresolvedPlaceholderError",
+    "validate_destination_path",
+    "validate_identifier",
+    "validate_no_conflicting_destinations",
+    "validate_no_duplicate_template_references",
+    "validate_no_unresolved_placeholders",
+    "validate_render_integrity",
+    "validate_render_result",
+    "validate_required_inputs",
 ]

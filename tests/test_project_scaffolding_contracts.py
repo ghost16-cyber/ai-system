@@ -90,7 +90,12 @@ def _manifest() -> GeneratedFileManifest:
         blueprint_id="example",
         blueprint_version=1,
         template_hash="a" * 64,
-        files=(GeneratedFileRecord(relative_path="pkg/a.py", content_hash="b" * 64, byte_size=10),),
+        files=(
+            GeneratedFileRecord(
+                relative_path="pkg/a.py", content_hash="b" * 64, byte_size=10,
+                content_template_ref="pkg/module.py.tmpl",
+            ),
+        ),
         total_byte_size=10,
         rendered_at=datetime.now(UTC),
     )

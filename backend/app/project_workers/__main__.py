@@ -26,6 +26,7 @@ from backend.app.project_analysis.model_synthesis.orchestrator import (
 from backend.app.project_analysis.model_synthesis.proposals import SynthesisProposalStore
 from backend.app.project_models import ProjectModelInvocationStore
 from backend.app.project_projection import ProjectProjectionService
+from backend.app.project_scaffolding import ProjectScaffoldingService, ScaffoldPersistenceService
 from backend.app.project_workers.cancellation import CancellationDispatcher
 from backend.app.project_workers.isolated_execution import ProjectIsolatedExecutor
 from backend.app.project_workers.isolation import (
@@ -186,6 +187,9 @@ def build_runtime(
             endpoint_identity=synthesis_gateway.endpoint_identity,
             enabled=True,
         )
+        scaffolding = ProjectScaffoldingService()
+        scaffold_persistence = ScaffoldPersistenceService(database_path, control, artifact_store)
+        scaffold_persistence.initialize()
         service.coordinator_executor = ProjectCoordinatorExecutor(
             coordinator,
             control,
@@ -193,6 +197,8 @@ def build_runtime(
             projector=projector,
             orchestrator=synthesis_orchestrator,
             provider_profile=provider_profile,
+            scaffolding=scaffolding,
+            scaffold_persistence=scaffold_persistence,
         )
 
     backend = execution_backend.strip().lower()

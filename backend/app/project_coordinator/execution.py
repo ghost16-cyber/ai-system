@@ -35,6 +35,14 @@ from backend.app.project_coordinator.service import (
     CoordinatorIntentError,
     ProjectCoordinatorService,
 )
+from backend.app.project_scaffolding import (
+    BlueprintNotFoundError,
+    InvalidBlueprintIdentifierError,
+    ProjectScaffoldingService,
+    ScaffoldPersistenceService,
+    ScaffoldRenderError,
+    ScaffoldValidationError,
+)
 
 if TYPE_CHECKING:
     from backend.app.project_analysis.model_synthesis.orchestrator import (
@@ -188,6 +196,103 @@ class _BoundHandler:
 
 
 class PrepareWorkUnitHandler(_BoundHandler):
+    def __init__(
+        self,
+        control: ProjectControlPlane,
+        artifacts: ProjectArtifactStore,
+        *,
+        orchestrator: CanonicalSynthesisOrchestrator | None = None,
+        provider_profile: CanonicalProviderProfile | None = None,
+        scaffolding: ProjectScaffoldingService | None = None,
+        scaffold_persistence: ScaffoldPersistenceService | None = None,
+    ) -> None:
+        super().__init__(
+            control, artifacts, orchestrator=orchestrator, provider_profile=provider_profile,
+        )
+        self.scaffolding = scaffolding
+        self.scaffold_persistence = scaffold_persistence
+
+    def _scaffolded_preview(
+        self,
+        intent: CoordinatorIntent,
+        run,
+        work_unit_id: str,
+        source_work_unit: dict[str, Any],
+    ) -> tuple[ProjectArtifact, str] | None:
+        """Deterministic, model-free patch generation tried before LLM synthesis.
+
+        Returns None only when the deterministic route is genuinely not
+        applicable -- scaffolding isn't wired in, no `scaffold_hint` is
+        declared on the work unit, or no registered blueprint matches the
+        hinted category -- in which case callers fall through to
+        `_synthesized_preview` unchanged, so omitting scaffolding entirely
+        (the default) preserves today's behavior exactly.
+
+        Once a hinted category *does* resolve to a registered blueprint, the
+        deterministic route is being attempted, not skipped: any subsequent
+        validation, security, or integrity failure (bad/missing inputs,
+        path traversal, conflicting destinations, unresolved placeholders,
+        a tampered render) is raised as `CoordinatorPolicyBlock` -- the
+        existing canonical fail-closed path -- rather than silently falling
+        back to the model.
+        """
+        if self.scaffolding is None or self.scaffold_persistence is None:
+            return None
+        hint = source_work_unit.get("scaffold_hint")
+        if not isinstance(hint, dict) or not hint.get("category"):
+            return None
+        category = str(hint["category"])
+        inputs = {str(key): str(value) for key, value in dict(hint.get("inputs") or {}).items()}
+        try:
+            render_result = self.scaffolding.render(
+                category=category, inputs=inputs, repository_root=run.repository_root,
+            )
+        except (BlueprintNotFoundError, InvalidBlueprintIdentifierError):
+            # No registered blueprint matches this category at all -- the
+            # deterministic route is genuinely not applicable, not attempted
+            # and failed. Safe to fall back to model synthesis.
+            return None
+        except (ScaffoldValidationError, ScaffoldRenderError) as exc:
+            # A supported category *was* matched and the deterministic route
+            # was attempted, but it failed a validation/security/integrity
+            # check. Fail closed: never substitute a silent model guess for
+            # a rejected explicit scaffold request.
+            raise CoordinatorPolicyBlock(
+                f"Deterministic scaffold render for category {category!r} failed "
+                f"validation ({type(exc).__name__}): {exc}"
+            ) from exc
+        operations = validate_patch_operations(render_result.operations)
+        manifest = self.scaffold_persistence.persist(
+            render_result,
+            inputs,
+            project_run_id=run.project_run_id,
+            category=category,
+            work_unit_id=work_unit_id,
+            coordinator_intent_id=intent.coordinator_intent_id,
+        )
+        authority = {"work_unit_id": work_unit_id}
+        patch_id = f"patch-{content_hash([intent.coordinator_intent_id, work_unit_id, operations])[:24]}"
+        preview = self.artifacts.put(build_project_artifact(
+            artifact_type=ProjectArtifactType.PATCH_PREVIEW,
+            binding=self._binding(intent, authority=authority),
+            payload={
+                "patch_id": patch_id,
+                "work_unit_id": work_unit_id,
+                "operations": list(operations),
+                "requires_exact_approval": True,
+                "scaffold_manifest_artifact_id": manifest.artifact_id,
+                "scaffold_blueprint_id": render_result.blueprint_id,
+            },
+            evidence_references=(
+                {
+                    "artifact_id": manifest.artifact_id,
+                    "artifact_type": manifest.artifact_type.value,
+                    "content_hash": manifest.content_hash,
+                },
+            ),
+        ))
+        return preview, patch_id
+
     def prepare(self, intent: CoordinatorIntent, run) -> CoordinatorHandlerResult:
         plan = self.control.get_plan_revision(intent.plan_revision_id)
         work_unit = next(
@@ -227,6 +332,19 @@ class PrepareWorkUnitHandler(_BoundHandler):
         try:
             operations = validate_patch_operations(raw_operations)
         except CoordinatorEvidenceError as exc:
+            scaffolded = self._scaffolded_preview(intent, run, work_unit_id, source_work_unit)
+            if scaffolded is not None:
+                preview, patch_id = scaffolded
+                authority = {"work_unit_id": work_unit_id}
+                command = self._command(
+                    intent,
+                    run,
+                    preview,
+                    ProjectCommandType.BEGIN_WORK_UNIT,
+                    payload={"work_unit_id": work_unit_id, "patch_id": patch_id},
+                    authority={**authority, "patch_id": patch_id},
+                )
+                return CoordinatorHandlerResult(preview, command)
             preview = self._synthesized_preview(intent, evidence, "patch")
             if preview is None:
                 raise CoordinatorPolicyBlock(str(exc)) from exc
@@ -629,6 +747,8 @@ class ProjectCoordinatorExecutor:
         projector=None,
         orchestrator: CanonicalSynthesisOrchestrator | None = None,
         provider_profile: CanonicalProviderProfile | None = None,
+        scaffolding: ProjectScaffoldingService | None = None,
+        scaffold_persistence: ScaffoldPersistenceService | None = None,
     ) -> None:
         self.service = service
         self.control = control
@@ -643,6 +763,7 @@ class ProjectCoordinatorExecutor:
             CoordinatorIntentType.PREPARE_WORK_UNIT: PrepareWorkUnitHandler(
                 control, artifacts,
                 orchestrator=orchestrator, provider_profile=provider_profile,
+                scaffolding=scaffolding, scaffold_persistence=scaffold_persistence,
             ),
             CoordinatorIntentType.RUN_DETERMINISTIC_VERIFICATION: DeterministicVerificationHandler(control, artifacts),
             CoordinatorIntentType.PREPARE_REPAIR: PrepareRepairHandler(
