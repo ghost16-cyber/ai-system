@@ -51,6 +51,77 @@ The command reports the exact versions applied and the backup path. It performs
 no dependency installation, image pull, model access, training, or application
 startup. Unknown, corrupt, checksum-mismatched, or newer ledgers fail closed.
 
+## Local AI readiness and advisory smoke
+
+`LocalAIService` is the canonical authority for local-model configuration,
+readiness, GPU/RAM/VRAM admission, exclusive scheduling, structured response
+validation, idempotency, and provenance. Chat and canonical project synthesis
+both use that service. Model output is advisory only and cannot approve,
+execute, verify, roll back, or advance a project lifecycle.
+
+Check an already-running Ollama instance without starting it or downloading
+anything:
+
+```bash
+OLLAMA_ENDPOINT="${ASTRA_OLLAMA_ENDPOINT:-http://127.0.0.1:11434}"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/version"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/tags"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/ps"
+```
+
+`/api/tags` must list the exact configured tag
+`qwen2.5-coder:1.5b`. An empty `/api/ps` is not an error: it means no model is
+currently loaded. Astra checks the exact installed tag again immediately
+before generation and fails closed if the provider or model disappears.
+
+After FastAPI is running, refresh Astra's read-only capability snapshot and
+inspect the durable model configuration:
+
+```bash
+curl --fail --silent --show-error \
+  "http://127.0.0.1:8000/runtime/local-ai/doctor?refresh=true"
+curl --fail --silent --show-error \
+  "http://127.0.0.1:8000/runtime/local-ai/configuration"
+curl --fail --silent --show-error \
+  "http://127.0.0.1:8000/runtime/local-ai/models"
+```
+
+The configured model remains disabled until an operator explicitly enables
+it with the exact `configuration_version` returned above:
+
+```bash
+curl --fail --silent --show-error \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "actor_id": "local-operator",
+    "enabled": true,
+    "expected_configuration_version": <exact-version>,
+    "idempotency_key": "enable-configured-local-model-<reviewed-identity>"
+  }' \
+  "http://127.0.0.1:8000/runtime/local-ai/models/configured-local-model/enabled"
+```
+
+Only after independently confirming provider/model readiness, run one
+disposable advisory synthesis smoke check:
+
+```bash
+ASTRA_LOCAL_AI_GENERATION_ENABLED=1 \
+ASTRA_PROJECT_SYNTHESIS_ENABLED=1 \
+ASTRA_LOCAL_AI_PROVIDER=ollama \
+ASTRA_OLLAMA_ENDPOINT=http://127.0.0.1:11434 \
+ASTRA_LOCAL_AI_MODEL=qwen2.5-coder:1.5b \
+TMP=/tmp TEMP=/tmp \
+.venv/bin/python scripts/astra_phase5b_smoke.py \
+  --confirm-advisory-generation
+```
+
+The confirmation flag authorizes one bounded request only. The script uses a
+temporary database and workspace, explicitly enables the model only in that
+temporary database, never starts or installs Ollama, never pulls a model, and
+verifies that no project mutation, approval, worker request, or execution
+dispatch occurred.
+
 ## Start and stop
 
 With the existing Node environment on `PATH`:
@@ -75,6 +146,9 @@ normal startup performs bounded orphan cleanup only for Astra-managed names.
 ## Typed blocked states
 
 - `provider_unavailable`: no model preview was created; deterministic preparation remains available.
+- `provider_unreachable`: the live generation readiness check could not reach the configured provider.
+- `model_unavailable` / `exact_model_unavailable`: the configured exact model was not present or did not match.
+- `gpu_busy`: another admitted GPU-exclusive workload owns the canonical scheduler lease; retry after it reaches a terminal state.
 - `image_unavailable` / `image_digest_mismatch`: execution remains queued or blocked; there is no host fallback.
 - `historical_record_read_only`: import/reapproval is required before canonical mutation.
 - `stale_state_version`, revision/hash/binding mismatch: reload the canonical card and review the new exact action.

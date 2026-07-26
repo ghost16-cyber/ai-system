@@ -119,6 +119,28 @@ modes, in priority order:
 `ModelProfile` unconditionally (a cheap, read-only lookup) and passes
 `provider_id=profile.provider_id` on the generation request, which the
 gateway uses to pick the specific adapter instance to call.
+
+## Canonical structured-execution bindings
+
+Every structured request carries
+`expected_response_schema_identity`, `project_run_id`, and
+`coordinator_intent_id` through `Phase5ALocalSynthesisGateway` into
+`LocalAIService`. The service copies the project/coordinator identities into
+the durable scheduler job and execution provenance, and records the request's
+actual schema identity in provenance rather than assuming the public advisory
+response schema. A nonexistent project binding is rejected by the existing
+database foreign key and an explicit pre-admission lineage check; it is never
+sent to a provider or persisted as orphan provenance. A coordinator identity
+without a project, an unknown coordinator identity, or a cross-project
+coordinator binding is rejected the same way.
+
+`LocalGenerationGateway` derives the schema identity from the target Pydantic
+contract and requires an exact match before provider access. It hashes and
+persists the full canonical schema, passes the same schema and hash to the
+provider, rejects duplicate keys or malformed JSON, and validates the parsed
+object with the target contract. Only validated output can be returned to the
+caller; it remains advisory and grants no lifecycle authority.
+
 `LocalGenerationResult.provider_identity`/`.endpoint_identity` deliberately
 stay `configuration.provider_type`/`.endpoint_identity` in every case,
 unchanged from before Phase 8C -- an initial version of this change made
@@ -224,6 +246,19 @@ ASTRA_LOCAL_AI_PROVIDER=ollama
 ASTRA_OLLAMA_ENDPOINT=http://127.0.0.1:11434
 ASTRA_LOCAL_AI_MODEL=qwen2.5-coder:1.5b
 ```
+
+Read-only readiness check (never starts Ollama or pulls a model):
+```bash
+OLLAMA_ENDPOINT="${ASTRA_OLLAMA_ENDPOINT:-http://127.0.0.1:11434}"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/version"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/tags"
+curl --fail --silent --show-error --max-time 3 "$OLLAMA_ENDPOINT/api/ps"
+```
+
+`/api/tags` is the installed-model authority. `/api/ps` reports only currently
+loaded models, so an empty list is healthy when the exact configured tag is
+still installed. See `docs/astra-local-operations.md` for explicit durable
+enablement and the confirmed disposable advisory smoke command.
 
 llama.cpp, registered alongside Ollama (does not replace it unless you also
 change `ASTRA_LOCAL_AI_PROVIDER`):

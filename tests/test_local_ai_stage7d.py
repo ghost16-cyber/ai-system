@@ -35,6 +35,10 @@ from backend.app.local_ai.provider import (
 )
 from backend.app.local_ai.routes import create_local_ai_router
 from backend.app.local_ai.service import LocalAIService
+from tests.test_project_synthesis_orchestrator import (
+    _gateway as _synthesis_gateway,
+    _runtime as _synthesis_runtime,
+)
 
 
 GIB = 1024**3
@@ -133,8 +137,9 @@ def _service(
     provider: FakeProvider | None = None,
     *,
     available_vram: int = 8 * GIB,
+    database: Path | None = None,
 ) -> tuple[LocalAIService, FakeProvider, Path]:
-    database = tmp_path / "stage7d.db"
+    database = database or tmp_path / "stage7d.db"
     apply_schema_migrations(database)
     configuration = _configuration()
     fake = provider or FakeProvider()
@@ -226,6 +231,68 @@ def test_scheduler_submission_and_provenance_are_durable(tmp_path: Path) -> None
         assert connection.execute(
             "SELECT COUNT(*) FROM local_ai_execution_provenance"
         ).fetchone()[0] == 1
+
+
+def test_execution_preserves_canonical_lineage_and_schema_identity(
+    tmp_path: Path,
+) -> None:
+    _, _, _, intent, _ = _synthesis_runtime(tmp_path, _synthesis_gateway())
+    service, _, _ = _service(tmp_path, database=tmp_path / "astra.db")
+    request = _request(
+        service,
+        project_run_id=intent.project_run_id,
+        coordinator_intent_id=intent.coordinator_intent_id,
+    )
+
+    result = service.execute_generation(request)
+
+    assert result.scheduler_job.project_run_id == request.project_run_id
+    assert (
+        result.scheduler_job.coordinator_intent_id
+        == request.coordinator_intent_id
+    )
+    assert result.provenance is not None
+    assert result.provenance.project_run_id == request.project_run_id
+    assert (
+        result.provenance.coordinator_intent_id
+        == request.coordinator_intent_id
+    )
+    assert (
+        result.provenance.configuration["response_schema"]
+        == request.expected_response_schema_identity
+    )
+    assert (
+        result.provenance.validation_result[
+            "expected_response_schema_identity"
+        ]
+        == request.expected_response_schema_identity
+    )
+
+
+@pytest.mark.parametrize(
+    ("project_run_id", "coordinator_intent_id", "expected_error"),
+    [
+        ("missing-project", None, "project_run_not_found"),
+        (None, "orphan-intent", "coordinator_intent_requires_project_run"),
+    ],
+)
+def test_execution_rejects_orphan_lineage_before_provider_or_scheduler(
+    tmp_path: Path,
+    project_run_id: str | None,
+    coordinator_intent_id: str | None,
+    expected_error: str,
+) -> None:
+    service, provider, _ = _service(tmp_path)
+
+    with pytest.raises(ValueError, match=expected_error):
+        service.execute_generation(_request(
+            service,
+            project_run_id=project_run_id,
+            coordinator_intent_id=coordinator_intent_id,
+        ))
+
+    assert provider.inspect_calls == provider.generate_calls == 0
+    assert service.scheduler_jobs() == ()
 
 
 def test_execution_replay_reuses_scheduler_and_generation_records(tmp_path: Path) -> None:

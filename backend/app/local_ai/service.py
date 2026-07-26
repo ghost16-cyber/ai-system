@@ -611,6 +611,7 @@ class LocalAIService:
         composition, so they share one durable GPU-exclusivity gate instead
         of contending for the GPU with no coordination.
         """
+        self._validate_execution_lineage(request)
         binding_hash = content_hash(request.model_dump(mode="json"))
         scheduler_key = f"runtime-execution:{request.idempotency_key}"
         # Resolved unconditionally (cheap, read-only) so `profile.provider_id`
@@ -650,7 +651,9 @@ class LocalAIService:
             resource_request=resource,
             admission=admission,
             idempotency_key=scheduler_key,
+            project_run_id=request.project_run_id,
             conversation_id=request.conversation_id,
+            coordinator_intent_id=request.coordinator_intent_id,
             priority=100,
             execution_binding_hash=binding_hash,
         )
@@ -781,6 +784,40 @@ class LocalAIService:
     def generation_diagnostic(self, generation_id: str) -> dict[str, object]:
         """Read-only passthrough to the underlying generation gateway's diagnostic."""
         return self._generation_gateway.safe_generation_diagnostic(generation_id)
+
+    def _validate_execution_lineage(
+        self, request: LocalAIExecutionRequest
+    ) -> None:
+        """Reject orphan or cross-project authority bindings before admission."""
+        if (
+            request.coordinator_intent_id is not None
+            and request.project_run_id is None
+        ):
+            raise ValueError("coordinator_intent_requires_project_run")
+        if request.project_run_id is None:
+            return
+        with self._connect() as connection:
+            project = connection.execute(
+                "SELECT 1 FROM project_runs WHERE project_run_id = ?",
+                (request.project_run_id,),
+            ).fetchone()
+            intent = (
+                connection.execute(
+                    "SELECT project_run_id FROM project_coordinator_intents "
+                    "WHERE coordinator_intent_id = ?",
+                    (request.coordinator_intent_id,),
+                ).fetchone()
+                if request.coordinator_intent_id is not None
+                else None
+            )
+        if project is None:
+            raise ValueError("project_run_not_found")
+        if request.coordinator_intent_id is None:
+            return
+        if intent is None:
+            raise ValueError("coordinator_intent_not_found")
+        if str(intent["project_run_id"]) != request.project_run_id:
+            raise ValueError("coordinator_intent_project_mismatch")
 
     def _execution_model_profile(
         self, request: LocalAIExecutionRequest
@@ -928,7 +965,9 @@ class LocalAIService:
         )
         return ExecutionProvenance(
             execution_id=f"runtime-generation:{job.job_id}",
+            project_run_id=request.project_run_id,
             conversation_id=request.conversation_id,
+            coordinator_intent_id=request.coordinator_intent_id,
             provider_id=generation.provider_identity,
             provider_endpoint_identity=generation.endpoint_identity,
             model_profile_id=request.model_profile_id,
@@ -938,7 +977,7 @@ class LocalAIService:
             configuration={
                 "purpose": request.purpose.value,
                 "configuration_version": request.expected_configuration_version,
-                "response_schema": "astra.local-ai.advisory-response.v1",
+                "response_schema": request.expected_response_schema_identity,
             },
             context_limit=(
                 job.admission.admitted_context
@@ -963,6 +1002,9 @@ class LocalAIService:
             response_hash=generation.raw_response_hash,
             validation_result={
                 "state": generation.state.value,
+                "expected_response_schema_identity": (
+                    request.expected_response_schema_identity
+                ),
                 "failure_reason": (
                     generation.failure_reason.value
                     if generation.failure_reason is not None

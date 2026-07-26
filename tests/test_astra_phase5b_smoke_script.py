@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 
-import backend.app.local_ai.service as local_ai_service_module
 from backend.app.local_ai.contracts import AdmissionOutcome, HardwareAdmissionDecision
 from backend.app.local_ai.provider import (
     OllamaProviderClient,
+    ProviderClientError,
+    ProviderErrorCode,
     ProviderGenerationResponse,
     ProviderInspection,
 )
@@ -34,6 +35,21 @@ def _fake_inspect(self, *, timeout_seconds):
     del timeout_seconds
     return ProviderInspection(
         provider_version="fake-smoke", installed_models=(MODEL_TAG,), loaded_models=()
+    )
+
+
+def _fake_inspect_missing_model(self, *, timeout_seconds):
+    del self, timeout_seconds
+    return ProviderInspection(
+        provider_version="fake-smoke", installed_models=(), loaded_models=()
+    )
+
+
+def _fake_inspect_unreachable(self, *, timeout_seconds):
+    del self, timeout_seconds
+    raise ProviderClientError(
+        ProviderErrorCode.UNREACHABLE,
+        "The configured local model provider is unreachable.",
     )
 
 
@@ -73,26 +89,6 @@ def _fake_admission_preview(self, request, *, report=None):
     )
 
 
-def _seed_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fresh temp database has no pre-existing operator-enabled row -- fake
-    the seed default itself (an isolated, in-test-only override) so this
-    disposable smoke run can reach a real generation instead of failing on
-    'model_profile_not_enabled', without touching the live database or any
-    real enable/disable action."""
-    original = local_ai_service_module.default_model_profiles
-
-    def patched(configuration=None):
-        profiles = original(configuration)
-        return tuple(
-            profile.model_copy(update={"enabled": True})
-            if profile.model_profile_id == "configured-local-model"
-            else profile
-            for profile in profiles
-        )
-
-    monkeypatch.setattr(local_ai_service_module, "default_model_profiles", patched)
-
-
 def _configure_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASTRA_LOCAL_AI_GENERATION_ENABLED", "1")
     monkeypatch.setenv("ASTRA_PROJECT_SYNTHESIS_ENABLED", "1")
@@ -114,7 +110,6 @@ def test_smoke_script_uses_the_local_ai_service_backed_diagnostic_accessor(
     monkeypatch.setattr(OllamaProviderClient, "inspect", _fake_inspect)
     monkeypatch.setattr(OllamaProviderClient, "generate", _fake_generate)
     monkeypatch.setattr(LocalAIService, "admission_preview", _fake_admission_preview)
-    _seed_enabled_by_default(monkeypatch)
     _configure_environment(monkeypatch)
 
     module = _load_smoke_module()
@@ -128,14 +123,25 @@ def test_smoke_script_uses_the_local_ai_service_backed_diagnostic_accessor(
     assert diagnostic["provider_identity"] == "ollama"
 
 
-def test_smoke_script_reports_bounded_diagnostic_on_failure_without_crashing(
-    monkeypatch: pytest.MonkeyPatch, capsys
+@pytest.mark.parametrize(
+    ("inspect", "expected_code"),
+    [
+        (_fake_inspect_unreachable, "provider_unavailable"),
+        (_fake_inspect_missing_model, "model_unavailable"),
+    ],
+)
+def test_smoke_script_reports_typed_readiness_failure_without_generation(
+    monkeypatch: pytest.MonkeyPatch, capsys, inspect, expected_code
 ) -> None:
-    """Even when the model profile is not enabled (the real default state),
-    the script must fail closed with its own bounded diagnostic -- not an
-    unrelated AttributeError from a stale attribute reference."""
-    monkeypatch.setattr(OllamaProviderClient, "inspect", _fake_inspect)
-    monkeypatch.setattr(OllamaProviderClient, "generate", _fake_generate)
+    """Provider/model readiness failures are bounded and never invoke generation."""
+    monkeypatch.setattr(OllamaProviderClient, "inspect", inspect)
+    monkeypatch.setattr(
+        OllamaProviderClient,
+        "generate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("generation must not run")
+        ),
+    )
     _configure_environment(monkeypatch)
 
     module = _load_smoke_module()
@@ -145,4 +151,4 @@ def test_smoke_script_reports_bounded_diagnostic_on_failure_without_crashing(
     captured = capsys.readouterr()
     assert exit_code == 2
     diagnostic = json.loads(captured.err)
-    assert diagnostic["generation_failure_classification"] == "smoke_internal_failure"
+    assert diagnostic["generation_failure_classification"] == expected_code

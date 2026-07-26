@@ -19,13 +19,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.app.local_ai.config import load_local_ai_configuration
+from backend.app.local_ai.contracts import CapabilityStatus
 from backend.app.project_analysis.model_synthesis import (
     CanonicalProviderProfile,
     CanonicalSynthesisOrchestrator,
     UnavailableSynthesisGateway,
     build_synthesis_gateway_from_environment,
 )
-from backend.app.project_analysis.model_synthesis.gateway import SynthesisGatewayError
+from backend.app.project_analysis.model_synthesis.gateway import (
+    SYNTHESIS_MODEL_PROFILE_ID,
+    SynthesisGatewayError,
+)
 from backend.app.project_artifacts import (
     ProjectArtifactBinding,
     ProjectArtifactStore,
@@ -44,6 +48,45 @@ def _sha256(path: Path) -> str:
 
 def _count(connection: sqlite3.Connection, table: str) -> int:
     return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _enable_disposable_model_profile(gateway) -> None:
+    """Enable only the confirmed model in this script's temporary database."""
+    service = gateway.local_ai_service
+    service.capability_report(refresh=True)
+    configured = next(
+        (
+            model
+            for model in service.models()
+            if model.model_profile_id == SYNTHESIS_MODEL_PROFILE_ID
+        ),
+        None,
+    )
+    if configured is None:
+        raise SynthesisGatewayError(
+            "The configured local model profile is not registered.",
+            code="model_unavailable",
+        )
+    if not configured.local_available:
+        provider_states = {
+            CapabilityStatus.NOT_CONFIGURED,
+            CapabilityStatus.PROVIDER_UNREACHABLE,
+        }
+        raise SynthesisGatewayError(
+            "The configured local model is not ready for the disposable smoke check.",
+            code=(
+                "provider_unavailable"
+                if configured.policy_status in provider_states
+                else "model_unavailable"
+            ),
+        )
+    service.set_model_enabled(
+        SYNTHESIS_MODEL_PROFILE_ID,
+        enabled=True,
+        actor_id="phase5b-smoke-user",
+        expected_version=configured.configuration_version,
+        idempotency_key="phase5b-smoke-enable-disposable-model",
+    )
 
 
 def main() -> int:
@@ -174,6 +217,7 @@ def main() -> int:
             gateway = build_synthesis_gateway_from_environment(database_path=database)
             if isinstance(gateway, UnavailableSynthesisGateway):
                 raise RuntimeError(gateway.reason)
+            _enable_disposable_model_profile(gateway)
             orchestrator = CanonicalSynthesisOrchestrator(
                 invocations=invocations,
                 artifacts=artifacts,

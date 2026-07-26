@@ -372,8 +372,8 @@ def _synthesis_service(database, configuration: LocalAIConfiguration, provider) 
 
 
 def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(tmp_path) -> None:
-    database = tmp_path / "adapter.db"
-    apply_schema_migrations(database)
+    _, _, _, intent, _ = _runtime(tmp_path, _gateway())
+    database = tmp_path / "astra.db"
     configuration = LocalAIConfiguration(
         generation_enabled=True, project_synthesis_enabled=True,
         provider_type="ollama", endpoint_identity="http://127.0.0.1:11434",
@@ -387,6 +387,8 @@ def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(
         "contract_version": "astra.project-synthesis.request.v1",
         "request_id": "synthesis-request-1", "job_id": "job-1",
         "conversation_id": "conversation-1", "folder_access_id": "folder-1",
+        "project_run_id": intent.project_run_id,
+        "coordinator_intent_id": intent.coordinator_intent_id,
         "root_fingerprint": "root", "analysis_id": "analysis-1", "index_version": "v1",
         "evidence": {"package_version": "astra.project-evidence.v1"},
         "output_contract": {}, "repair_context": None,
@@ -412,6 +414,22 @@ def test_production_synthesis_adapter_uses_phase5a_and_replays_without_provider(
     assert first.generation_id == second.generation_id
     assert second.replayed is True and provider.calls == 1
     assert first.request_fingerprint and first.endpoint_identity == configuration.endpoint_identity
+    scheduler_job = service.scheduler_jobs()[0]
+    provenance = service.provenance()[0]
+    assert scheduler_job.project_run_id == request_payload["project_run_id"]
+    assert (
+        scheduler_job.coordinator_intent_id
+        == request_payload["coordinator_intent_id"]
+    )
+    assert provenance.project_run_id == request_payload["project_run_id"]
+    assert (
+        provenance.coordinator_intent_id
+        == request_payload["coordinator_intent_id"]
+    )
+    assert (
+        provenance.configuration["response_schema"]
+        == "astra.project-synthesis.response.v1"
+    )
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM local_ai_generation_invocations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM local_ai_scheduler_jobs").fetchone()[0] == 1
