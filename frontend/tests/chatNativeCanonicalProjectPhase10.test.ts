@@ -139,6 +139,41 @@ test("App.tsx refreshes the canonical project immediately after performing an ac
   assert.ok(refreshCalls.length >= 4, `expected refreshCanonicalProject to be called at least 3 times, source has ${refreshCalls.length} occurrences`);
 });
 
+test("canonical actions retain uncertain idempotency identity until success", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /canonicalActionRetryIdentity\(/);
+  assert.match(app, /retryIdentity\.idempotencyKey/);
+  assert.match(app, /clearCanonicalActionRetryIdentity\(retryIdentity, sessionStorage\)/);
+  const clearIndex = app.indexOf("clearCanonicalActionRetryIdentity(retryIdentity, sessionStorage)");
+  const catchIndex = app.indexOf("catch (caught)", clearIndex);
+  assert.ok(clearIndex >= 0 && catchIndex > clearIndex);
+  assert.doesNotMatch(
+    app.slice(clearIndex, catchIndex),
+    /clearCanonicalActionRetryIdentity[\s\S]*catch[\s\S]*clearCanonicalActionRetryIdentity/,
+  );
+});
+
+test("manual evidence retains uncertain idempotency identity until success", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const handlerStart = app.indexOf("async function submitCanonicalManualEvidence");
+  const handlerEnd = app.indexOf("async function refreshClientEngagement", handlerStart);
+  const handler = app.slice(handlerStart, handlerEnd);
+
+  assert.match(handler, /canonicalManualEvidenceRetryIdentity\(/);
+  assert.match(handler, /idempotency_key: retryIdentity\.idempotencyKey/);
+  assert.match(handler, /clearCanonicalActionRetryIdentity\(retryIdentity, sessionStorage\)/);
+  const submitIndex = handler.indexOf("client.submitManualEvidence");
+  const clearIndex = handler.indexOf(
+    "clearCanonicalActionRetryIdentity(retryIdentity, sessionStorage)",
+  );
+  const catchIndex = handler.indexOf("catch (caught)");
+  assert.ok(submitIndex >= 0 && clearIndex > submitIndex && catchIndex > clearIndex);
+  assert.doesNotMatch(
+    handler.slice(catchIndex),
+    /clearCanonicalActionRetryIdentity\(retryIdentity, sessionStorage\)/,
+  );
+});
+
 test("ProjectControlCard renders the timeline in sorted order and distinguishes cancelled from completed", () => {
   const source = readFileSync(new URL("../src/components/ProjectControlCard.tsx", import.meta.url), "utf8");
   assert.match(source, /sortCanonicalProjectEvents\(events\)/);

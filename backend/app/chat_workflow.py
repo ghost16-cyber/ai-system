@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from backend.app.chat_runtime.memory import render_chat_working_memory
 from backend.app.chat_runtime.prompts import ASTRA_CAPABILITY_SUMMARY
 from backend.app.chat_runtime.service import CanonicalChatRuntimeService
 from backend.app.local_runtime import (
@@ -38,8 +39,19 @@ def run_chat_workflow(
     run_id = str(uuid4())
     conversation_id = request.conversation_id or str(uuid4())
     prior_turns = previous_turns or []
-    memory_summary = _build_memory_summary(prior_turns)
-    memory_used = bool(memory_summary) and _should_use_memory(request.message, prior_turns)
+    project_run_id = request.project_run_id
+    working_memory = chat_runtime.build_working_memory(
+        conversation_id=conversation_id,
+        latest_message=request.message,
+        previous_turns=prior_turns,
+        project_run_id=project_run_id,
+    )
+    memory_summary = (
+        render_chat_working_memory(working_memory)
+        if working_memory is not None
+        else None
+    )
+    memory_used = working_memory is not None
     _emit_event(
         event_sink,
         "run_started",
@@ -84,6 +96,25 @@ def run_chat_workflow(
                 "conversation_id": conversation_id,
                 "previous_turn_count": len(prior_turns),
                 "memory_used": memory_used,
+                "memory_identity": (
+                    working_memory.memory_identity
+                    if working_memory is not None
+                    else None
+                ),
+                "retained_constraint_count": (
+                    len(working_memory.retained_user_constraints)
+                    if working_memory is not None
+                    else 0
+                ),
+                "recent_turn_count": (
+                    len(working_memory.recent_turns)
+                    if working_memory is not None
+                    else 0
+                ),
+                "active_project_bound": bool(
+                    working_memory is not None
+                    and working_memory.active_project is not None
+                ),
             },
             status="passed",
         )
@@ -101,7 +132,6 @@ def run_chat_workflow(
             "confidence": _float(route.get("confidence"), 0.0),
         },
     )
-    project_run_id = request.project_run_id
     use_rag_effective, rag_gate_reason = _rag_gate(
         request.message, use_rag=request.use_rag, route=route, project_run_id=project_run_id,
     )
@@ -451,54 +481,6 @@ def _assistant_response(
     )
 
 
-def _build_memory_summary(previous_turns: list[ChatRunResponse]) -> str | None:
-    if not previous_turns:
-        return None
-    selected_turns = previous_turns[-4:]
-    lines = [
-        f"Earlier turns in conversation: {len(previous_turns)}.",
-        f"First user message: {_safe_memory_text(previous_turns[0].user_message, 180)}",
-    ]
-    for index, turn in enumerate(selected_turns, start=1):
-        lines.append(
-            "Turn "
-            f"{index}: user asked '{_safe_memory_text(turn.user_message, 140)}'; "
-            f"Astra answered '{_safe_memory_text(turn.assistant_response, 180)}'; "
-            f"specialist={turn.selected_specialist}; intent={turn.intent}; "
-            f"rag={'used' if turn.rag_used else 'not used'}."
-        )
-    return _truncate(" ".join(lines), 1200)
-
-
-def _should_use_memory(message: str, previous_turns: list[ChatRunResponse]) -> bool:
-    if not previous_turns:
-        return False
-    lowered = message.strip().lower()
-    if _is_greeting(message):
-        return False
-    followup_terms = (
-        "again",
-        "also",
-        "continue",
-        "earlier",
-        "follow up",
-        "first",
-        "it",
-        "last",
-        "previous",
-        "same",
-        "second",
-        "that",
-        "them",
-        "this",
-        "those",
-        "what did i",
-        "what was",
-        "you said",
-    )
-    return any(term in lowered for term in followup_terms)
-
-
 def _memory_followup_answer(
     message: str,
     previous_turns: list[ChatRunResponse],
@@ -519,15 +501,6 @@ def _memory_followup_answer(
             f"I answered with: {_truncate(latest.assistant_response, 260)}"
         )
     return None
-
-
-def _safe_memory_text(text: str, limit: int) -> str:
-    redacted = text
-    lowered = redacted.lower()
-    sensitive_terms = ("password", "token", "secret", "api key", "credential")
-    if any(term in lowered for term in sensitive_terms):
-        redacted = "[sensitive-looking content omitted from memory summary]"
-    return _truncate(" ".join(redacted.split()), limit)
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -26,6 +26,11 @@ from backend.app.project_analysis.model_synthesis.orchestrator import (
 from backend.app.project_analysis.model_synthesis.proposals import SynthesisProposalStore
 from backend.app.project_models import ProjectModelInvocationStore
 from backend.app.project_projection import ProjectProjectionService
+from backend.app.project_retrieval import (
+    ProjectRetrievalService,
+    build_retrieval_providers,
+    retrieval_configuration_from_environment,
+)
 from backend.app.project_scaffolding import ProjectScaffoldingService, ScaffoldPersistenceService
 from backend.app.project_workers.cancellation import CancellationDispatcher
 from backend.app.project_workers.isolated_execution import ProjectIsolatedExecutor
@@ -171,6 +176,19 @@ def build_runtime(
         service.projector = projector
         service.coordinator = coordinator
         synthesis_gateway = build_synthesis_gateway_from_environment(database_path)
+        retrieval_configuration = retrieval_configuration_from_environment()
+        retrieval_embedding, retrieval_reranker = build_retrieval_providers(
+            retrieval_configuration,
+            local_ai=getattr(synthesis_gateway, "local_ai_service", None),
+        )
+        project_retrieval = ProjectRetrievalService(
+            database_path,
+            control,
+            artifact_store,
+            embedding_provider=retrieval_embedding,
+            reranker=retrieval_reranker,
+        )
+        project_retrieval.initialize()
         model_invocations = ProjectModelInvocationStore(database_path)
         model_invocations.initialize()
         synthesis_proposals = SynthesisProposalStore(database_path)
@@ -197,6 +215,7 @@ def build_runtime(
             projector=projector,
             orchestrator=synthesis_orchestrator,
             provider_profile=provider_profile,
+            retrieval=project_retrieval,
             scaffolding=scaffolding,
             scaffold_persistence=scaffold_persistence,
         )

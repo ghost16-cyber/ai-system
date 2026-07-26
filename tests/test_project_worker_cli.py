@@ -103,6 +103,7 @@ def test_runtime_always_wires_durable_provider_neutral_synthesis(tmp_path: Path)
     assert coordinator_executor is not None
     assert coordinator_executor.orchestrator is not None
     assert coordinator_executor.provider_profile is not None
+    assert coordinator_executor.retrieval is not None
     assert coordinator_executor.provider_profile.provider == "unavailable"
     assert coordinator_executor.provider_profile.model_profile == "none"
 

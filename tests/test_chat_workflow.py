@@ -1162,6 +1162,15 @@ def test_chat_run_continues_existing_conversation_with_memory(
     assert body["memory_used"] is True
     assert first_message in body["memory_summary"]
     assert first_message in body["assistant_response"]
+    memory = json.loads(body["memory_summary"])
+    assert memory["schema_version"] == "astra.chat-runtime.working-memory.v1"
+    assert memory["conversation_id"] == conversation_id
+    assert memory["advisory_only"] is True
+    assert memory["authority_granted"] is False
+    memory_trace = next(
+        item for item in body["trace_summary"] if item["phase"] == "memory"
+    )
+    assert memory_trace["data"]["memory_identity"] == memory["memory_identity"]
 
 
 def test_chat_run_without_conversation_id_starts_fresh_conversation(tmp_path: Path):
@@ -1386,6 +1395,9 @@ def test_chat_run_includes_local_ai_metadata_when_generation_succeeds(tmp_path: 
     from backend.app.schemas.api import ChatRunRequest
 
     class FakeChatRuntime:
+        def build_working_memory(self, **kwargs):
+            return None
+
         def answer(self, **kwargs):
             generation = ChatRuntimeGenerationSummary(
                 generation_id="generation-1",

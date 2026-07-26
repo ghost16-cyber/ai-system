@@ -360,6 +360,36 @@ export interface CanonicalArtifactSummary {
   reranker_fallback?: boolean | null;
   invalidated?: boolean | null;
   advisory_only?: boolean | null;
+  patch_review?: CanonicalPatchPreviewReview | null;
+}
+
+export interface CanonicalPatchReplacementReview {
+  start_line: number;
+  end_line: number;
+  expected_text: string;
+  replacement_text: string;
+}
+
+export interface CanonicalPatchOperationReview {
+  operation: string;
+  path: string;
+  expected_sha256: string | null;
+  strategy: string | null;
+  rationale: string | null;
+  affected_symbols: string[];
+  evidence_references: string[];
+  content: string | null;
+  replacements: CanonicalPatchReplacementReview[];
+  additional_details: Record<string, unknown>;
+}
+
+export interface CanonicalPatchPreviewReview {
+  summary: string | null;
+  operation_count: number;
+  operations: CanonicalPatchOperationReview[];
+  requires_exact_approval: true;
+  review_complete: boolean;
+  advisory_only: boolean;
 }
 
 export interface CanonicalRetrievalCitation {

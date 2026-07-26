@@ -32,6 +32,12 @@ export function ProjectControlCard({
   const manualCriteria = Object.entries(project.criterionStates).filter(([, state]) =>
     ["manual_required", "manual_evidence_required"].includes(String(state.outcome ?? "")),
   );
+  const patchApprovalAction = project.nextPermittedActions.find((action) => action.action === "approve_patch");
+  const patchReviewArtifacts = project.artifacts.filter((artifact) =>
+    artifact.artifact_id === patchApprovalAction?.artifact_id
+      && ["patch_preview", "repair_preview"].includes(artifact.artifact_type),
+  );
+  const patchReviewReady = patchReviewArtifacts.some((artifact) => artifact.patch_review?.review_complete === true);
   return <div className="action-card project-delivery-card" data-project-run-id={project.projectRunId}>
     <div className="card-heading"><div><span className="eyebrow">Canonical project</span><h2>Bounded project task</h2></div><span className={`status status-${project.lifecycleState}`}>{project.lifecycleState.replace(/_/g, " ")}</span></div>
     <div className="delivery-progress" aria-label="Canonical project progress">
@@ -59,6 +65,27 @@ export function ProjectControlCard({
         <div className="technical-body"><pre>{citation.excerpt}</pre><small>Untrusted retrieved content</small></div>
       </details>)}
     </section>)}
+    {patchReviewArtifacts.map((artifact) => artifact.patch_review && <section className="job-section patch-review-card" key={`review:${artifact.artifact_id}`} aria-label="Exact patch review">
+      <div className="card-heading"><div><span className="eyebrow">{artifact.artifact_type === "repair_preview" ? "Repair proposal" : "Patch proposal"}</span><h3>Review exact proposed changes</h3></div><span className={`status ${artifact.patch_review.review_complete ? "status-completed" : "status-failed"}`}>{artifact.patch_review.review_complete ? "complete review" : "review unavailable"}</span></div>
+      {artifact.patch_review.summary && <p>{artifact.patch_review.summary}</p>}
+      <p className="muted">Nothing has been changed. Approval applies only to this immutable artifact and its displayed operations.</p>
+      <div className="synthesis-facts">
+        <span><strong>Operations</strong>{artifact.patch_review.operation_count}</span>
+        <span><strong>Source</strong>{artifact.patch_review.advisory_only ? "local model · advisory" : "deterministic"}</span>
+        <span><strong>Approval</strong>exact artifact only</span>
+      </div>
+      {artifact.patch_review.operations.map((operation, index) => <details className="patch-file" open key={`${operation.path}:${index}`}>
+        <summary><ChevronDown size={15} /><code>{operation.path}</code><span>{operation.operation.replace(/_/g, " ")}</span></summary>
+        {operation.rationale && <p>{operation.rationale}</p>}
+        {operation.affected_symbols.length > 0 && <div className="source-chips">{operation.affected_symbols.map((symbol) => <code key={symbol}>{symbol}</code>)}</div>}
+        {operation.replacements.map((replacement, replacementIndex) => <pre className="patch-diff" key={`${replacement.start_line}:${replacementIndex}`}>{replacementDiff(replacement)}</pre>)}
+        {operation.content !== null && <pre className="patch-diff">{operation.content}</pre>}
+        {Object.keys(operation.additional_details).length > 0 && <details className="technical"><summary><ChevronDown size={14} />Additional exact operation fields</summary><pre>{JSON.stringify(operation.additional_details, null, 2)}</pre></details>}
+        {operation.expected_sha256 && <small>Expected source SHA-256: <code>{operation.expected_sha256}</code></small>}
+      </details>)}
+      <details className="technical"><summary><ChevronDown size={15} />Immutable binding</summary><div className="technical-body"><span>Artifact: {artifact.artifact_id}</span><span>Content hash: {artifact.content_hash}</span><span>Binding hash: {artifact.binding_hash}</span></div></details>
+    </section>)}
+    {patchApprovalAction && !patchReviewReady && <div className="result failed"><CircleAlert size={17} /><div><strong>Patch approval withheld</strong><p>The exact current patch review is missing or incomplete. Refresh the project before approving; no files have changed.</p></div></div>}
     {manualCriteria.map(([criterionId, state]) => <ManualEvidenceCard key={criterionId} criterionId={criterionId} state={state} busy={busy} onSubmit={onManualEvidence} />)}
     {(project.execution.attemptId || project.execution.dispatchId || project.execution.workerRequestId || project.execution.cancellationId) && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts">
       <span><strong>Attempt</strong>{project.execution.attemptType?.replace(/_/g, " ") ?? "pending"}</span>
@@ -79,7 +106,7 @@ export function ProjectControlCard({
       {project.nextPermittedActions.map((action) => <button
         key={`${action.action}:${action.expected_state_version}:${action.artifact_id ?? "none"}`}
         className={action.action === "cancel_project" ? "secondary-button danger" : "primary-button"}
-        disabled={busy}
+        disabled={busy || (action.action === "approve_patch" && !patchReviewReady)}
         onClick={() => onAction(action)}
       >{action.action === "cancel_project" ? <X size={16} /> : action.action.includes("approve") ? <ShieldCheck size={16} /> : <FileText size={16} />}{action.label}</button>)}
     </div>
@@ -88,6 +115,17 @@ export function ProjectControlCard({
       <pre>{JSON.stringify(project.response, null, 2)}</pre>
     </div></details>
   </div>;
+}
+
+function replacementDiff(replacement: {
+  start_line: number;
+  end_line: number;
+  expected_text: string;
+  replacement_text: string;
+}): string {
+  const before = replacement.expected_text.split("\n").map((line) => `- ${line}`).join("\n");
+  const after = replacement.replacement_text.split("\n").map((line) => `+ ${line}`).join("\n");
+  return `@@ lines ${replacement.start_line}-${replacement.end_line} @@\n${before}\n${after}`;
 }
 
 function ManualEvidenceCard({ criterionId, state, busy, onSubmit }: {

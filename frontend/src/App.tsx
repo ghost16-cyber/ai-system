@@ -88,7 +88,10 @@ import { exactValidationReviewRequest, projectValidationActionFromPayload, type 
 import { ProjectValidationCard, type ValidationOperation, type ValidationReviewAction } from "./components/ProjectValidationCard";
 import { ProjectControlCard } from "./components/ProjectControlCard";
 import {
+  canonicalActionRetryIdentity,
+  canonicalManualEvidenceRetryIdentity,
   canonicalProjectActionFromResponse,
+  clearCanonicalActionRetryIdentity,
   exactProjectMutationRequest,
   mergeCanonicalProjectAction,
   shouldPollCanonicalProject,
@@ -902,14 +905,23 @@ export default function App() {
   }, [activeProjectRunId, canonicalPollSignal]);
 
   async function performCanonicalProjectAction(project: CanonicalProjectAction, action: CanonicalProjectActionDescriptor) {
-    const request = exactProjectMutationRequest(project, action, newId(`project-${action.action}`));
+    const retryIdentity = canonicalActionRetryIdentity(
+      project,
+      action,
+      sessionStorage,
+      () => newId(`project-${action.action}`),
+    );
+    const request = retryIdentity
+      ? exactProjectMutationRequest(project, action, retryIdentity.idempotencyKey)
+      : null;
     const lockId = `canonical-project:${project.projectRunId}:${action.action}:${project.stateVersion}`;
-    if (!request || !tryLockCommandAction(locks.current, lockId)) return;
+    if (!retryIdentity || !request || !tryLockCommandAction(locks.current, lockId)) return;
     try {
       const parsed = canonicalProjectActionFromResponse(
         await client.performCanonicalProjectAction(project.projectRunId, action.action, request),
       );
       if (!parsed) throw new AstraHttpError(409, "The canonical project response was invalid.");
+      clearCanonicalActionRetryIdentity(retryIdentity, sessionStorage);
       setMessages((current) => current.map((item) =>
         item.canonicalProject?.projectRunId === project.projectRunId ? { ...item, canonicalProject: parsed } : item,
       ));
@@ -929,12 +941,11 @@ export default function App() {
         || typeof state.criterion_hash !== "string" || typeof state.verification_artifact_id !== "string"
         || typeof state.verification_artifact_hash !== "string") return;
     const lockId = `manual-evidence:${project.projectRunId}:${criterionId}:${project.stateVersion}`;
-    if (!tryLockCommandAction(locks.current, lockId)) return;
-    const request: ManualEvidenceSubmission = {
+    const pendingRequest: ManualEvidenceSubmission = {
       schema_version: "astra.project-api.manual-evidence.v1",
       conversation_id: project.conversationId, workspace_id: project.workspaceId,
       actor_id: project.actorId, repository_root_fingerprint: project.repositoryRootFingerprint,
-      expected_state_version: project.stateVersion, idempotency_key: newId("manual-evidence"),
+      expected_state_version: project.stateVersion, idempotency_key: "pending-retry-identity",
       plan_revision_id: canonical.plan_revision_id, scope_revision_id: canonical.scope_revision_id,
       manifest_hash: canonical.manifest_hash, work_unit_id: canonical.current_work_unit,
       execution_attempt_id: project.execution.attemptId, criterion_id: criterionId,
@@ -945,9 +956,22 @@ export default function App() {
         execution_attempt_id: project.execution.attemptId },
       decision, evidence_kind: "observation_notes", evidence: { notes },
     };
+    const retryIdentity = canonicalManualEvidenceRetryIdentity(
+      project.projectRunId,
+      criterionId,
+      pendingRequest,
+      sessionStorage,
+      () => newId("manual-evidence"),
+    );
+    if (!retryIdentity || !tryLockCommandAction(locks.current, lockId)) return;
+    const request: ManualEvidenceSubmission = {
+      ...pendingRequest,
+      idempotency_key: retryIdentity.idempotencyKey,
+    };
     try {
       const parsed = canonicalProjectActionFromResponse(await client.submitManualEvidence(project.projectRunId, request));
       if (!parsed) throw new AstraHttpError(409, "The manual evidence response was invalid.");
+      clearCanonicalActionRetryIdentity(retryIdentity, sessionStorage);
       setMessages((current) => current.map((item) => item.canonicalProject?.projectRunId === project.projectRunId ? { ...item, canonicalProject: parsed } : item));
     } catch (caught) {
       setError(cleanError(caught));

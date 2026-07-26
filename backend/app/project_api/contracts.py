@@ -24,6 +24,7 @@ CANONICAL_PROJECT_EVENT_SUMMARY_VERSION = "astra.project-api.event-summary.v1"
 CANONICAL_PROJECT_EVENTS_RESPONSE_VERSION = "astra.project-api.events.v1"
 MANUAL_EVIDENCE_REQUEST_VERSION = "astra.project-api.manual-evidence.v1"
 MAX_CANONICAL_CREATE_BYTES = 524_288
+MAX_CANONICAL_PATCH_REVIEW_BYTES = 262_144
 
 
 class CompletedFolderAuthority(StrictModel):
@@ -140,6 +141,52 @@ class CanonicalCoordinatorSummary(StrictModel):
     updated_at: str
 
 
+class CanonicalPatchReplacementReview(StrictModel):
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    expected_text: str
+    replacement_text: str
+
+    @model_validator(mode="after")
+    def valid_range(self) -> "CanonicalPatchReplacementReview":
+        if self.end_line < self.start_line:
+            raise ValueError("patch review replacement range is invalid")
+        return self
+
+
+class CanonicalPatchOperationReview(StrictModel):
+    operation: str = Field(min_length=1, max_length=40)
+    path: str = Field(min_length=1, max_length=4096)
+    expected_sha256: str | None = Field(default=None, max_length=64)
+    strategy: str | None = Field(default=None, max_length=80)
+    rationale: str | None = Field(default=None, max_length=2000)
+    affected_symbols: tuple[str, ...] = ()
+    evidence_references: tuple[str, ...] = ()
+    content: str | None = None
+    replacements: tuple[CanonicalPatchReplacementReview, ...] = ()
+    additional_details: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanonicalPatchPreviewReview(StrictModel):
+    summary: str | None = Field(default=None, max_length=2000)
+    operation_count: int = Field(ge=1, le=100)
+    operations: tuple[CanonicalPatchOperationReview, ...]
+    requires_exact_approval: Literal[True] = True
+    review_complete: bool
+    advisory_only: bool
+
+    @model_validator(mode="after")
+    def bounded_review(self) -> "CanonicalPatchPreviewReview":
+        if self.operation_count != len(self.operations):
+            raise ValueError("patch review operation count does not match")
+        if (
+            len(canonical_json(self.model_dump(mode="json")).encode("utf-8"))
+            > MAX_CANONICAL_PATCH_REVIEW_BYTES
+        ):
+            raise ValueError("canonical patch review exceeds its byte limit")
+        return self
+
+
 class CanonicalArtifactSummary(StrictModel):
     schema_version: Literal["astra.project-api.artifact-summary.v1"] = CANONICAL_ARTIFACT_SUMMARY_VERSION
     artifact_id: str
@@ -154,6 +201,7 @@ class CanonicalArtifactSummary(StrictModel):
     reranker_fallback: bool | None = None
     invalidated: bool | None = None
     advisory_only: bool | None = None
+    patch_review: CanonicalPatchPreviewReview | None = None
 
 
 class CanonicalRetrievalCitation(StrictModel):

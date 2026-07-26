@@ -13,6 +13,10 @@ from backend.app.chat_runtime.contracts import (
     ChatRuntimeRetrievalSummary,
     citation_from_evidence,
 )
+from backend.app.chat_runtime.memory import (
+    ChatWorkingMemory,
+    build_chat_working_memory,
+)
 from backend.app.chat_runtime.prompts import (
     build_chat_context_items,
     build_chat_system_instruction,
@@ -45,6 +49,7 @@ from backend.app.project_retrieval.service import (
     ProjectRetrievalError,
     ProjectRetrievalService,
 )
+from backend.app.schemas.api import ChatRunResponse
 
 
 LOCAL_CHAT_ACTOR_ID = "local-user"
@@ -95,6 +100,29 @@ class CanonicalChatRuntimeService:
         self._local_ai = local_ai_service
         self._project_control = project_control
         self._project_retrieval = project_retrieval_service
+
+    def build_working_memory(
+        self,
+        *,
+        conversation_id: str,
+        latest_message: str,
+        previous_turns: list[ChatRunResponse],
+        project_run_id: str | None,
+    ) -> ChatWorkingMemory | None:
+        active_project = None
+        if project_run_id is not None and self._project_control is not None:
+            try:
+                candidate = self._project_control.get_read_model(project_run_id)
+                if candidate.conversation_id == conversation_id:
+                    active_project = candidate
+            except ProjectControlError:
+                active_project = None
+        return build_chat_working_memory(
+            conversation_id=conversation_id,
+            latest_message=latest_message,
+            previous_turns=previous_turns,
+            active_project=active_project,
+        )
 
     def answer(
         self,

@@ -227,7 +227,22 @@ def build_canonical_project_response(
 ) -> CanonicalProjectResponse:
     project = service.get_project(project_run_id)
     raw_artifacts = tuple(service.list_artifacts(project_run_id))
-    artifacts = tuple(_summary(item, retrieval=retrieval) for item in raw_artifacts)
+    next_actions = _next_actions(project, raw_artifacts)
+    reviewable_patch_artifact_ids = {
+        str(action.artifact_id)
+        for action in next_actions
+        if action.action == "approve_patch" and action.artifact_id
+    }
+    artifacts = tuple(
+        _summary(
+            item,
+            retrieval=retrieval,
+            include_patch_review=(
+                item.artifact_id in reviewable_patch_artifact_ids
+            ),
+        )
+        for item in raw_artifacts
+    )
     coordinator_summary = None
     if coordinator is not None:
         intents = coordinator.list_for_project(project_run_id)
@@ -245,7 +260,7 @@ def build_canonical_project_response(
         project=project,
         artifacts=artifacts,
         coordinator=coordinator_summary,
-        next_permitted_actions=_next_actions(project, raw_artifacts),
+        next_permitted_actions=next_actions,
     )
 
 
@@ -315,6 +330,7 @@ def _summary(
     artifact: ProjectArtifact,
     *,
     retrieval: "ProjectRetrievalService | None" = None,
+    include_patch_review: bool = False,
 ) -> CanonicalArtifactSummary:
     values: dict[str, Any] = {}
     if artifact.artifact_type.value == "retrieval_evidence":
@@ -343,6 +359,11 @@ def _summary(
                 ).invalidated
             except Exception:
                 values["invalidated"] = True
+    elif (
+        include_patch_review
+        and artifact.artifact_type.value in {"patch_preview", "repair_preview"}
+    ):
+        values["patch_review"] = _patch_review(artifact)
     return CanonicalArtifactSummary(
         artifact_id=artifact.artifact_id,
         artifact_type=artifact.artifact_type.value,
@@ -352,6 +373,203 @@ def _summary(
         created_at=artifact.created_at.isoformat(),
         **values,
     )
+
+
+def _patch_review(artifact: ProjectArtifact) -> dict[str, Any]:
+    payload = artifact.payload
+    raw_operations = payload.get("operations")
+    if not isinstance(raw_operations, (list, tuple)) or not raw_operations:
+        return {
+            "summary": _optional_text(payload.get("summary"), 2000),
+            "operation_count": 1,
+            "operations": ({
+                "operation": "unavailable",
+                "path": "[review unavailable]",
+            },),
+            "requires_exact_approval": True,
+            "review_complete": False,
+            "advisory_only": bool(payload.get("proposal_id")),
+        }
+    operations: list[dict[str, Any]] = []
+    review_complete = bool(payload.get("requires_exact_approval") is True)
+    known_fields = {
+        "operation",
+        "path",
+        "relative_path",
+        "expected_sha256",
+        "strategy",
+        "rationale",
+        "affected_symbols",
+        "evidence_references",
+        "content",
+        "replacements",
+    }
+    for raw in raw_operations[:100]:
+        if not isinstance(raw, dict):
+            review_complete = False
+            continue
+        operation, operation_exact = _review_text(raw.get("operation"), 40)
+        path, path_exact = _review_text(
+            raw.get("path") or raw.get("relative_path"),
+            4096,
+        )
+        review_complete = review_complete and operation_exact and path_exact
+        if not operation or not path:
+            review_complete = False
+            continue
+        replacements: list[dict[str, Any]] = []
+        raw_replacements = raw.get("replacements", ())
+        if not isinstance(raw_replacements, (list, tuple)):
+            raw_replacements = ()
+            review_complete = False
+        for replacement in raw_replacements:
+            if not isinstance(replacement, dict):
+                review_complete = False
+                continue
+            start = replacement.get("start_line")
+            end = replacement.get("end_line")
+            expected = replacement.get("expected_text")
+            proposed = replacement.get("replacement_text")
+            if (
+                not isinstance(start, int)
+                or not isinstance(end, int)
+                or start < 1
+                or end < start
+                or not isinstance(expected, str)
+                or not isinstance(proposed, str)
+            ):
+                review_complete = False
+                continue
+            replacements.append({
+                "start_line": start,
+                "end_line": end,
+                "expected_text": expected,
+                "replacement_text": proposed,
+            })
+        content = raw.get("content")
+        if content is not None and not isinstance(content, str):
+            content = None
+            review_complete = False
+        affected_symbols = raw.get("affected_symbols", ())
+        evidence_references = raw.get("evidence_references", ())
+        if not isinstance(affected_symbols, (list, tuple)):
+            affected_symbols = ()
+            review_complete = False
+        if not isinstance(evidence_references, (list, tuple)):
+            evidence_references = ()
+            review_complete = False
+        expected_sha256, expected_sha_exact = _review_text(
+            raw.get("expected_sha256"),
+            64,
+            optional=True,
+        )
+        strategy, strategy_exact = _review_text(
+            raw.get("strategy"),
+            80,
+            optional=True,
+        )
+        rationale, rationale_exact = _review_text(
+            raw.get("rationale"),
+            2000,
+            optional=True,
+        )
+        review_complete = (
+            review_complete
+            and expected_sha_exact
+            and strategy_exact
+            and rationale_exact
+        )
+        normalized_symbols = tuple(
+            item[:500]
+            for item in affected_symbols
+            if isinstance(item, str) and item
+        )[:100]
+        normalized_references = tuple(
+            item[:4096]
+            for item in evidence_references
+            if isinstance(item, str) and item
+        )[:100]
+        if (
+            len(normalized_symbols) != len(affected_symbols)
+            or any(
+                not isinstance(item, str) or len(item) > 500
+                for item in affected_symbols
+            )
+            or len(normalized_references) != len(evidence_references)
+            or any(
+                not isinstance(item, str) or len(item) > 4096
+                for item in evidence_references
+            )
+        ):
+            review_complete = False
+        if operation == "modify":
+            if expected_sha256 is None or len(expected_sha256) != 64:
+                review_complete = False
+            if strategy == "complete_content" and content is None:
+                review_complete = False
+            elif strategy == "exact_replacements" and not replacements:
+                review_complete = False
+            elif strategy not in {"complete_content", "exact_replacements"}:
+                review_complete = False
+        elif operation == "create":
+            if expected_sha256 != "missing" or content is None:
+                review_complete = False
+        elif operation == "delete":
+            if expected_sha256 is None or len(expected_sha256) != 64:
+                review_complete = False
+        else:
+            review_complete = False
+        operations.append({
+            "operation": operation,
+            "path": path,
+            "expected_sha256": expected_sha256,
+            "strategy": strategy,
+            "rationale": rationale,
+            "affected_symbols": normalized_symbols,
+            "evidence_references": normalized_references,
+            "content": content,
+            "replacements": tuple(replacements),
+            "additional_details": {
+                str(key): value
+                for key, value in raw.items()
+                if str(key) not in known_fields
+            },
+        })
+    if len(raw_operations) != len(operations) or len(raw_operations) > 100:
+        review_complete = False
+    if not operations:
+        operations.append({
+            "operation": "unavailable",
+            "path": "[review unavailable]",
+        })
+        review_complete = False
+    return {
+        "summary": _optional_text(payload.get("summary"), 2000),
+        "operation_count": len(operations),
+        "operations": tuple(operations),
+        "requires_exact_approval": True,
+        "review_complete": review_complete,
+        "advisory_only": bool(payload.get("proposal_id")),
+    }
+
+
+def _optional_text(value: Any, maximum: int) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:maximum]
+
+
+def _review_text(
+    value: Any,
+    maximum: int,
+    *,
+    optional: bool = False,
+) -> tuple[str | None, bool]:
+    if value is None and optional:
+        return None, True
+    if not isinstance(value, str) or not value:
+        return None, False
+    return value[:maximum], len(value) <= maximum
 
 
 def _proposal_summary(proposal, store: SynthesisProposalStore) -> CanonicalSynthesisProposalSummary:

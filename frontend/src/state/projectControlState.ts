@@ -43,6 +43,24 @@ export interface CanonicalProjectAction {
   response: CanonicalProjectResponse;
 }
 
+export interface CanonicalActionRetryIdentity {
+  idempotencyKey: string;
+  storageSlot: string | null;
+}
+
+export interface CanonicalActionRetryStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+export interface CanonicalManualEvidenceRetryRequest {
+  idempotency_key: string;
+  expected_state_version: number;
+  verification_artifact_id: string;
+  verification_artifact_hash: string;
+}
+
 const supportedActions = new Set([
   "approve_plan", "approve_patch", "approve_command", "approve_rollback",
   "cancel_project",
@@ -141,6 +159,122 @@ export function exactProjectMutationRequest(
   };
 }
 
+const CANONICAL_ACTION_RETRY_PREFIX = "astra:canonical-action-retry:v1:";
+const CANONICAL_MANUAL_EVIDENCE_RETRY_PREFIX =
+  "astra:canonical-manual-evidence-retry:v1:";
+
+export function canonicalActionRetryIdentity(
+  project: CanonicalProjectAction,
+  action: CanonicalProjectActionDescriptor,
+  storage: CanonicalActionRetryStorage,
+  createIdempotencyKey: () => string,
+): CanonicalActionRetryIdentity | null {
+  const candidate = exactProjectMutationRequest(
+    project,
+    action,
+    "pending-retry-identity",
+  );
+  if (!candidate) return null;
+  const fingerprint = stableJson({
+    ...candidate,
+    idempotency_key: "",
+  });
+  const storageSlot = [
+    CANONICAL_ACTION_RETRY_PREFIX,
+    encodeURIComponent(project.projectRunId),
+    ":",
+    action.action,
+    ":",
+    action.expected_state_version,
+    ":",
+    encodeURIComponent(action.artifact_id ?? "none"),
+  ].join("");
+  return retryIdentityForFingerprint(
+    fingerprint,
+    storageSlot,
+    storage,
+    createIdempotencyKey,
+  );
+}
+
+export function canonicalManualEvidenceRetryIdentity(
+  projectRunId: string,
+  criterionId: string,
+  request: CanonicalManualEvidenceRetryRequest,
+  storage: CanonicalActionRetryStorage,
+  createIdempotencyKey: () => string,
+): CanonicalActionRetryIdentity | null {
+  if (!projectRunId || !criterionId
+      || !Number.isInteger(request.expected_state_version)
+      || request.expected_state_version < 1
+      || !request.verification_artifact_id
+      || !request.verification_artifact_hash) return null;
+  const fingerprint = stableJson({
+    ...request,
+    idempotency_key: "",
+  });
+  const storageSlot = [
+    CANONICAL_MANUAL_EVIDENCE_RETRY_PREFIX,
+    encodeURIComponent(projectRunId),
+    ":",
+    encodeURIComponent(criterionId),
+    ":",
+    request.expected_state_version,
+    ":",
+    encodeURIComponent(request.verification_artifact_id),
+  ].join("");
+  return retryIdentityForFingerprint(
+    fingerprint,
+    storageSlot,
+    storage,
+    createIdempotencyKey,
+  );
+}
+
+function retryIdentityForFingerprint(
+  fingerprint: string,
+  storageSlot: string,
+  storage: CanonicalActionRetryStorage,
+  createIdempotencyKey: () => string,
+): CanonicalActionRetryIdentity | null {
+  try {
+    const stored = parseRetryRecord(storage.getItem(storageSlot));
+    if (stored?.fingerprint === fingerprint) {
+      return {
+        idempotencyKey: stored.idempotencyKey,
+        storageSlot,
+      };
+    }
+    const idempotencyKey = validIdempotencyKey(createIdempotencyKey());
+    if (!idempotencyKey) return null;
+    storage.setItem(storageSlot, JSON.stringify({
+      fingerprint,
+      idempotency_key: idempotencyKey,
+    }));
+    return { idempotencyKey, storageSlot };
+  } catch {
+    const idempotencyKey = validIdempotencyKey(createIdempotencyKey());
+    return idempotencyKey
+      ? { idempotencyKey, storageSlot: null }
+      : null;
+  }
+}
+
+export function clearCanonicalActionRetryIdentity(
+  identity: CanonicalActionRetryIdentity,
+  storage: CanonicalActionRetryStorage,
+): void {
+  if (!identity.storageSlot) return;
+  try {
+    const stored = parseRetryRecord(storage.getItem(identity.storageSlot));
+    if (stored?.idempotencyKey === identity.idempotencyKey) {
+      storage.removeItem(identity.storageSlot);
+    }
+  } catch {
+    // Browser storage is a retry aid, never lifecycle authority.
+  }
+}
+
 export function shouldRemoveCanonicalProject(httpStatus: number, errorCode?: string): boolean {
   return httpStatus === 404 && errorCode === "project_not_found";
 }
@@ -207,4 +341,39 @@ function numericRecord(value: unknown): Record<string, number> {
 }
 function recordOfRecords(value: unknown): Record<string, Record<string, unknown>> {
   return Object.fromEntries(Object.entries(isObject(value) ? value : {}).filter((entry): entry is [string, Record<string, unknown>] => isObject(entry[1])));
+}
+
+function parseRetryRecord(value: string | null): {
+  fingerprint: string;
+  idempotencyKey: string;
+} | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isObject(parsed) || typeof parsed.fingerprint !== "string") return null;
+    const idempotencyKey = validIdempotencyKey(parsed.idempotency_key);
+    return idempotencyKey
+      ? { fingerprint: parsed.fingerprint, idempotencyKey }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function validIdempotencyKey(value: unknown): string | null {
+  return typeof value === "string" && value.length >= 1 && value.length <= 200
+    ? value
+    : null;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (isObject(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

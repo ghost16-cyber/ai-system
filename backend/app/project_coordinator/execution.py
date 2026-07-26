@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -49,6 +50,17 @@ if TYPE_CHECKING:
         CanonicalProviderProfile,
         CanonicalSynthesisOrchestrator,
     )
+    from backend.app.project_retrieval.service import ProjectRetrievalService
+from backend.app.project_retrieval.bindings import (
+    canonical_retrieval_authority_id,
+)
+from backend.app.project_retrieval.contracts import (
+    MAX_QUERY_CHARS,
+    RetrievalPhase5BEvidence,
+    RetrievalRequest,
+    normalize_query,
+)
+from backend.app.project_retrieval.service import ProjectRetrievalError
 from backend.app.project_repair import (
     CanonicalRepairService,
     CanonicalRepairServiceError,
@@ -83,11 +95,13 @@ class _BoundHandler:
         *,
         orchestrator: CanonicalSynthesisOrchestrator | None = None,
         provider_profile: CanonicalProviderProfile | None = None,
+        retrieval: ProjectRetrievalService | None = None,
     ) -> None:
         self.control = control
         self.artifacts = artifacts
         self.orchestrator = orchestrator
         self.provider_profile = provider_profile
+        self.retrieval = retrieval
 
     def _synthesized_preview(
         self,
@@ -106,6 +120,18 @@ class _BoundHandler:
         from backend.app.project_analysis.model_synthesis.orchestrator import (
             CanonicalSynthesisBlocked,
         )
+        retrieval_evidence, retrieval_diagnostic, repository_state_hash = (
+            self._retrieval_for_synthesis(intent, evidence, purpose)
+        )
+        evidence = {
+            **evidence,
+            "project_rag": retrieval_diagnostic,
+            **(
+                {"repository_state_hash": repository_state_hash}
+                if repository_state_hash is not None
+                else {}
+            ),
+        }
         evidence_artifact = self.artifacts.put(build_project_artifact(
             artifact_type=ProjectArtifactType.COORDINATOR_DECISION,
             binding=self._binding(intent, authority={"purpose": f"{purpose}_synthesis_evidence"}),
@@ -114,11 +140,17 @@ class _BoundHandler:
         try:
             if purpose == "repair":
                 outcome = self.orchestrator.prepare_repair(
-                    intent, evidence_artifact, self.provider_profile
+                    intent,
+                    evidence_artifact,
+                    self.provider_profile,
+                    retrieval_evidence=retrieval_evidence,
                 )
             else:
                 outcome = self.orchestrator.prepare_patch(
-                    intent, evidence_artifact, self.provider_profile
+                    intent,
+                    evidence_artifact,
+                    self.provider_profile,
+                    retrieval_evidence=retrieval_evidence,
                 )
         except CanonicalSynthesisBlocked as exc:
             if exc.code == "gpu_busy":
@@ -144,6 +176,141 @@ class _BoundHandler:
                 "The synthesized preview artifact is missing or does not match its durable result."
             )
         return preview
+
+    def _retrieval_for_synthesis(
+        self,
+        intent: CoordinatorIntent,
+        evidence: dict[str, Any],
+        purpose: str,
+    ) -> tuple[
+        RetrievalPhase5BEvidence | None,
+        dict[str, Any],
+        str | None,
+    ]:
+        if self.retrieval is None:
+            return None, {
+                "attempted": False,
+                "status": "not_configured",
+                "advisory_only": True,
+            }, None
+        try:
+            status = self.retrieval.status(intent.project_run_id)
+            if (
+                status.invalidated
+                or not status.embedding_ready
+                or status.active_chunk_count == 0
+            ):
+                return None, {
+                    "attempted": False,
+                    "status": "corpus_not_ready",
+                    "invalidated": status.invalidated,
+                    "active_chunk_count": status.active_chunk_count,
+                    "advisory_only": True,
+                }, None
+            run = self.control.get_project(intent.project_run_id)
+            scope = self.control.get_scope_revision(intent.scope_revision_id)
+            plan = (
+                self.control.get_plan_revision(intent.plan_revision_id)
+                if intent.plan_revision_id is not None
+                else None
+            )
+            repository_state_hash = self.retrieval.compute_repository_state(
+                Path(run.repository_root),
+                scope.included_paths,
+                scope.excluded_paths,
+            )
+            query = self._retrieval_query(evidence, purpose)
+            normalized = normalize_query(query)
+            request_hash = content_hash({
+                "coordinator_intent_id": intent.coordinator_intent_id,
+                "purpose": purpose,
+                "query": normalized,
+                "repository_state_hash": repository_state_hash,
+            })
+            request = RetrievalRequest(
+                project_id=run.project_run_id,
+                conversation_id=run.conversation_id,
+                actor_id=run.actor_id,
+                workspace_id=run.workspace_id,
+                repository_root=run.repository_root,
+                scope_revision_id=scope.scope_revision_id,
+                scope_hash=scope.content_hash,
+                plan_revision_id=(
+                    plan.plan_revision_id if plan is not None else None
+                ),
+                plan_hash=plan.content_hash if plan is not None else None,
+                repository_manifest_hash=run.current_manifest_hash,
+                repository_state_hash=repository_state_hash,
+                expected_project_state_version=run.state_version,
+                authority_id=canonical_retrieval_authority_id(run),
+                request_id=f"synthesis-retrieval:{request_hash[:24]}",
+                query=query,
+                normalized_query=normalized,
+                query_hash=content_hash(normalized),
+                idempotency_key=(
+                    f"synthesis-retrieval:{intent.coordinator_intent_id}:"
+                    f"{purpose}:{request_hash[:24]}"
+                )[:200],
+                max_candidates=30,
+                max_rerank=12,
+                max_evidence=3,
+                created_at=datetime.now(timezone.utc),
+            )
+            artifact = self.retrieval.retrieve(request)
+            attached = self.retrieval.phase5b_evidence(
+                artifact.artifact_id,
+                request,
+            )
+            return attached, {
+                "attempted": True,
+                "status": "attached",
+                "retrieval_artifact_id": artifact.artifact_id,
+                "retrieval_artifact_hash": artifact.artifact_hash,
+                "evidence_count": artifact.evidence_count,
+                "advisory_only": True,
+            }, repository_state_hash
+        except (ProjectRetrievalError, ProjectControlError, ValueError) as exc:
+            return None, {
+                "attempted": True,
+                "status": "unavailable",
+                "reason": str(exc)[:300],
+                "advisory_only": True,
+            }, None
+
+    @staticmethod
+    def _retrieval_query(
+        evidence: dict[str, Any],
+        purpose: str,
+    ) -> str:
+        work_unit = (
+            evidence.get("work_unit")
+            if isinstance(evidence.get("work_unit"), dict)
+            else {}
+        )
+        parts = [
+            f"Prepare the bounded {purpose} proposal.",
+            str(
+                work_unit.get("summary")
+                or work_unit.get("objective")
+                or ""
+            ),
+        ]
+        parts.extend(
+            str(item)
+            for item in list(evidence.get("requirements") or ())[:10]
+            if isinstance(item, str)
+        )
+        failure = work_unit.get("failure_evidence")
+        if isinstance(failure, dict):
+            parts.extend((
+                str(failure.get("failure_classification") or ""),
+                str(failure.get("message") or ""),
+            ))
+        return "\n".join(
+            " ".join(part.split())
+            for part in parts
+            if part and part.strip()
+        )[:MAX_QUERY_CHARS]
 
     def _binding(
         self,
@@ -203,11 +370,16 @@ class PrepareWorkUnitHandler(_BoundHandler):
         *,
         orchestrator: CanonicalSynthesisOrchestrator | None = None,
         provider_profile: CanonicalProviderProfile | None = None,
+        retrieval: ProjectRetrievalService | None = None,
         scaffolding: ProjectScaffoldingService | None = None,
         scaffold_persistence: ScaffoldPersistenceService | None = None,
     ) -> None:
         super().__init__(
-            control, artifacts, orchestrator=orchestrator, provider_profile=provider_profile,
+            control,
+            artifacts,
+            orchestrator=orchestrator,
+            provider_profile=provider_profile,
+            retrieval=retrieval,
         )
         self.scaffolding = scaffolding
         self.scaffold_persistence = scaffold_persistence
@@ -609,12 +781,14 @@ class PrepareRepairHandler(_BoundHandler):
         *,
         orchestrator: CanonicalSynthesisOrchestrator | None = None,
         provider_profile: CanonicalProviderProfile | None = None,
+        retrieval: ProjectRetrievalService | None = None,
     ) -> None:
         super().__init__(
             control,
             artifacts,
             orchestrator=orchestrator,
             provider_profile=provider_profile,
+            retrieval=retrieval,
         )
         self.repair = repair
 
@@ -747,6 +921,7 @@ class ProjectCoordinatorExecutor:
         projector=None,
         orchestrator: CanonicalSynthesisOrchestrator | None = None,
         provider_profile: CanonicalProviderProfile | None = None,
+        retrieval: ProjectRetrievalService | None = None,
         scaffolding: ProjectScaffoldingService | None = None,
         scaffold_persistence: ScaffoldPersistenceService | None = None,
     ) -> None:
@@ -756,6 +931,7 @@ class ProjectCoordinatorExecutor:
         self.projector = projector
         self.orchestrator = orchestrator
         self.provider_profile = provider_profile
+        self.retrieval = retrieval
         repair = CanonicalRepairService(service.database_path, control, artifacts)
         repair.initialize()
         self.repair = repair
@@ -763,6 +939,7 @@ class ProjectCoordinatorExecutor:
             CoordinatorIntentType.PREPARE_WORK_UNIT: PrepareWorkUnitHandler(
                 control, artifacts,
                 orchestrator=orchestrator, provider_profile=provider_profile,
+                retrieval=retrieval,
                 scaffolding=scaffolding, scaffold_persistence=scaffold_persistence,
             ),
             CoordinatorIntentType.RUN_DETERMINISTIC_VERIFICATION: DeterministicVerificationHandler(control, artifacts),
@@ -772,6 +949,7 @@ class ProjectCoordinatorExecutor:
                 repair,
                 orchestrator=orchestrator,
                 provider_profile=provider_profile,
+                retrieval=retrieval,
             ),
             CoordinatorIntentType.PREPARE_HANDOFF: PrepareHandoffHandler(control, artifacts),
         }
