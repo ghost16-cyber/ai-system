@@ -28,7 +28,19 @@ from backend.app.local_ai.provider import (
     ProviderErrorCode,
     ProviderGenerationRequest,
 )
+from backend.app.local_ai.providers.registry import (
+    ProviderNotRegisteredError,
+    ProviderRegistry,
+)
 from backend.app.project_control.contracts import canonical_json, content_hash
+
+
+# The set of `LocalAIConfiguration.provider_type` values this gateway can
+# actually drive generation for. A higher layer checking membership in this
+# constant (instead of `== "ollama"`) is how "no provider-name branches in
+# higher layers" is satisfied without inventing a second registry just for
+# this one coarse config-level check -- see `model_synthesis/gateway.py`.
+SUPPORTED_GENERATION_PROVIDER_TYPES = frozenset({"ollama", "llama_cpp"})
 
 
 MAX_STRUCTURED_OUTPUT_BYTES = 524_288
@@ -54,12 +66,26 @@ class LocalGenerationGateway:
         *,
         configuration: LocalAIConfiguration | None = None,
         provider_client: LocalModelProviderClient | None = None,
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.configuration = configuration or load_local_ai_configuration()
-        self.provider_client = provider_client or OllamaProviderClient(
-            self.configuration.endpoint_identity
-        )
+        # Three constructor modes, in priority order:
+        #   1. `provider_client` given -> that one fixed client is used for
+        #      every request regardless of `request.provider_id` (the exact
+        #      pre-Phase-8C behavior every existing test relies on).
+        #   2. `provider_registry` given (and no fixed client) -> resolved
+        #      per request via `request.provider_id` (the new, provider-
+        #      neutral production wiring `LocalAIService` uses).
+        #   3. Neither given -> preserves today's exact default: a single
+        #      `OllamaProviderClient` built from configuration.
+        self.provider_client = provider_client
+        self.provider_registry = provider_registry
+        self._default_provider_client: LocalModelProviderClient | None = None
+        if self.provider_client is None and self.provider_registry is None:
+            self._default_provider_client = OllamaProviderClient(
+                self.configuration.endpoint_identity
+            )
 
     def initialize(self) -> None:
         assert_schema_compatible(self.database_path)
@@ -125,45 +151,65 @@ class LocalGenerationGateway:
                 _message(failure),
             )
 
+        try:
+            provider_client, provider_identity, endpoint_identity = self._resolve_provider_client(request)
+        except ProviderNotRegisteredError as exc:
+            return self._fail(
+                generation_id,
+                request,
+                started_at,
+                started_clock,
+                GenerationFailureReason.PROVIDER_NOT_REGISTERED,
+                _message(GenerationFailureReason.PROVIDER_NOT_REGISTERED),
+                diagnostic={"provider_id": exc.provider_id},
+            )
+
+        def fail(
+            reason: GenerationFailureReason,
+            message: str,
+            **kwargs: Any,
+        ) -> LocalGenerationResult:
+            """Every failure from here on knows which provider actually ran
+            (or attempted to run) the request -- unlike the preflight/
+            resolution failures above, which have no specific provider to
+            attribute yet and keep using configuration defaults."""
+            return self._fail(
+                generation_id, request, started_at, started_clock, reason, message,
+                provider_identity=provider_identity, endpoint_identity=endpoint_identity,
+                **kwargs,
+            )
+
         self._audit(
             "local_generation_readiness_check",
             generation_id,
             {"request_id": request.request_id, "model": request.exact_model_tag},
         )
         try:
-            inspection = self.provider_client.inspect(
+            inspection = provider_client.inspect(
                 timeout_seconds=self.configuration.connection_timeout_seconds
             )
         except ProviderClientError as exc:
             reason = _provider_failure(exc.code, readiness=True)
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
-                reason,
-                exc.safe_message,
-                diagnostic=exc.diagnostic,
-            )
+            return fail(reason, exc.safe_message, diagnostic=exc.diagnostic)
         except Exception:
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.INTERNAL_FAILURE,
                 _message(GenerationFailureReason.INTERNAL_FAILURE),
             )
 
-        if request.exact_model_tag not in inspection.installed_models:
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+        # Checked against installed *or* loaded models: a provider that (like
+        # llama.cpp) can only authoritatively report the currently loaded
+        # model reports it via `loaded_models` -- `installed_models` is
+        # empty rather than invented for that provider (see
+        # `LlamaCppProviderAdapter`). For Ollama this is behavior-identical
+        # to checking `installed_models` alone, since a loaded model is
+        # always also an installed one.
+        known_models = set(inspection.installed_models) | set(inspection.loaded_models)
+        if request.exact_model_tag not in known_models:
+            return fail(
                 GenerationFailureReason.EXACT_MODEL_UNAVAILABLE,
                 _message(GenerationFailureReason.EXACT_MODEL_UNAVAILABLE),
-                diagnostic={"installed_model_count": len(inspection.installed_models)},
+                diagnostic={"installed_model_count": len(known_models)},
             )
 
         prompt = _render_prompt(request)
@@ -179,7 +225,7 @@ class LocalGenerationGateway:
             },
         )
         try:
-            provider_result = self.provider_client.generate(
+            provider_result = provider_client.generate(
                 ProviderGenerationRequest(
                     model=request.exact_model_tag,
                     system_instruction=request.system_instruction,
@@ -196,31 +242,15 @@ class LocalGenerationGateway:
             )
         except ProviderClientError as exc:
             reason = _provider_failure(exc.code, readiness=False)
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
-                reason,
-                exc.safe_message,
-                diagnostic=exc.diagnostic,
-            )
+            return fail(reason, exc.safe_message, diagnostic=exc.diagnostic)
         except Exception:
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.INTERNAL_FAILURE,
                 _message(GenerationFailureReason.INTERNAL_FAILURE),
             )
 
         if provider_result.model != request.exact_model_tag:
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.MALFORMED_PROVIDER_RESPONSE,
                 "The provider reported a different model than the exact configured tag.",
                 diagnostic={"reported_model_mismatch": True},
@@ -229,11 +259,7 @@ class LocalGenerationGateway:
         raw_bytes = raw.encode("utf-8")
         response_hash = hashlib.sha256(raw_bytes).hexdigest()
         if len(raw_bytes) > MAX_STRUCTURED_OUTPUT_BYTES:
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.INVALID_STRUCTURED_OUTPUT,
                 "The structured model output exceeded the bounded response size.",
                 response_hash=response_hash,
@@ -241,22 +267,14 @@ class LocalGenerationGateway:
         try:
             parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
         except (json.JSONDecodeError, DuplicateJSONKeyError):
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.INVALID_STRUCTURED_OUTPUT,
                 _message(GenerationFailureReason.INVALID_STRUCTURED_OUTPUT),
                 response_hash=response_hash,
                 usage=_usage(provider_result.metadata),
             )
         if not isinstance(parsed, dict):
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.INVALID_STRUCTURED_OUTPUT,
                 "The structured model output must be one JSON object.",
                 response_hash=response_hash,
@@ -266,11 +284,7 @@ class LocalGenerationGateway:
             validated = target_schema.model_validate(parsed)
         except ValidationError as exc:
             first = exc.errors(include_url=False)[0] if exc.errors() else {}
-            return self._fail(
-                generation_id,
-                request,
-                started_at,
-                started_clock,
+            return fail(
                 GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED,
                 _message(GenerationFailureReason.TARGET_SCHEMA_VALIDATION_FAILED),
                 response_hash=response_hash,
@@ -286,8 +300,8 @@ class LocalGenerationGateway:
         result = LocalGenerationResult(
             generation_id=generation_id,
             request_id=request.request_id,
-            provider_identity=self.configuration.provider_type,
-            endpoint_identity=self.configuration.endpoint_identity,
+            provider_identity=provider_identity,
+            endpoint_identity=endpoint_identity,
             exact_model_tag=request.exact_model_tag,
             started_at=started_at,
             completed_at=completed_at,
@@ -309,12 +323,45 @@ class LocalGenerationGateway:
         )
         return result
 
+    def _resolve_provider_client(
+        self, request: LocalGenerationRequest
+    ) -> tuple[LocalModelProviderClient, str, str]:
+        """Returns `(client, provider_identity, endpoint_identity)`.
+
+        Three resolution modes, matching the constructor's three modes:
+        a fixed injected `provider_client` is used unconditionally; a
+        `provider_registry` resolves per request via `request.provider_id`
+        (raising `ProviderNotRegisteredError`, never falling back to a
+        different provider); the no-override default uses the one
+        `OllamaProviderClient` built at construction time.
+
+        `provider_identity`/`endpoint_identity` are always `configuration`'s
+        values, in every mode, unchanged from before Phase 8C -- existing
+        callers (e.g. chat's `slm_provider` API field) depend on this coarse
+        "kind" vocabulary (`"ollama"`, `"llama_cpp"`, ...), not a specific
+        adapter's registry key (`"ollama-local"`); `configuration.provider_type`
+        already matches whichever provider a resolved `ModelProfile.provider_id`
+        is expected to back in normal operation.
+        """
+        if self.provider_client is not None:
+            client: LocalModelProviderClient = self.provider_client
+        elif self.provider_registry is not None:
+            if not request.provider_id:
+                raise ProviderNotRegisteredError("unspecified")
+            client = self.provider_registry.get(request.provider_id)
+        else:
+            assert self._default_provider_client is not None
+            client = self._default_provider_client
+        provider_identity = self.configuration.provider_type
+        endpoint_identity = self.configuration.endpoint_identity
+        return client, provider_identity, endpoint_identity
+
     def _preflight_failure(
         self, request: LocalGenerationRequest, target_schema: type[BaseModel]
     ) -> GenerationFailureReason | None:
         if not self.configuration.generation_enabled:
             return GenerationFailureReason.LOCAL_AI_DISABLED
-        if self.configuration.provider_type != "ollama":
+        if self.configuration.provider_type not in SUPPORTED_GENERATION_PROVIDER_TYPES:
             return GenerationFailureReason.PROVIDER_UNSUPPORTED
         configured_model = self.configuration.model_for_role(request.purpose.value)
         if configured_model is None or request.exact_model_tag != configured_model:
@@ -476,12 +523,14 @@ class LocalGenerationGateway:
         response_hash: str | None = None,
         diagnostic: dict[str, Any] | None = None,
         usage: GenerationUsage | None = None,
+        provider_identity: str | None = None,
+        endpoint_identity: str | None = None,
     ) -> LocalGenerationResult:
         result = LocalGenerationResult(
             generation_id=generation_id,
             request_id=request.request_id,
-            provider_identity=self.configuration.provider_type,
-            endpoint_identity=self.configuration.endpoint_identity,
+            provider_identity=provider_identity or self.configuration.provider_type,
+            endpoint_identity=endpoint_identity or self.configuration.endpoint_identity,
             exact_model_tag=request.exact_model_tag,
             started_at=started_at,
             completed_at=_now(),
@@ -761,6 +810,9 @@ def _provider_failure(
         ProviderErrorCode.REJECTED: GenerationFailureReason.PROVIDER_REJECTED_REQUEST,
         ProviderErrorCode.MALFORMED_RESPONSE: GenerationFailureReason.MALFORMED_PROVIDER_RESPONSE,
         ProviderErrorCode.INVALID_REQUEST: GenerationFailureReason.INVALID_REQUEST,
+        ProviderErrorCode.NOT_REGISTERED: GenerationFailureReason.PROVIDER_NOT_REGISTERED,
+        ProviderErrorCode.UNSUPPORTED_OPERATION: GenerationFailureReason.UNSUPPORTED_PROVIDER_OPERATION,
+        ProviderErrorCode.MODEL_NOT_LOADED: GenerationFailureReason.MODEL_NOT_LOADED,
     }[code]
 
 
@@ -793,6 +845,9 @@ def _message(reason: GenerationFailureReason) -> str:
         GenerationFailureReason.IDEMPOTENCY_CONFLICT: "The idempotency key is bound to another request.",
         GenerationFailureReason.PERSISTENCE_FAILURE: "The generation invocation could not be persisted safely.",
         GenerationFailureReason.INTERNAL_FAILURE: "Local model generation failed safely.",
+        GenerationFailureReason.PROVIDER_NOT_REGISTERED: "No canonical provider is registered for the configured model.",
+        GenerationFailureReason.UNSUPPORTED_PROVIDER_OPERATION: "The configured provider does not support this operation.",
+        GenerationFailureReason.MODEL_NOT_LOADED: "The configured model is not currently loaded by the provider.",
     }[reason]
 
 

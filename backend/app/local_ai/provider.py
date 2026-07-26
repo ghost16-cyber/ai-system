@@ -23,6 +23,12 @@ class ProviderErrorCode(StrEnum):
     CANCELLED = "generation_cancelled"
     REJECTED = "provider_rejected_request"
     MALFORMED_RESPONSE = "malformed_provider_response"
+    # Phase 8C additions -- provider-registry-level and capability-declaration
+    # failures, kept on this same enum rather than a parallel one since every
+    # existing catch site already matches on `ProviderClientError`/`.code`.
+    NOT_REGISTERED = "provider_not_registered"
+    UNSUPPORTED_OPERATION = "unsupported_provider_operation"
+    MODEL_NOT_LOADED = "model_not_loaded"
 
 
 class ProviderClientError(RuntimeError):

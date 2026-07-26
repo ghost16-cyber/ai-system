@@ -113,6 +113,26 @@ class OllamaCapability(Capability):
     configured_model_missing: bool = False
 
 
+class LlamaCppCapability(Capability):
+    """llama.cpp's own capability record (see `providers/llama_cpp.py`).
+
+    A separate `CapabilityRecord` subtype rather than overloading
+    `capability_id="ollama"` -- the two runtimes have genuinely different
+    discovery semantics. llama-server's OpenAI-compatible `/v1/models`
+    endpoint only ever reports the currently loaded model; it has no
+    separate "installed but not loaded" registry the way Ollama's
+    `/api/tags` does, so `installed_models` is deliberately not present
+    here -- only `loaded_models`.
+    """
+
+    endpoint: str
+    configured_model: str | None = None
+    loaded_models: tuple[str, ...] = ()
+    provider_reachable: bool = False
+    configured_model_missing: bool = False
+    runtime_kind: str = "llama.cpp"
+
+
 class ONNXRuntimeCapability(Capability):
     installed: bool = False
 
@@ -146,7 +166,7 @@ class ExecutionBackendCapability(Capability):
 
 CapabilityRecord = (
     CPUCapability | MemoryCapability | CUDACapability | GPUCapability |
-    VRAMCapability | PyTorchCapability | OllamaCapability |
+    VRAMCapability | PyTorchCapability | OllamaCapability | LlamaCppCapability |
     ONNXRuntimeCapability | TensorRTCapability | EmbeddingCapability |
     TrainingCapability | ProviderCapability | ModelCapability |
     ExecutionBackendCapability | Capability

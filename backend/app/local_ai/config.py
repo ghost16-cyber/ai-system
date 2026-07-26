@@ -13,6 +13,7 @@ from backend.app.project_control.contracts import StrictModel
 
 DEFAULT_LOCAL_MODEL = "qwen2.5-coder:1.5b"
 DEFAULT_OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
+DEFAULT_LLAMA_CPP_ENDPOINT = "http://127.0.0.1:8081"
 _MODEL_TAG = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,198}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$"
 )
@@ -28,7 +29,7 @@ class LocalAIConfiguration(StrictModel):
     )
     generation_enabled: bool = False
     project_synthesis_enabled: bool = False
-    provider_type: Literal["ollama", "unavailable", "fake"] = "ollama"
+    provider_type: Literal["ollama", "unavailable", "fake", "llama_cpp"] = "ollama"
     endpoint_identity: str
     synthesis_model: str
     coder_model: str
@@ -41,17 +42,30 @@ class LocalAIConfiguration(StrictModel):
     maximum_output_tokens: int = Field(ge=1, le=65_536)
     allow_cpu_fallback: bool = False
     gpu_exclusive_concurrency: bool = True
+    # llama.cpp is registered as an additional, independently configurable
+    # provider (Part 12) -- it does not replace `provider_type`/
+    # `endpoint_identity` above, which remain Ollama's today ("Keep Ollama
+    # as the current active provider"). `llama_cpp_enabled` is a deliberate
+    # explicit opt-in: unlike Ollama, nothing probes this endpoint unless
+    # the operator has actually configured it, matching "no automatic
+    # start" for infrastructure the operator may not have running at all.
+    llama_cpp_enabled: bool = False
+    llama_cpp_endpoint_identity: str = DEFAULT_LLAMA_CPP_ENDPOINT
+    llama_cpp_configured_model: str | None = None
 
     @model_validator(mode="after")
     def validate_endpoint_and_models(self) -> "LocalAIConfiguration":
         if self.provider_type == "ollama":
             _validate_endpoint(self.endpoint_identity)
+        if self.llama_cpp_enabled:
+            _validate_endpoint(self.llama_cpp_endpoint_identity)
         for role, tag in (
             ("synthesis", self.synthesis_model),
             ("coder", self.coder_model),
             ("planner", self.planner_model),
             ("reviewer", self.reviewer_model),
             ("chat", self.chat_model),
+            ("llama_cpp_configured", self.llama_cpp_configured_model),
         ):
             if tag is not None:
                 _validate_model_tag(tag, role=role)
@@ -179,6 +193,15 @@ def load_local_ai_configuration(
             ),
             gpu_exclusive_concurrency=_boolean(
                 env, "ASTRA_LOCAL_AI_GPU_EXCLUSIVE", default=True
+            ),
+            llama_cpp_enabled=_boolean(
+                env, "ASTRA_LLAMA_CPP_ENABLED", default=False
+            ),
+            llama_cpp_endpoint_identity=_canonical_endpoint(
+                _value(env, "ASTRA_LLAMA_CPP_ENDPOINT", default=DEFAULT_LLAMA_CPP_ENDPOINT)
+            ),
+            llama_cpp_configured_model=_optional_unset_role(
+                env, "ASTRA_LLAMA_CPP_MODEL"
             ),
         )
     except (ValueError, TypeError) as exc:

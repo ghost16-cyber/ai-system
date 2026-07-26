@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from backend.app.local_ai.config import LocalAIConfiguration, load_local_ai_configuration
+from backend.app.local_ai.generation import SUPPORTED_GENERATION_PROVIDER_TYPES
 from backend.app.local_ai.generation_contracts import (
     GenerationParameters,
     GenerationPurpose,
@@ -306,7 +307,7 @@ def build_synthesis_gateway_from_environment(
         return UnavailableSynthesisGateway(
             reason="Local generation is disabled by canonical configuration."
         )
-    if configuration.provider_type != "ollama":
+    if configuration.provider_type not in SUPPORTED_GENERATION_PROVIDER_TYPES:
         return UnavailableSynthesisGateway(
             reason="The configured project-synthesis provider is unsupported."
         )

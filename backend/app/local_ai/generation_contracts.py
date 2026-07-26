@@ -52,6 +52,11 @@ class GenerationFailureReason(StrEnum):
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
     PERSISTENCE_FAILURE = "persistence_failure"
     INTERNAL_FAILURE = "internal_failure"
+    # Phase 8C additions -- provider-registry-level failures surfaced through
+    # the same generation-failure taxonomy every caller already handles.
+    PROVIDER_NOT_REGISTERED = "provider_not_registered"
+    UNSUPPORTED_PROVIDER_OPERATION = "unsupported_provider_operation"
+    MODEL_NOT_LOADED = "model_not_loaded"
 
 
 class GenerationParameters(StrictModel):
@@ -95,6 +100,13 @@ class LocalGenerationRequest(StrictModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
     purpose: GenerationPurpose
     exact_model_tag: str = Field(min_length=1, max_length=300)
+    # Provider-neutral resolution key: `LocalGenerationGateway` uses this to
+    # look up the canonical provider adapter via the registry rather than
+    # holding one fixed provider client. Optional and defaulted to None so
+    # existing callers that inject a single fixed `provider_client=` (the
+    # entire pre-Phase-8C test suite) are unaffected -- that legacy mode
+    # never consults this field at all.
+    provider_id: str | None = Field(default=None, min_length=1, max_length=200)
     system_instruction: str = Field(
         min_length=1, max_length=MAX_SYSTEM_INSTRUCTION_CHARS
     )

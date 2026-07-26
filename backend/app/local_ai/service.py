@@ -24,6 +24,7 @@ from backend.app.local_ai.contracts import (
     HardwareAdmissionDecision,
     HardwareAdmissionRequest,
     HostCapabilityReport,
+    LlamaCppCapability,
     LocalAIConfigurationState,
     LocalAIConfigurationVersions,
     MemoryCapability,
@@ -68,6 +69,10 @@ from backend.app.local_ai.generation_contracts import (
     LocalGenerationResult,
 )
 from backend.app.local_ai.provider import OllamaProviderClient, ProviderClientError
+from backend.app.local_ai.providers.fake import FakeDeterministicProvider
+from backend.app.local_ai.providers.llama_cpp import LlamaCppProviderAdapter
+from backend.app.local_ai.providers.ollama import OllamaProviderAdapter
+from backend.app.local_ai.providers.registry import ProviderRegistry
 from backend.app.project_control.contracts import canonical_json, content_hash
 
 
@@ -75,6 +80,19 @@ Probe = Callable[[], tuple[Capability, ...]]
 OllamaProbe = Callable[
     [LocalAIConfiguration], tuple[bool, tuple[str, ...], tuple[str, ...], str | None]
 ]
+
+
+class ModelNotLocallyAvailableError(ValueError):
+    """Raised by `set_model_enabled` when enabling would claim availability
+    the latest capability snapshot cannot back up (provider unreachable,
+    model not installed/loaded, stale snapshot, or another admission
+    condition -- see `_effective_model_profile`). A named subclass of
+    `ValueError` with this exact message so `str(exc)` is unchanged and
+    every existing `except ValueError` / `detail={"code": str(exc)}` call
+    site keeps working without modification."""
+
+    def __init__(self) -> None:
+        super().__init__("model_not_locally_available")
 
 
 def _now() -> datetime:
@@ -213,6 +231,35 @@ def default_provider_profiles(
             },
         ),
         ProviderProfile(
+            provider_id="llama-cpp-local",
+            provider_type="llama_cpp",
+            endpoint_identity=configuration.llama_cpp_endpoint_identity,
+            health_status=(
+                CapabilityStatus.NOT_CONFIGURED
+                if configuration.llama_cpp_enabled
+                else CapabilityStatus.INTENTIONALLY_DISABLED
+            ),
+            supported_model_ids=(
+                (configuration.llama_cpp_configured_model,)
+                if configuration.llama_cpp_configured_model
+                else ()
+            ),
+            streaming=False,
+            structured_output=True,
+            tool_calls=False,
+            supports_cancellation=False,
+            execution_backend="llama_cpp",
+            enabled=False,
+            timeout_seconds=configuration.generation_timeout_seconds,
+            provenance={
+                "configuration_authority": configuration.schema_version,
+                "connection_timeout_seconds": configuration.connection_timeout_seconds,
+                "no_auto_start": True,
+                "no_auto_download": True,
+                "runtime_kind": "llama.cpp",
+            },
+        ),
+        ProviderProfile(
             provider_id="onnx-future",
             provider_type="onnx",
             endpoint_identity="local",
@@ -229,6 +276,32 @@ def default_provider_profiles(
     )
 
 
+def default_provider_registry(
+    configuration: LocalAIConfiguration | None = None,
+) -> ProviderRegistry:
+    """The canonical provider registry `LocalAIService` resolves through.
+
+    Registration is explicit and construction-time only -- no plugin
+    discovery. Registering an adapter never performs I/O (constructing an
+    `OllamaProviderAdapter`/`LlamaCppProviderAdapter` only stores an
+    endpoint string); probing/generation are the only operations that ever
+    touch the network, and only when actually invoked.
+    """
+    configuration = configuration or load_local_ai_configuration()
+    registry = ProviderRegistry()
+    registry.register(OllamaProviderAdapter(
+        endpoint_identity=configuration.endpoint_identity,
+        provider_id="ollama-local",
+    ))
+    registry.register(LlamaCppProviderAdapter(
+        endpoint_identity=configuration.llama_cpp_endpoint_identity,
+        configured_model=configuration.llama_cpp_configured_model,
+        provider_id="llama-cpp-local",
+    ))
+    registry.register(FakeDeterministicProvider(provider_id="fake-deterministic"))
+    return registry
+
+
 class LocalAIService:
     """Install-free capability, policy, registry, scheduling and provenance boundary."""
 
@@ -241,15 +314,25 @@ class LocalAIService:
         hardware_registry: HardwareCapabilityRegistry | None = None,
         ollama_probe: OllamaProbe | None = None,
         generation_gateway: LocalGenerationGateway | None = None,
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.configuration = configuration or load_local_ai_configuration()
         self._hardware_registry = hardware_registry or HardwareCapabilityRegistry()
         self._ollama_probe = ollama_probe or _probe_ollama
         self._probe = probe or self._safe_probe
+        # Explicit, test-injectable registry -- never a hidden global. When
+        # omitted, `default_provider_registry` builds the canonical set
+        # (ollama-local, llama-cpp-local, fake-deterministic); registering an
+        # adapter never performs I/O, so building this costs nothing extra
+        # for callers that never touch a second provider.
+        self.provider_registry = provider_registry or default_provider_registry(
+            self.configuration
+        )
         self._generation_gateway = generation_gateway or LocalGenerationGateway(
             self.database_path,
             configuration=self.configuration,
+            provider_registry=self.provider_registry,
         )
         self._additional_capability_probe: Callable[[], tuple[Capability, ...]] | None = None
 
@@ -265,7 +348,7 @@ class LocalAIService:
         now = _now().isoformat()
         with self._connect() as connection:
             for provider in default_provider_profiles(self.configuration):
-                if provider.provider_id == "ollama-local":
+                if provider.provider_id in ("ollama-local", "llama-cpp-local"):
                     connection.execute(
                         "INSERT INTO local_ai_providers (provider_id, config_version, enabled, profile_json, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?) "
                         "ON CONFLICT(provider_id) DO UPDATE SET config_version = local_ai_providers.config_version + 1, enabled = excluded.enabled, profile_json = excluded.profile_json, updated_at = excluded.updated_at "
@@ -530,9 +613,12 @@ class LocalAIService:
         """
         binding_hash = content_hash(request.model_dump(mode="json"))
         scheduler_key = f"runtime-execution:{request.idempotency_key}"
+        # Resolved unconditionally (cheap, read-only) so `profile.provider_id`
+        # is always available for the provider-neutral generation request
+        # below, including on scheduler-level idempotent replay.
+        profile = self._execution_model_profile(request)
         existing = self._scheduler_job_for_idempotency(scheduler_key)
         if existing is None:
-            profile = self._execution_model_profile(request)
             admission = self.admission_preview(HardwareAdmissionRequest(
                 workload_class=request.purpose.value,
                 model_profile_id=profile.model_profile_id,
@@ -556,7 +642,6 @@ class LocalAIService:
             resource = self._generation_resource_request(request, profile, admission)
         else:
             # Exact scheduler replay retains the original admission snapshot.
-            profile = None
             admission = existing.admission
             resource = existing.resource_request
 
@@ -585,6 +670,7 @@ class LocalAIService:
             idempotency_key=f"runtime-generation:{request.idempotency_key}",
             purpose=request.purpose,
             exact_model_tag=request.exact_model_tag,
+            provider_id=profile.provider_id,
             system_instruction=request.system_instruction,
             user_content=request.user_content,
             context=request.context,
@@ -916,7 +1002,7 @@ class LocalAIService:
             report = self._latest_persisted_snapshot(connection=connection)
             effective = self._effective_model_profile(profile, report)
             if enabled and not effective.local_available and profile.provider_id != "fake-deterministic":
-                raise ValueError("model_not_locally_available")
+                raise ModelNotLocallyAvailableError()
             updated = profile.model_copy(update={"enabled": enabled})
             now = _now().isoformat()
             update = connection.execute(
@@ -1429,7 +1515,29 @@ class LocalAIService:
                                installed=tensorrt_installed, probed_at=now, provenance={"probe": "importlib"}),
             TrainingCapability(capability_id="training", status=CapabilityStatus.INTENTIONALLY_DISABLED,
                                enabled=False, probed_at=now, reason="Training is disabled by policy.", provenance={"policy": "stage7a"}),
+            *self._llama_cpp_capability_records(now),
         )
+
+    def _llama_cpp_capability_records(self, now: datetime) -> tuple[LlamaCppCapability, ...]:
+        """Purely additive: when llama.cpp is not explicitly configured
+        (`llama_cpp_enabled`), this contributes nothing, so every existing
+        capability snapshot shape/count is unchanged. Never starts
+        llama-server -- a bounded, read-only HTTP probe only, and only
+        because the operator explicitly opted in."""
+        if not self.configuration.llama_cpp_enabled:
+            return ()
+        adapter = self.provider_registry.get_or_none("llama-cpp-local")
+        if adapter is None:
+            return (
+                LlamaCppCapability(
+                    capability_id="llama_cpp", status=CapabilityStatus.NOT_CONFIGURED,
+                    endpoint=self.configuration.llama_cpp_endpoint_identity,
+                    configured_model=self.configuration.llama_cpp_configured_model,
+                    provider_reachable=False, probed_at=now,
+                    reason="provider_not_registered",
+                ),
+            )
+        return (adapter.probe_capability(self.configuration),)
 
     def _latest_snapshot(self, max_age_seconds: int) -> HostCapabilityReport | None:
         with self._connect() as connection:
@@ -1459,19 +1567,30 @@ class LocalAIService:
             else None
         )
 
+    # provider_id -> the capability_id its own capability record is filed
+    # under in a snapshot's `capabilities` tuple. Both entries are network-
+    # backed providers with a `provider_reachable` field; extending this
+    # mapping (not a chain of `provider_id == ...` branches) is how a future
+    # provider joins `_effective_provider_profile`/`_effective_model_profile`.
+    _PROBED_PROVIDER_CAPABILITY_IDS: dict[str, str] = {
+        "ollama-local": "ollama",
+        "llama-cpp-local": "llama_cpp",
+    }
+
     def _effective_provider_profile(
         self,
         profile: ProviderProfile,
         report: HostCapabilityReport | None,
     ) -> ProviderProfile:
-        if profile.provider_id != "ollama-local" or report is None:
+        capability_id = self._PROBED_PROVIDER_CAPABILITY_IDS.get(profile.provider_id)
+        if capability_id is None or report is None:
             return profile
         capability = next(
             (
                 item
                 for item in report.capabilities
-                if isinstance(item, OllamaCapability)
-                and item.capability_id == "ollama"
+                if isinstance(item, (OllamaCapability, LlamaCppCapability))
+                and item.capability_id == capability_id
             ),
             None,
         )
@@ -1496,7 +1615,8 @@ class LocalAIService:
     ) -> ModelProfile:
         if profile.provider_id == "fake-deterministic":
             return profile
-        if profile.provider_id != "ollama-local" or report is None:
+        capability_id = self._PROBED_PROVIDER_CAPABILITY_IDS.get(profile.provider_id)
+        if capability_id is None or report is None:
             return profile.model_copy(
                 update={
                     "local_available": False,
@@ -1504,8 +1624,8 @@ class LocalAIService:
                 }
             )
         capabilities = {item.capability_id: item for item in report.capabilities}
-        provider = capabilities.get("ollama")
-        if not isinstance(provider, OllamaCapability):
+        provider = capabilities.get(capability_id)
+        if not isinstance(provider, (OllamaCapability, LlamaCppCapability)):
             return profile.model_copy(
                 update={
                     "local_available": False,
@@ -1513,7 +1633,14 @@ class LocalAIService:
                 }
             )
         provider_reachable = provider.provider_reachable
-        model_installed = profile.provider_model_id in set(provider.installed_models)
+        # Ollama can authoritatively report installed-but-not-loaded models;
+        # llama.cpp (a `LlamaCppCapability`, never having `installed_models`)
+        # can only ever confirm the currently loaded model -- checking
+        # `loaded_models` too keeps this correct for both without a provider
+        # branch here, matching how the generation gateway checks the same
+        # union (see `generation.py`'s `known_models`).
+        known_models = set(getattr(provider, "installed_models", ())) | set(provider.loaded_models)
+        model_installed = profile.provider_model_id in known_models
         local_available = provider_reachable and model_installed
         if not provider_reachable:
             state = CapabilityStatus.PROVIDER_UNREACHABLE
@@ -1627,4 +1754,10 @@ class LocalAIService:
                            (key, request_hash, canonical_json(result), _now().isoformat()))
 
 
-__all__ = ["LocalAIService", "default_model_profiles", "default_provider_profiles"]
+__all__ = [
+    "LocalAIService",
+    "ModelNotLocallyAvailableError",
+    "default_model_profiles",
+    "default_provider_profiles",
+    "default_provider_registry",
+]
