@@ -778,6 +778,7 @@ export interface LocalAIModelConfiguration {
   local_available: boolean;
   enabled: boolean;
   policy_status: string;
+  intended_roles: string[];
   source_metadata: Record<string, unknown>;
   configuration_version: number;
   updated_at?: string | null;
@@ -792,6 +793,12 @@ export interface LocalAIModelEnableRequest {
   actor_id: string;
   enabled: boolean;
   expected_configuration_version: number;
+  idempotency_key: string;
+}
+
+export interface LocalAICapabilitiesRefreshRequest {
+  actor_id: string;
+  expected_snapshot_id?: string | null;
   idempotency_key: string;
 }
 
@@ -942,6 +949,10 @@ export interface AstraClient {
     modelProfileId: string,
     request: LocalAIModelEnableRequest,
   ): Promise<LocalAIModelConfiguration>;
+  refreshLocalAICapabilities(
+    request: LocalAICapabilitiesRefreshRequest,
+  ): Promise<LocalAICapabilityReport>;
+  getLocalAIDoctor(refresh?: boolean): Promise<LocalAICapabilityReport>;
   getLocalAIScheduler(): Promise<LocalAISchedulerCollection>;
   getRuntimeStatus(): Promise<RuntimeSnapshot>;
   getRuntimeHealth(): Promise<RuntimeHealthReport>;
@@ -1084,6 +1095,19 @@ export class HttpAstraClient implements AstraClient {
     return this.postJson<LocalAIModelConfiguration>(
       `/runtime/local-ai/models/${encodeURIComponent(modelProfileId)}/enabled`,
       request,
+    );
+  }
+
+  async refreshLocalAICapabilities(request: LocalAICapabilitiesRefreshRequest) {
+    return this.postJson<LocalAICapabilityReport>(
+      "/runtime/local-ai/capabilities/refresh",
+      request,
+    );
+  }
+
+  async getLocalAIDoctor(refresh = false) {
+    return this.getJson<LocalAICapabilityReport>(
+      `/runtime/local-ai/doctor${refresh ? "?refresh=true" : ""}`,
     );
   }
 

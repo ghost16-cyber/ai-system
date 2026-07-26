@@ -13,10 +13,12 @@ import {
   RefreshCw,
   Send,
   Server,
+  Settings,
   ShieldCheck,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { LocalAIPage } from "./features/localAI/components/LocalAIPage";
 import {
   AstraHttpError,
   HttpAstraClient,
@@ -159,6 +161,7 @@ export default function App() {
   const [awaitingAssignment, setAwaitingAssignment] = useState(false);
   const [assignmentResult, setAssignmentResult] = useState<AssignmentCopilotResult | null>(null);
   const [selectedAssignmentFile, setSelectedAssignmentFile] = useState<File | null>(null);
+  const [localAISettingsOpen, setLocalAISettingsOpen] = useState(false);
   const assignmentFileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationRef = useRef<HTMLElement | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
@@ -1468,9 +1471,13 @@ export default function App() {
         <div className="brand"><span className="brand-mark"><Bot size={22} /></span><div><strong>Astra</strong><span>Local AI assistant</span></div></div>
         <div className="header-actions">
           <span className={`connection ${health ? "online" : "offline"}`}><span />{health ? "Backend connected" : "Backend unavailable"}</span>
+          <button className="secondary-button" aria-label="Open Local AI settings" onClick={() => setLocalAISettingsOpen(true)}><Settings size={16} />Local AI</button>
           <button className="secondary-button" onClick={() => void newChat()}><Plus size={16} />New chat</button>
         </div>
       </header>
+      {localAISettingsOpen && (
+        <LocalAIPage client={client} actorId="local-user" onClose={() => setLocalAISettingsOpen(false)} />
+      )}
       <main className="chat-shell">
         <section ref={conversationRef} className="conversation" aria-label="Conversation" aria-busy={hydrationStatus === "loading"}>
           {hydrationStatus === "loading" && <div className="startup-loading"><Activity className="spin" size={18} /><span>Restoring conversation…</span></div>}
