@@ -50,6 +50,11 @@ class RoleMappingRequest(StrictModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
+class ModelConfigurationCollection(StrictModel):
+    schema_version: Literal["astra.local-ai.models.v1"] = "astra.local-ai.models.v1"
+    items: tuple[ModelConfigurationResult, ...]
+
+
 def create_local_ai_router(service: LocalAIService) -> APIRouter:
     router = APIRouter(prefix="/runtime/local-ai", tags=["local-ai"])
 
@@ -77,8 +82,8 @@ def create_local_ai_router(service: LocalAIService) -> APIRouter:
         return {"schema_version": "astra.local-ai.providers.v1", "items": service.providers()}
 
     @router.get("/models")
-    def models():
-        return {"schema_version": "astra.local-ai.models.v1", "items": service.models()}
+    def models() -> ModelConfigurationCollection:
+        return ModelConfigurationCollection(items=service.models())
 
     @router.get("/configuration")
     def configuration() -> LocalAIConfigurationState:

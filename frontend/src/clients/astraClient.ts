@@ -771,17 +771,28 @@ export interface LocalAIProviderCollection {
   }>;
 }
 
+export interface LocalAIModelConfiguration {
+  model_profile_id: string;
+  display_name: string;
+  provider_id: string;
+  local_available: boolean;
+  enabled: boolean;
+  policy_status: string;
+  source_metadata: Record<string, unknown>;
+  configuration_version: number;
+  updated_at?: string | null;
+}
+
 export interface LocalAIModelCollection {
   schema_version: "astra.local-ai.models.v1";
-  items: Array<{
-    model_profile_id: string;
-    display_name: string;
-    provider_id: string;
-    local_available: boolean;
-    enabled: boolean;
-    policy_status: string;
-    source_metadata: Record<string, unknown>;
-  }>;
+  items: LocalAIModelConfiguration[];
+}
+
+export interface LocalAIModelEnableRequest {
+  actor_id: string;
+  enabled: boolean;
+  expected_configuration_version: number;
+  idempotency_key: string;
 }
 
 export interface LocalAISchedulerCollection {
@@ -927,6 +938,10 @@ export interface AstraClient {
   getLocalAIFutureStatus(): Promise<LocalAIFutureStatus>;
   getLocalAIProviders(): Promise<LocalAIProviderCollection>;
   getLocalAIModels(): Promise<LocalAIModelCollection>;
+  setLocalAIModelEnabled(
+    modelProfileId: string,
+    request: LocalAIModelEnableRequest,
+  ): Promise<LocalAIModelConfiguration>;
   getLocalAIScheduler(): Promise<LocalAISchedulerCollection>;
   getRuntimeStatus(): Promise<RuntimeSnapshot>;
   getRuntimeHealth(): Promise<RuntimeHealthReport>;
@@ -1063,6 +1078,13 @@ export class HttpAstraClient implements AstraClient {
 
   async getLocalAIModels() {
     return this.getJson<LocalAIModelCollection>("/runtime/local-ai/models");
+  }
+
+  async setLocalAIModelEnabled(modelProfileId: string, request: LocalAIModelEnableRequest) {
+    return this.postJson<LocalAIModelConfiguration>(
+      `/runtime/local-ai/models/${encodeURIComponent(modelProfileId)}/enabled`,
+      request,
+    );
   }
 
   async getLocalAIScheduler() {

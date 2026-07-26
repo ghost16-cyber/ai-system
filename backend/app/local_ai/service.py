@@ -389,14 +389,21 @@ class LocalAIService:
             for row in rows
         )
 
-    def models(self) -> tuple[ModelProfile, ...]:
+    def models(self) -> tuple[ModelConfigurationResult, ...]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT profile_json FROM local_ai_models ORDER BY model_profile_id").fetchall()
+            rows = connection.execute(
+                "SELECT profile_json, config_version, updated_at FROM local_ai_models "
+                "ORDER BY model_profile_id"
+            ).fetchall()
         report = self._latest_persisted_snapshot()
         return tuple(
-            self._effective_model_profile(
-                ModelProfile.model_validate_json(row["profile_json"]), report
-            )
+            ModelConfigurationResult.model_validate({
+                **self._effective_model_profile(
+                    ModelProfile.model_validate_json(row["profile_json"]), report
+                ).model_dump(mode="json"),
+                "configuration_version": int(row["config_version"]),
+                "updated_at": str(row["updated_at"]),
+            })
             for row in rows
         )
 
