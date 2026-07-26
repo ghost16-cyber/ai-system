@@ -378,6 +378,58 @@ def test_provider_client_rejects_missing_response_field(monkeypatch) -> None:
     assert caught.value.code == ProviderErrorCode.MALFORMED_RESPONSE
 
 
+def test_ollama_inspection_exposes_bounded_model_size_and_kv_estimate(
+    monkeypatch,
+) -> None:
+    client = OllamaProviderClient("http://127.0.0.1:11434")
+
+    def get_json(path, _timeout_seconds, *, allow_missing=False):
+        del allow_missing
+        if path == "/api/version":
+            return {"version": "test"}
+        if path == "/api/tags":
+            return {
+                "models": [{
+                    "name": "qwen-test:1.5b",
+                    "size": 986_062_089,
+                }]
+            }
+        return {
+            "models": [{
+                "name": "qwen-test:1.5b",
+                "context_length": 4096,
+            }]
+        }
+
+    monkeypatch.setattr(client, "_get_json", get_json)
+    inspection = client.inspect(timeout_seconds=2)
+    assert inspection.installed_model_sizes_bytes == (
+        ("qwen-test:1.5b", 986_062_089),
+    )
+    assert inspection.supports_model_estimate_inspection is True
+    assert inspection.loaded_model_context_lengths == (
+        ("qwen-test:1.5b", 4096),
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "model_info": {
+                "general.architecture": "qwen2",
+                "qwen2.block_count": 28,
+                "qwen2.embedding_length": 1536,
+                "qwen2.attention.head_count": 12,
+                "qwen2.attention.head_count_kv": 2,
+            }
+        },
+    )
+    assert client.inspect_model_estimate(
+        "qwen-test:1.5b",
+        timeout_seconds=2,
+    ) == {"estimated_kv_bytes_per_token": 28_672}
+
+
 def test_ollama_provider_submits_exact_json_schema_and_generic_json(monkeypatch) -> None:
     payloads: list[dict] = []
 

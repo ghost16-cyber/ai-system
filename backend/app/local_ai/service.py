@@ -78,7 +78,15 @@ from backend.app.project_control.contracts import canonical_json, content_hash
 
 Probe = Callable[[], tuple[Capability, ...]]
 OllamaProbe = Callable[
-    [LocalAIConfiguration], tuple[bool, tuple[str, ...], tuple[str, ...], str | None]
+    [LocalAIConfiguration],
+    tuple[bool, tuple[str, ...], tuple[str, ...], str | None]
+    | tuple[
+        bool,
+        tuple[str, ...],
+        tuple[str, ...],
+        str | None,
+        dict[str, dict[str, int]],
+    ],
 ]
 
 
@@ -105,26 +113,54 @@ _probe_host_memory = probe_host_memory
 
 def _probe_ollama(
     configuration: LocalAIConfiguration,
-) -> tuple[bool, tuple[str, ...], tuple[str, ...], str | None]:
+) -> tuple[
+    bool,
+    tuple[str, ...],
+    tuple[str, ...],
+    str | None,
+    dict[str, dict[str, int]],
+]:
     """Read bounded Ollama state; never starts the daemon or pulls a model."""
     if configuration.provider_type != "ollama":
-        return False, (), (), "configured_provider_is_not_ollama"
+        return False, (), (), "configured_provider_is_not_ollama", {}
+    client = OllamaProviderClient(configuration.endpoint_identity)
     try:
-        inspection = OllamaProviderClient(configuration.endpoint_identity).inspect(
+        inspection = client.inspect(
             timeout_seconds=configuration.connection_timeout_seconds
         )
     except ProviderClientError:
-        return False, (), (), "provider_unreachable"
+        return False, (), (), "provider_unreachable", {}
     installed = inspection.installed_models
     loaded = inspection.loaded_models
     missing = tuple(
         model for model in configuration.configured_models if model not in installed
     )
+    model_estimates: dict[str, dict[str, int]] = {}
+    if inspection.supports_model_estimate_inspection:
+        sizes = dict(inspection.installed_model_sizes_bytes)
+        loaded_contexts = dict(inspection.loaded_model_context_lengths)
+        for model in dict.fromkeys(configuration.configured_models):
+            if model not in sizes:
+                continue
+            estimate = {"model_bytes": sizes[model]}
+            if model in loaded_contexts:
+                estimate["loaded_context_tokens"] = loaded_contexts[model]
+            try:
+                estimate.update(client.inspect_model_estimate(
+                    model,
+                    timeout_seconds=configuration.connection_timeout_seconds,
+                ))
+            except ProviderClientError:
+                # Unsupported or malformed optional metadata keeps the static
+                # conservative estimate; provider/model readiness is unchanged.
+                continue
+            model_estimates[model] = estimate
     return (
         True,
         installed,
         loaded,
         "configured_model_missing" if missing else None,
+        model_estimates,
     )
 def default_model_profiles(
     configuration: LocalAIConfiguration | None = None,
@@ -1146,12 +1182,50 @@ class LocalAIService:
             ),
             None,
         )
-        model_bytes = max(
-            request.estimated_model_bytes,
-            configured_profile.estimated_model_bytes if configured_profile else 0,
+        model_estimate: dict[str, int] = {}
+        if configured_profile is not None and provider is not None:
+            estimates = provider.details.get("model_estimates")
+            if isinstance(estimates, dict):
+                candidate = estimates.get(configured_profile.provider_model_id)
+                if isinstance(candidate, dict):
+                    model_estimate = {
+                        key: value
+                        for key, value in candidate.items()
+                        if isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value > 0
+                    }
+        model_bytes = model_estimate.get(
+            "model_bytes",
+            max(
+                request.estimated_model_bytes,
+                configured_profile.estimated_model_bytes
+                if configured_profile
+                else 0,
+            ),
         )
-        kv = request.requested_context * request.estimated_kv_bytes_per_token
-        required = model_bytes + kv + 256 * 1024**2
+        model_is_resident = (
+            configured_profile is not None
+            and isinstance(provider, OllamaCapability)
+            and configured_profile.provider_model_id in provider.loaded_models
+        )
+        incremental_model_bytes = 0 if model_is_resident else model_bytes
+        kv_bytes_per_token = model_estimate.get(
+            "estimated_kv_bytes_per_token",
+            request.estimated_kv_bytes_per_token,
+        )
+        resident_context_sufficient = (
+            model_is_resident
+            and model_estimate.get("loaded_context_tokens", 0)
+            >= request.requested_context
+        )
+        kv = (
+            0
+            if resident_context_sufficient
+            else request.requested_context * kv_bytes_per_token
+        )
+        runtime_overhead = 0 if resident_context_sufficient else 256 * 1024**2
+        required = incremental_model_bytes + kv + runtime_overhead
         if (
             configured_profile is not None
             and provider is not None
@@ -1174,7 +1248,11 @@ class LocalAIService:
             if required <= usable:
                 return self._decision(AdmissionOutcome.GPU, "Estimated workload fits conservative GPU policy.", required, usable, reserve, "cuda", "gpu:0", request.requested_context)
             reduced = min(4096, request.requested_context)
-            reduced_required = model_bytes + reduced * request.estimated_kv_bytes_per_token + 256 * 1024**2
+            reduced_required = (
+                incremental_model_bytes
+                + reduced * kv_bytes_per_token
+                + runtime_overhead
+            )
             if reduced < request.requested_context and reduced_required <= usable:
                 return self._decision(AdmissionOutcome.REDUCED_CONTEXT, "GPU admission requires a reduced operational context.", reduced_required, usable, reserve, "cuda", "gpu:0", reduced)
         if request.allow_cpu_fallback and self.configuration.allow_cpu_fallback:
@@ -1445,9 +1523,9 @@ class LocalAIService:
     def _safe_probe(self) -> tuple[Capability, ...]:
         now = _now()
         snapshot = self._hardware_registry.snapshot(refresh=True)
-        reachable, installed_models, loaded_models, provider_reason = self._ollama_probe(
-            self.configuration
-        )
+        ollama_probe = self._ollama_probe(self.configuration)
+        reachable, installed_models, loaded_models, provider_reason = ollama_probe[:4]
+        model_estimates = ollama_probe[4] if len(ollama_probe) == 5 else {}
         configured_missing = reachable and any(
             model not in installed_models for model in self.configuration.configured_models
         )
@@ -1546,6 +1624,7 @@ class LocalAIService:
                 provider_reachable=reachable,
                 configured_model_missing=configured_missing,
                 probed_at=now, reason=provider_reason,
+                details={"model_estimates": model_estimates},
                 provenance={
                     "configuration_authority": self.configuration.schema_version,
                     "network_probe": True, "no_auto_start": True, "no_auto_pull": True,

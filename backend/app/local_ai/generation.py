@@ -190,7 +190,14 @@ class LocalGenerationGateway:
             )
         except ProviderClientError as exc:
             reason = _provider_failure(exc.code, readiness=True)
-            return fail(reason, exc.safe_message, diagnostic=exc.diagnostic)
+            return fail(
+                reason,
+                exc.safe_message,
+                diagnostic={
+                    **exc.diagnostic,
+                    "provider_error_code": exc.code.value,
+                },
+            )
         except Exception:
             return fail(
                 GenerationFailureReason.INTERNAL_FAILURE,
@@ -242,7 +249,14 @@ class LocalGenerationGateway:
             )
         except ProviderClientError as exc:
             reason = _provider_failure(exc.code, readiness=False)
-            return fail(reason, exc.safe_message, diagnostic=exc.diagnostic)
+            return fail(
+                reason,
+                exc.safe_message,
+                diagnostic={
+                    **exc.diagnostic,
+                    "provider_error_code": exc.code.value,
+                },
+            )
         except Exception:
             return fail(
                 GenerationFailureReason.INTERNAL_FAILURE,
@@ -292,6 +306,7 @@ class LocalGenerationGateway:
                     "validation_error_count": exc.error_count(),
                     "validation_error_location": _validation_location(first.get("loc")),
                     "validation_error_type": str(first.get("type") or "validation_error")[:120],
+                    "validation_error_reason": _validation_reason(first),
                 },
                 usage=_usage(provider_result.metadata),
             )
@@ -649,6 +664,9 @@ class LocalGenerationGateway:
                 "generation_failure_classification": row["failure_classification"],
                 "validation_error_location": diagnostic.get("validation_error_location"),
                 "validation_error_type": diagnostic.get("validation_error_type"),
+                "validation_error_reason": diagnostic.get("validation_error_reason"),
+                "provider_error_code": diagnostic.get("provider_error_code"),
+                "provider_http_status": diagnostic.get("http_status"),
                 "provider_identity": row["provider_identity"],
                 "exact_model_tag": row["exact_model_tag"],
                 "response_schema_identity": row["expected_schema_identity"],
@@ -785,6 +803,28 @@ def _validation_location(value: Any) -> str:
         return "response"
     rendered = ".".join(str(item)[:80] for item in value[:12])
     return rendered[:300] or "response"
+
+
+def _validation_reason(error: dict[str, Any]) -> str | None:
+    context = error.get("ctx")
+    detail = str(context.get("error")) if isinstance(context, dict) else ""
+    return {
+        (
+            "exact_replacements requires replacements and forbids content"
+        ): "invalid_exact_replacements_shape",
+        (
+            "complete_content requires content and forbids replacements"
+        ): "invalid_complete_content_shape",
+        (
+            "operation path must be one normalized relative path"
+        ): "invalid_operation_path",
+        (
+            "generated content contains a forbidden approval phrase"
+        ): "forbidden_approval_phrase",
+        (
+            "generated content appears to contain a secret"
+        ): "possible_generated_secret",
+    }.get(detail)
 
 
 def _usage(metadata: dict[str, int]) -> GenerationUsage:

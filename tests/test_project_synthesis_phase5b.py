@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -30,9 +31,13 @@ from backend.app.local_ai.generation import LocalGenerationGateway
 from backend.app.local_ai.provider import ProviderGenerationResponse, ProviderInspection
 from backend.app.local_ai.service import LocalAIService
 from backend.app.project_analysis.model_synthesis.gateway import (
+    FakeSynthesisGateway,
     PHASE5B_PATCH_PROMPT_VERSION,
     Phase5ALocalSynthesisGateway,
     SynthesisGatewayError,
+    _bounded_synthesis_response_schema,
+    _model_prompt_payload,
+    _priority_synthesis_context,
 )
 from backend.app.project_analysis.model_synthesis.proposals import (
     ClarificationProposalOutput,
@@ -55,7 +60,16 @@ from backend.app.project_analysis.model_synthesis.proposals import (
     validate_patch_semantics,
     validate_plan_semantics,
 )
-from backend.app.project_control.contracts import content_hash
+from backend.app.project_artifacts import (
+    ProjectArtifactBinding,
+    ProjectArtifactType,
+    build_project_artifact,
+)
+from backend.app.project_control.contracts import canonical_json, content_hash
+from backend.app.project_retrieval.contracts import (
+    RetrievalEvidenceItem,
+    RetrievalPhase5BEvidence,
+)
 from tests.test_project_synthesis_orchestrator import _gateway, _runtime
 
 
@@ -76,6 +90,84 @@ def _envelope(**updates):
     }
     values.update(updates)
     return build_evidence_envelope(**values)
+
+
+def _retrieval_attachment(
+    artifacts,
+    intent,
+    *,
+    evidence_count: int = 2,
+) -> RetrievalPhase5BEvidence:
+    scope_hash = "4" * 64
+    plan_hash = "5" * 64
+    authority_id = "6" * 64
+    repository_state_hash = content_hash({
+        "manifest_hash": intent.manifest_hash,
+        "expected_project_state_version": intent.expected_project_state_version,
+    })
+    evidence = tuple(
+        RetrievalEvidenceItem(
+            evidence_id=f"retrieval-evidence-{rank}",
+            chunk_id=f"retrieval-chunk-{rank}",
+            source_id=f"retrieval-source-{rank}",
+            relative_path="app.py",
+            line_start=1,
+            line_end=1,
+            text=f"VALUE = {rank}\n",
+            text_hash=content_hash(f"VALUE = {rank}\n"),
+            source_content_hash=str(rank) * 64,
+            bm25_score=1.0 / rank,
+            semantic_score=0.8,
+            hybrid_score=0.9,
+            rerank_score=1.0 / rank,
+            final_rank=rank,
+            citation_label=f"RAG-{rank}",
+        )
+        for rank in range(1, evidence_count + 1)
+    )
+    request_binding = {
+        "project_id": intent.project_run_id,
+        "scope_hash": scope_hash,
+        "plan_hash": plan_hash,
+        "repository_state_hash": repository_state_hash,
+        "expected_project_state_version": intent.expected_project_state_version,
+    }
+    retrieval_artifact = artifacts.put(build_project_artifact(
+        artifact_type=ProjectArtifactType.RETRIEVAL_EVIDENCE,
+        binding=ProjectArtifactBinding(
+            project_run_id=intent.project_run_id,
+            plan_revision_id=intent.plan_revision_id,
+            scope_revision_id=intent.scope_revision_id,
+            manifest_hash=intent.manifest_hash,
+            authority_hash=authority_id,
+        ),
+        payload={
+            "request_binding": request_binding,
+            "evidence": [
+                item.model_dump(mode="json")
+                for item in evidence
+            ],
+            "trust": "untrusted_retrieved_content",
+            "advisory_only": True,
+            "has_execution_authority": False,
+            "has_approval_authority": False,
+            "has_mutation_authority": False,
+        },
+    ))
+    return RetrievalPhase5BEvidence(
+        retrieval_artifact_id=retrieval_artifact.artifact_id,
+        retrieval_artifact_hash=retrieval_artifact.content_hash,
+        project_id=intent.project_run_id,
+        scope_revision_id=intent.scope_revision_id,
+        scope_hash=scope_hash,
+        plan_revision_id=intent.plan_revision_id,
+        plan_hash=plan_hash,
+        repository_manifest_hash=intent.manifest_hash,
+        repository_state_hash=repository_state_hash,
+        project_state_version=intent.expected_project_state_version,
+        authority_id=authority_id,
+        evidence=evidence,
+    )
 
 
 def test_versioned_evidence_envelope_is_stable_bounded_and_not_model_derived() -> None:
@@ -280,11 +372,161 @@ def test_orchestrator_persists_immutable_proposal_and_exact_preview_binding(tmp_
     assert preview.payload["evidence_hash"] == proposal.evidence_hash
     with sqlite3.connect(artifacts.database_path) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
-            connection.execute("UPDATE project_synthesis_proposals SET proposal_json = '{}'")
+            connection.execute(
+                "UPDATE project_synthesis_proposals SET proposal_json = '{}'"
+            )
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute("DELETE FROM project_synthesis_proposals")
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute("DELETE FROM project_synthesis_proposal_events")
+
+
+def test_orchestrator_attaches_bounded_retrieval_to_canonical_synthesis(
+    tmp_path,
+) -> None:
+    gateway = _gateway()
+    orchestrator, invocations, artifacts, intent, evidence = _runtime(
+        tmp_path,
+        gateway,
+    )
+    retrieval = _retrieval_attachment(artifacts, intent)
+    from backend.app.project_analysis.model_synthesis import (
+        CanonicalProviderProfile,
+    )
+
+    outcome = orchestrator.prepare_patch(
+        intent,
+        evidence,
+        CanonicalProviderProfile(
+            provider=gateway.provider,
+            model_profile=gateway.model,
+        ),
+        retrieval_evidence=retrieval,
+    )
+
+    invocation = invocations.list_for_project(intent.project_run_id)[0]
+    request = invocation.request_payload
+    assert request["project_rag_enabled"] is True
+    assert request["retrieval_context"] == {
+        "evidence_count": 2,
+        "context_chars": sum(len(item.text) for item in retrieval.evidence),
+        "maximum_evidence_count": 3,
+        "maximum_context_chars": 24_000,
+    }
+    attached = request["evidence_envelope"]["retrieval_evidence"]
+    assert attached["retrieval_artifact_id"] == retrieval.retrieval_artifact_id
+    assert attached["retrieval_artifact_hash"] == (
+        retrieval.retrieval_artifact_hash
+    )
+    assert attached["advisory_only"] is True
+    assert attached["has_execution_authority"] is False
+    assert attached["has_approval_authority"] is False
+    assert attached["has_mutation_authority"] is False
+
+    preview = artifacts.get(str(outcome.artifact_id))
+    assert preview is not None
+    assert preview.payload["project_rag_enabled"] is True
+    assert preview.payload["retrieval_context"] == request["retrieval_context"]
+    assert {
+        (
+            reference.get("artifact_id"),
+            reference.get("content_hash"),
+        )
+        for reference in preview.evidence_references
+    } >= {
+        (
+            retrieval.retrieval_artifact_id,
+            retrieval.retrieval_artifact_hash,
+        )
+    }
+    with sqlite3.connect(artifacts.database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM project_worker_requests"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM project_execution_dispatches"
+        ).fetchone()[0] == 0
+
+
+def test_orchestrator_rejects_oversized_retrieval_before_generation(
+    tmp_path,
+) -> None:
+    gateway = _gateway()
+    orchestrator, _invocations, artifacts, intent, evidence = _runtime(
+        tmp_path,
+        gateway,
+    )
+    retrieval = _retrieval_attachment(
+        artifacts,
+        intent,
+        evidence_count=4,
+    )
+    from backend.app.project_analysis.model_synthesis import (
+        CanonicalProviderProfile,
+        CanonicalSynthesisBlocked,
+    )
+
+    with pytest.raises(CanonicalSynthesisBlocked) as caught:
+        orchestrator.prepare_patch(
+            intent,
+            evidence,
+            CanonicalProviderProfile(
+                provider=gateway.provider,
+                model_profile=gateway.model,
+            ),
+            retrieval_evidence=retrieval,
+        )
+    assert caught.value.code == "invalid_retrieval_evidence"
+    assert gateway.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "mutation,expected_code",
+    [
+        ("stale_state", "stale_retrieval_evidence"),
+        ("missing_artifact", "invalid_retrieval_evidence"),
+        ("changed_content", "invalid_retrieval_evidence"),
+    ],
+)
+def test_orchestrator_rejects_unverifiable_retrieval(
+    tmp_path,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    gateway = _gateway()
+    orchestrator, _invocations, artifacts, intent, evidence = _runtime(
+        tmp_path,
+        gateway,
+    )
+    retrieval = _retrieval_attachment(artifacts, intent)
+    payload = retrieval.model_dump(mode="json")
+    if mutation == "stale_state":
+        payload["project_state_version"] += 1
+    elif mutation == "missing_artifact":
+        payload["retrieval_artifact_id"] = "missing-retrieval-artifact"
+    else:
+        changed = dict(payload["evidence"][0])
+        changed["text"] = "UNVERIFIED = True\n"
+        changed["text_hash"] = content_hash(changed["text"])
+        payload["evidence"][0] = changed
+    retrieval = RetrievalPhase5BEvidence.model_validate(payload)
+    from backend.app.project_analysis.model_synthesis import (
+        CanonicalProviderProfile,
+        CanonicalSynthesisBlocked,
+    )
+
+    with pytest.raises(CanonicalSynthesisBlocked) as caught:
+        orchestrator.prepare_patch(
+            intent,
+            evidence,
+            CanonicalProviderProfile(
+                provider=gateway.provider,
+                model_profile=gateway.model,
+            ),
+            retrieval_evidence=retrieval,
+        )
+    assert caught.value.code == expected_code
+    assert gateway.call_count == 0
 
 
 def test_proposal_store_exact_replay_and_changed_binding_conflict(tmp_path) -> None:
@@ -463,6 +705,9 @@ def test_phase5b_failure_exposes_only_bounded_schema_diagnostic(tmp_path) -> Non
         "generation_failure_classification",
         "validation_error_location",
         "validation_error_type",
+        "validation_error_reason",
+        "provider_error_code",
+        "provider_http_status",
         "provider_identity",
         "exact_model_tag",
         "response_schema_identity",
@@ -474,12 +719,280 @@ def test_phase5b_failure_exposes_only_bounded_schema_diagnostic(tmp_path) -> Non
     assert diagnostic["generation_failure_classification"] == "target_schema_validation_failed"
     assert diagnostic["validation_error_location"]
     assert diagnostic["validation_error_type"] == "missing"
+    assert diagnostic["validation_error_reason"] is None
+    assert diagnostic["provider_error_code"] is None
+    assert diagnostic["provider_http_status"] is None
     assert diagnostic["provider_identity"] == "ollama"
     assert diagnostic["exact_model_tag"] == "qwen-test:1.5b"
     assert diagnostic["response_schema_identity"] == "astra.project-synthesis.response.v1"
     assert len(diagnostic["response_schema_hash"]) == 64
     assert diagnostic["prompt_eval_count"] == 7
     assert diagnostic["eval_count"] == 3
+
+
+def test_synthesis_response_schema_rejects_empty_operation_evidence() -> None:
+    from backend.app.project_analysis.model_synthesis.contracts import (
+        SynthesisResponse,
+    )
+
+    schema = SynthesisResponse.model_json_schema()
+    operation_variants = schema["$defs"]["ModifyOperation"]["properties"]
+    assert operation_variants["evidence_references"]["minItems"] == 1
+
+    with pytest.raises(ValueError):
+        SynthesisResponse.model_validate({
+            "contract_version": "astra.project-synthesis.response.v1",
+            "request_id": "request-1",
+            "summary": "Unsafe uncited proposal.",
+            "operations": [{
+                "operation": "modify",
+                "path": "app.py",
+                "expected_sha256": "a" * 64,
+                "strategy": "complete_content",
+                "replacements": [],
+                "content": "VALUE = 2\n",
+                "rationale": "Change the value.",
+                "affected_symbols": ["VALUE"],
+                "evidence_references": [],
+            }],
+            "assumptions": [],
+            "uncertainties": [],
+            "model_confidence": "high",
+            "requires_clarification": False,
+            "clarification_question": None,
+            "recommended_validation": [],
+        })
+
+
+def test_request_bounded_schema_omits_unauthorized_operations_and_paths() -> None:
+    bounded = _bounded_synthesis_response_schema({
+        "evidence": {
+            "allowed_modify_paths": ["app/services/pricing.py"],
+            "allowed_create_paths": [],
+            "allowed_delete_paths": [],
+            "file_identities": {"app/services/pricing.py": "a" * 64},
+            "source_excerpts": [{
+                "path": "app/services/pricing.py",
+                "sha256": "a" * 64,
+                "text": "VALUE = 1\n",
+            }],
+        },
+        "evidence_envelope": {
+            "retrieval_evidence": {
+                "evidence": [{
+                    "relative_path": "app/services/pricing.py",
+                    "text": "VALUE = 1",
+                }]
+            }
+        },
+    })
+    schema = bounded.model_json_schema()
+    assert "BoundedModifyExactOperation0" in schema["$defs"]
+    assert "BoundedModifyCompleteOperation0" not in schema["$defs"]
+    assert not any("CreateOperation" in name for name in schema["$defs"])
+    assert not any("DeleteOperation" in name for name in schema["$defs"])
+    properties = schema["$defs"]["BoundedModifyExactOperation0"]["properties"]
+    path_schema = properties["path"]
+    assert path_schema["const"] == "app/services/pricing.py"
+    assert properties["expected_sha256"]["const"] == "a" * 64
+    assert properties["strategy"]["const"] == "exact_replacements"
+    assert properties["replacements"]["minItems"] == 1
+    assert properties["replacements"]["maxItems"] == 3
+    assert properties["rationale"]["const"] == (
+        "Apply the minimal evidence-backed repair."
+    )
+    replacement_schema = schema["$defs"]["BoundedExactReplacement0"]
+    assert replacement_schema["properties"]["expected_text"]["const"] == (
+        "VALUE = 1\n"
+    )
+
+    valid = {
+        "contract_version": "astra.project-synthesis.response.v1",
+        "request_id": "request-1",
+        "summary": "Evidence-backed bounded patch.",
+        "operations": [{
+            "operation": "modify",
+            "path": "app/services/pricing.py",
+            "expected_sha256": "a" * 64,
+            "strategy": "exact_replacements",
+            "replacements": [{
+                "start_line": 1,
+                "end_line": 1,
+                "expected_text": "VALUE = 1\n",
+                "replacement_text": "VALUE = 2\n",
+            }],
+            "content": None,
+            "rationale": "Apply the minimal evidence-backed repair.",
+            "affected_symbols": ["VALUE"],
+            "evidence_references": ["app/services/pricing.py"],
+        }],
+        "assumptions": [],
+        "uncertainties": [],
+        "model_confidence": "high",
+        "requires_clarification": False,
+        "clarification_question": None,
+        "recommended_validation": [],
+    }
+    assert bounded.model_validate(valid).operations[0].operation == "modify"
+    with pytest.raises(ValueError):
+        bounded.model_validate({
+            **valid,
+            "operations": [{
+                **valid["operations"][0],
+                "operation": "create",
+                "path": "./app/services/pricing.py",
+                "expected_sha256": "missing",
+            }],
+        })
+
+
+def test_priority_context_puts_current_failure_and_source_first() -> None:
+    priority = _priority_synthesis_context({
+        "evidence": {
+            "work_unit": {"summary": "Fix line_total."},
+            "allowed_modify_paths": ["app/services/pricing.py"],
+            "allowed_create_paths": [],
+            "allowed_delete_paths": [],
+            "file_identities": {"app/services/pricing.py": "a" * 64},
+            "failure_evidence": {
+                "status": "failed",
+                "failing_tests": ["tests/test_pricing.py"],
+                "assertions": [{"expected_hint": "21", "actual_hint": "10"}],
+                "error_types": ["AssertionError"],
+                "output_tail": "x" * 2_000,
+            },
+        },
+        "evidence_envelope": {
+            "retrieval_evidence": {
+                "evidence": [{
+                    "relative_path": "app/services/pricing.py",
+                    "line_start": 1,
+                    "line_end": 12,
+                    "text": "def line_total(item):\n    return item.price + item.quantity\n",
+                    "citation_label": "RAG-1",
+                }]
+            }
+        },
+    })
+
+    assert priority["work_unit"]["summary"] == "Fix line_total."
+    assert priority["failure_evidence"]["failing_tests"] == [
+        "tests/test_pricing.py"
+    ]
+    assert len(priority["failure_evidence"]["output_tail"]) == 1_600
+    assert priority["retrieved_source_evidence"][0]["path"] == (
+        "app/services/pricing.py"
+    )
+    assert priority["retrieved_source_evidence"][0]["exact_lines"][0] == {
+        "line": 1,
+        "text": "def line_total(item):\n",
+    }
+    assert priority["repair_directive"]["requirements"].endswith(
+        "replacement_text must differ from expected_text."
+    )
+
+
+def test_model_prompt_view_retains_bindings_without_duplicate_bodies() -> None:
+    payload = {
+        "project_run_id": "project-1",
+        "coordinator_intent_id": "intent-1",
+        "evidence_artifact_hash": "e" * 64,
+        "evidence": {"work_unit": {"summary": "Fix it."}},
+        "evidence_envelope": {
+            "schema_version": "astra.project-synthesis.evidence-envelope.v1",
+            "evidence_envelope_id": "envelope-1",
+            "project_run_id": "project-1",
+            "scope_revision_id": "scope-1",
+            "plan_revision_id": "plan-1",
+            "repository_manifest_identity": "a" * 64,
+            "repository_state_identity": "state-1",
+            "evidence_hash": "b" * 64,
+            "project_rag_enabled": True,
+            "evidence_items": [{
+                "stable_identity": "evidence-1",
+                "source_identity": "artifact-1",
+                "content_hash": "c" * 64,
+                "content": {"large": "x" * 60_000},
+                "freshness_identity": "fresh-1",
+                "trust": "repository_data",
+            }],
+            "retrieval_evidence": {
+                "retrieval_artifact_id": "retrieval-1",
+                "retrieval_artifact_hash": "d" * 64,
+                "evidence": [{"text": "duplicated source"}],
+            },
+        },
+    }
+
+    view = _model_prompt_payload(payload)
+
+    assert view["project_run_id"] == "project-1"
+    assert view["coordinator_intent_id"] == "intent-1"
+    assert view["evidence"] == {
+        "model_prompt_view": "current_task_priority_block_above",
+        "full_evidence_bound_by": "e" * 64,
+    }
+    compact = view["evidence_envelope"]
+    assert compact["evidence_hash"] == "b" * 64
+    assert compact["evidence_references"][0]["content_hash"] == "c" * 64
+    assert compact["retrieval_reference"]["retrieval_artifact_id"] == (
+        "retrieval-1"
+    )
+    assert "evidence_items" not in compact
+    assert len(canonical_json(view)) < 5_000
+
+
+def test_orchestrator_rejects_no_effect_content_before_preview(tmp_path) -> None:
+    def unchanged_response(raw_request: str) -> str:
+        request = json.loads(raw_request)
+        return json.dumps({
+            "contract_version": "astra.project-synthesis.response.v1",
+            "request_id": request["request_id"],
+            "summary": "Return unchanged content.",
+            "operations": [{
+                "operation": "modify",
+                "path": "app.py",
+                "expected_sha256": hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+                "strategy": "complete_content",
+                "replacements": [],
+                "content": "VALUE = 1\n",
+                "rationale": "No effective repair.",
+                "affected_symbols": ["VALUE"],
+                "evidence_references": ["app.py"],
+            }],
+            "assumptions": [],
+            "uncertainties": [],
+            "model_confidence": "low",
+            "requires_clarification": False,
+            "clarification_question": None,
+            "recommended_validation": [],
+        })
+
+    gateway = FakeSynthesisGateway(response=unchanged_response)
+    orchestrator, _invocations, artifacts, intent, evidence = _runtime(
+        tmp_path,
+        gateway,
+    )
+    from backend.app.project_analysis.model_synthesis import (
+        CanonicalProviderProfile,
+        CanonicalSynthesisBlocked,
+    )
+
+    with pytest.raises(CanonicalSynthesisBlocked) as caught:
+        orchestrator.prepare_patch(
+            intent,
+            evidence,
+            CanonicalProviderProfile(
+                provider=gateway.provider,
+                model_profile=gateway.model,
+            ),
+        )
+
+    assert caught.value.code == "no_effect_patch"
+    assert not any(
+        artifact.artifact_type == ProjectArtifactType.PATCH_PREVIEW
+        for artifact in artifacts.list_for_project(intent.project_run_id)
+    )
 
 
 def _phase5b_configuration() -> LocalAIConfiguration:
@@ -557,7 +1070,51 @@ def test_synthesis_generation_fails_closed_when_admission_is_blocked(
     adapter = Phase5ALocalSynthesisGateway(service, configuration)
     with pytest.raises(SynthesisGatewayError) as caught:
         adapter.generate(_synthesis_request_payload())
-    assert caught.value.code == "provider_unavailable"
+    assert caught.value.code == "insufficient_vram"
+    assert caught.value.diagnostic == {
+        "admission_outcome": "blocked_due_to_vram",
+        "provider_readiness_reason": "test forced admission denial",
+        "estimated_required_bytes": 1,
+        "available_bytes": None,
+        "safety_reserve_bytes": 0,
+        "admission_backend": None,
+        "admission_device": None,
+        "admitted_context": None,
+    }
+    assert provider.calls == 0
+
+
+def test_synthesis_gateway_propagates_configured_cpu_fallback_to_admission(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "cpu-fallback.db"
+    apply_schema_migrations(database)
+    configuration = _phase5b_configuration().model_copy(
+        update={"allow_cpu_fallback": True}
+    )
+    provider = _Provider("{}")
+    service = _synthesis_service(database, configuration, provider)
+    observed: dict[str, bool] = {}
+
+    def blocked_admission(request, *, report=None):
+        del report
+        observed["allow_cpu_fallback"] = request.allow_cpu_fallback
+        return HardwareAdmissionDecision(
+            outcome=AdmissionOutcome.BLOCKED_RAM,
+            reason="test forced RAM admission denial",
+            estimated_required_bytes=2,
+            available_bytes=1,
+            safety_reserve_bytes=0,
+        )
+
+    monkeypatch.setattr(service, "admission_preview", blocked_admission)
+    adapter = Phase5ALocalSynthesisGateway(service, configuration)
+    with pytest.raises(SynthesisGatewayError) as caught:
+        adapter.generate(_synthesis_request_payload())
+
+    assert observed == {"allow_cpu_fallback": True}
+    assert caught.value.code == "insufficient_memory"
+    assert caught.value.diagnostic["admission_outcome"] == "blocked_due_to_ram"
     assert provider.calls == 0
 
 

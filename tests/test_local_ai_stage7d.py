@@ -355,6 +355,34 @@ def test_provider_failures_finalize_existing_scheduler_job(
     assert result.provenance.error_category == expected_reason.value
 
 
+def test_generation_diagnostic_exposes_bounded_provider_failure_details(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = _service(
+        tmp_path,
+        FakeProvider(
+            error=ProviderClientError(
+                ProviderErrorCode.REJECTED,
+                "The provider rejected the request.",
+                diagnostic={"http_status": 404},
+            )
+        ),
+    )
+
+    execution = service.execute_generation(_request(service))
+
+    assert execution.generation_result is not None
+    assert (
+        execution.generation_result.failure_reason
+        == GenerationFailureReason.PROVIDER_REJECTED_REQUEST
+    )
+    diagnostic = service.generation_diagnostic(
+        execution.generation_result.generation_id
+    )
+    assert diagnostic["provider_error_code"] == ProviderErrorCode.REJECTED.value
+    assert diagnostic["provider_http_status"] == 404
+
+
 def test_provider_rejection_replay_preserves_one_consistent_terminal_outcome(
     tmp_path: Path,
 ) -> None:

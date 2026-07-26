@@ -13,6 +13,7 @@ from backend.app.local_ai.contracts import (
     ExecutionProvenance,
     HardwareAdmissionRequest,
     MemoryCapability,
+    OllamaCapability,
     ResourceRequest,
     RuntimeUnavailabilityReason,
     SchedulerStatus,
@@ -142,6 +143,93 @@ def test_cpu_fallback_never_happens_silently(tmp_path: Path) -> None:
     )
     assert service.admission_preview(request).outcome == AdmissionOutcome.BLOCKED_VRAM
     assert service.admission_preview(request.model_copy(update={"allow_cpu_fallback": True})).outcome == AdmissionOutcome.CPU
+
+
+def test_provider_reported_small_model_estimate_can_admit_on_four_gib_gpu(
+    tmp_path: Path,
+) -> None:
+    gib = 1024**3
+    configuration_tag = "qwen2.5-coder:1.5b"
+    now = datetime.now(timezone.utc)
+
+    def probe():
+        return (
+            *_capabilities(vram=4 * gib, free_vram=2100 * 1024**2),
+            OllamaCapability(
+                capability_id="ollama",
+                status=CapabilityStatus.AVAILABLE,
+                endpoint="http://127.0.0.1:11434",
+                configured_models=(configuration_tag,),
+                installed_models=(configuration_tag,),
+                provider_reachable=True,
+                probed_at=now,
+                details={
+                    "model_estimates": {
+                        configuration_tag: {
+                            "model_bytes": 986_062_089,
+                            "estimated_kv_bytes_per_token": 28_672,
+                        }
+                    }
+                },
+            ),
+        )
+
+    service = _service(tmp_path, probe)
+    decision = service.admission_preview(HardwareAdmissionRequest(
+        workload_class="synthesis",
+        model_profile_id="configured-local-model",
+        estimated_model_bytes=2 * gib,
+        requested_context=4096,
+    ))
+
+    assert decision.outcome == AdmissionOutcome.GPU
+    assert decision.backend == "cuda"
+    assert decision.estimated_required_bytes == (
+        986_062_089 + 4096 * 28_672 + 256 * 1024**2
+    )
+
+
+def test_resident_exact_model_weights_are_not_counted_twice(
+    tmp_path: Path,
+) -> None:
+    gib = 1024**3
+    configuration_tag = "qwen2.5-coder:1.5b"
+    now = datetime.now(timezone.utc)
+
+    def probe():
+        return (
+            *_capabilities(vram=4 * gib, free_vram=1300 * 1024**2),
+            OllamaCapability(
+                capability_id="ollama",
+                status=CapabilityStatus.AVAILABLE,
+                endpoint="http://127.0.0.1:11434",
+                configured_models=(configuration_tag,),
+                installed_models=(configuration_tag,),
+                loaded_models=(configuration_tag,),
+                provider_reachable=True,
+                probed_at=now,
+                details={
+                    "model_estimates": {
+                        configuration_tag: {
+                            "model_bytes": 986_062_089,
+                            "estimated_kv_bytes_per_token": 28_672,
+                            "loaded_context_tokens": 4096,
+                        }
+                    }
+                },
+            ),
+        )
+
+    service = _service(tmp_path, probe)
+    decision = service.admission_preview(HardwareAdmissionRequest(
+        workload_class="synthesis",
+        model_profile_id="configured-local-model",
+        estimated_model_bytes=2 * gib,
+        requested_context=4096,
+    ))
+
+    assert decision.outcome == AdmissionOutcome.GPU
+    assert decision.estimated_required_bytes == 0
 
 
 def test_configured_profile_does_not_assume_model_is_installed(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 # Astra canonical local operations
 
-This runbook covers the Stage 3H local MVP. It assumes Python, Node/npm, Docker,
+This runbook covers the Astra v1 local coding workflow. It assumes Python, Node/npm, Docker,
 the Python virtual environment, frontend dependencies, and the pinned
 `astra-project-runtime:stage2c-v1` image already exist. None of the commands in
 this runbook install packages, pull/build images, download models, or train.
@@ -122,6 +122,35 @@ temporary database, never starts or installs Ollama, never pulls a model, and
 verifies that no project mutation, approval, worker request, or execution
 dispatch occurred.
 
+To measure whether that advisory output fixes one checked-in real-repository
+case, use the separately gated evaluator:
+
+```bash
+ASTRA_LOCAL_AI_GENERATION_ENABLED=1 \
+ASTRA_PROJECT_SYNTHESIS_ENABLED=1 \
+ASTRA_LOCAL_AI_PROVIDER=ollama \
+ASTRA_OLLAMA_ENDPOINT=http://127.0.0.1:11434 \
+ASTRA_LOCAL_AI_MODEL=qwen2.5-coder:1.5b \
+TMP=/tmp TEMP=/tmp \
+.venv/bin/python tools/run_local_synthesis_case.py \
+  --suite real \
+  --case-id real_001_inventory_line_total \
+  --confirm-advisory-generation \
+  --confirm-disposable-apply-and-test \
+  --output /tmp/astra-local-synthesis-real-001.json
+```
+
+This command makes at most one canonical local-generation request. It copies
+the selected case into a temporary directory, creates the `LocalAIService`
+database there, enables the configured profile only in that database, attaches
+at most three deterministic retrieval items, applies only validated `modify`
+operations to the copy, and runs only the case's named test before and after.
+It excludes `metadata.json` (including the known patch) from model and
+retrieval evidence, never changes the checked-in benchmark, and does not
+approve or execute a project artifact. Without both confirmation flags it exits
+before provider inspection. It does not start Ollama, pull a model, install
+packages, train, fine-tune, or expand into a multi-case benchmark.
+
 ## Start and stop
 
 With the existing Node environment on `PATH`:
@@ -142,6 +171,18 @@ Press Ctrl-C once. The trap terminates all recorded child processes, waits for
 them, and removes PID files. Inspect `docker ps --filter name=astra-project-`
 after abnormal shutdown; do not delete unrelated containers. The worker's
 normal startup performs bounded orphan cleanup only for Astra-managed names.
+
+Read the three local service logs without restarting anything:
+
+```bash
+tail -n 200 data/runtime/backend.log
+tail -n 200 data/runtime/worker.log
+tail -n 200 data/runtime/frontend.log
+```
+
+For a bounded live view, use `tail -f` on only the relevant file and stop it
+with Ctrl-C. If `ASTRA_RUNTIME_DIR` was set for startup, use that exact directory
+instead of `data/runtime/`.
 
 ## Typed blocked states
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Literal
 
 from pydantic import Field
 
 from backend.app.project_artifacts import (
-    ProjectArtifact, ProjectArtifactBinding, ProjectArtifactStore, ProjectArtifactType,
-    build_project_artifact,
+    ProjectArtifact, ProjectArtifactBinding, ProjectArtifactStore,
+    ProjectArtifactStoreError, ProjectArtifactType, build_project_artifact,
 )
 from backend.app.project_analysis.model_synthesis.contracts import (
     SynthesisResponse, parse_synthesis_response, response_contract_description,
@@ -28,9 +29,12 @@ from backend.app.project_coordinator.contracts import CoordinatorIntent, Coordin
 from backend.app.project_models import (
     ProjectModelInvocationStatus, ProjectModelInvocationStore, build_project_model_invocation,
 )
+from backend.app.project_retrieval.contracts import RetrievalPhase5BEvidence
 
 
 MAX_CANONICAL_EVIDENCE_BYTES = 196_608
+MAX_SYNTHESIS_RETRIEVAL_ITEMS = 3
+MAX_SYNTHESIS_RETRIEVAL_CHARS = 24_000
 
 
 class CanonicalProviderProfile(StrictModel):
@@ -54,10 +58,18 @@ class CanonicalSynthesisOutcome(StrictModel):
 
 
 class CanonicalSynthesisBlocked(RuntimeError):
-    def __init__(self, message: str, *, code: str, invocation_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        invocation_id: str | None = None,
+        diagnostic: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.invocation_id = invocation_id
+        self.diagnostic = diagnostic or {}
 
 
 class CanonicalSynthesisOrchestrator:
@@ -87,20 +99,36 @@ class CanonicalSynthesisOrchestrator:
         intent: CoordinatorIntent,
         evidence_artifact: ProjectArtifact,
         provider_profile: CanonicalProviderProfile,
+        *,
+        retrieval_evidence: RetrievalPhase5BEvidence | None = None,
     ) -> CanonicalSynthesisOutcome:
         if intent.intent_type != CoordinatorIntentType.PREPARE_WORK_UNIT:
             raise CanonicalSynthesisBlocked("Patch synthesis requires a work-unit preparation intent.", code="intent_mismatch")
-        return self._prepare("patch", intent, evidence_artifact, provider_profile)
+        return self._prepare(
+            "patch",
+            intent,
+            evidence_artifact,
+            provider_profile,
+            retrieval_evidence=retrieval_evidence,
+        )
 
     def prepare_repair(
         self,
         intent: CoordinatorIntent,
         evidence_artifact: ProjectArtifact,
         provider_profile: CanonicalProviderProfile,
+        *,
+        retrieval_evidence: RetrievalPhase5BEvidence | None = None,
     ) -> CanonicalSynthesisOutcome:
         if intent.intent_type != CoordinatorIntentType.PREPARE_REPAIR:
             raise CanonicalSynthesisBlocked("Repair synthesis requires a repair preparation intent.", code="intent_mismatch")
-        return self._prepare("repair", intent, evidence_artifact, provider_profile)
+        return self._prepare(
+            "repair",
+            intent,
+            evidence_artifact,
+            provider_profile,
+            retrieval_evidence=retrieval_evidence,
+        )
 
     def _prepare(
         self,
@@ -108,6 +136,8 @@ class CanonicalSynthesisOrchestrator:
         intent: CoordinatorIntent,
         evidence_artifact: ProjectArtifact,
         provider_profile: CanonicalProviderProfile,
+        *,
+        retrieval_evidence: RetrievalPhase5BEvidence | None,
     ) -> CanonicalSynthesisOutcome:
         self._validate_binding(intent, evidence_artifact)
         self._assert_fresh(intent)
@@ -127,8 +157,27 @@ class CanonicalSynthesisOrchestrator:
             raise CanonicalSynthesisBlocked("Canonical synthesis evidence must be a structured object.", code="invalid_evidence")
         if len(canonical_json(evidence).encode("utf-8")) > MAX_CANONICAL_EVIDENCE_BYTES:
             raise CanonicalSynthesisBlocked("Canonical synthesis evidence exceeds the byte limit.", code="evidence_too_large")
-        envelope = self._evidence_envelope(intent, evidence_artifact, evidence)
+        if retrieval_evidence is not None:
+            self._validate_retrieval_evidence(
+                intent,
+                evidence,
+                retrieval_evidence,
+            )
+        envelope = self._evidence_envelope(
+            intent,
+            evidence_artifact,
+            evidence,
+            retrieval_evidence=retrieval_evidence,
+        )
         evidence_hash = envelope.evidence_hash
+        retrieval_context = {
+            "evidence_count": len(retrieval_evidence.evidence),
+            "context_chars": sum(
+                len(item.text) for item in retrieval_evidence.evidence
+            ),
+            "maximum_evidence_count": MAX_SYNTHESIS_RETRIEVAL_ITEMS,
+            "maximum_context_chars": MAX_SYNTHESIS_RETRIEVAL_CHARS,
+        } if retrieval_evidence is not None else None
         request_id = f"synthesis-{content_hash([intent.coordinator_intent_id, purpose, evidence_hash])[:24]}"
         request_payload = {
             "contract_version": "astra.canonical-project-synthesis.request.v1",
@@ -146,7 +195,8 @@ class CanonicalSynthesisOrchestrator:
             "evidence_envelope": envelope.model_dump(mode="json"),
             "provider_profile": provider_profile.model_dump(mode="json"),
             "output_contract": response_contract_description(),
-            "project_rag_enabled": False,
+            "project_rag_enabled": envelope.project_rag_enabled,
+            "retrieval_context": retrieval_context,
         }
         candidate = build_project_model_invocation(
             project_run_id=intent.project_run_id,
@@ -250,6 +300,17 @@ class CanonicalSynthesisOrchestrator:
                 )
                 raise
             artifact_type = ProjectArtifactType.REPAIR_PREVIEW if purpose == "repair" else ProjectArtifactType.PATCH_PREVIEW
+            artifact_references = [{
+                "artifact_id": evidence_artifact.artifact_id,
+                "artifact_type": evidence_artifact.artifact_type.value,
+                "content_hash": evidence_artifact.content_hash,
+            }]
+            if retrieval_evidence is not None:
+                artifact_references.append({
+                    "artifact_id": retrieval_evidence.retrieval_artifact_id,
+                    "artifact_type": ProjectArtifactType.RETRIEVAL_EVIDENCE.value,
+                    "content_hash": retrieval_evidence.retrieval_artifact_hash,
+                })
             artifact = self.artifacts.put(build_project_artifact(
                 artifact_type=artifact_type,
                 binding=ProjectArtifactBinding(
@@ -276,13 +337,10 @@ class CanonicalSynthesisOrchestrator:
                     "proposal_id": proposal.proposal_id,
                     "proposal_fingerprint": proposal.proposal_fingerprint,
                     "evidence_envelope_id": envelope.evidence_envelope_id,
-                    "project_rag_enabled": False,
+                    "project_rag_enabled": envelope.project_rag_enabled,
+                    "retrieval_context": retrieval_context,
                 },
-                evidence_references=({
-                    "artifact_id": evidence_artifact.artifact_id,
-                    "artifact_type": evidence_artifact.artifact_type.value,
-                    "content_hash": evidence_artifact.content_hash,
-                },),
+                evidence_references=tuple(artifact_references),
             ))
             self.proposals.transition(
                 proposal.proposal_id,
@@ -313,7 +371,12 @@ class CanonicalSynthesisOrchestrator:
                 claimed.invocation_id, lease_owner=self.lease_owner, lease_token=token,
                 failure_classification=exc.code, error_message=str(exc),
             )
-            raise CanonicalSynthesisBlocked(str(exc), code=exc.code, invocation_id=claimed.invocation_id) from exc
+            raise CanonicalSynthesisBlocked(
+                str(exc),
+                code=exc.code,
+                invocation_id=claimed.invocation_id,
+                diagnostic=exc.diagnostic,
+            ) from exc
         except CanonicalSynthesisBlocked as exc:
             self.invocations.fail(
                 claimed.invocation_id, lease_owner=self.lease_owner, lease_token=token,
@@ -359,6 +422,8 @@ class CanonicalSynthesisOrchestrator:
         intent: CoordinatorIntent,
         artifact: ProjectArtifact,
         evidence: dict[str, Any],
+        *,
+        retrieval_evidence: RetrievalPhase5BEvidence | None,
     ) -> SynthesisEvidenceEnvelope:
         if evidence.get("project_run_id") not in {None, intent.project_run_id}:
             raise CanonicalSynthesisBlocked(
@@ -391,12 +456,11 @@ class CanonicalSynthesisOrchestrator:
                 scope_revision_id=intent.scope_revision_id,
                 plan_revision_id=intent.plan_revision_id,
                 manifest_hash=intent.manifest_hash,
-                repository_state_identity=str(
-                    evidence.get("repository_root_fingerprint")
-                    or content_hash({
-                        "manifest_hash": intent.manifest_hash,
-                        "expected_project_state_version": intent.expected_project_state_version,
-                    })
+                repository_state_identity=(
+                    CanonicalSynthesisOrchestrator._repository_state_identity(
+                        intent,
+                        evidence,
+                    )
                 ),
                 evidence_identity=artifact.artifact_id,
                 evidence_source_identity=artifact.content_hash,
@@ -406,6 +470,7 @@ class CanonicalSynthesisOrchestrator:
                     "No file mutation during synthesis.",
                     "Every mutation requires exact canonical approval.",
                 ),
+                retrieval_evidence=retrieval_evidence,
                 created_at=artifact.created_at,
             )
         except ValueError as exc:
@@ -413,6 +478,110 @@ class CanonicalSynthesisOrchestrator:
                 "Canonical synthesis evidence failed strict validation.",
                 code="invalid_evidence",
             ) from exc
+
+    def _validate_retrieval_evidence(
+        self,
+        intent: CoordinatorIntent,
+        evidence: dict[str, Any],
+        retrieval: RetrievalPhase5BEvidence,
+    ) -> None:
+        if not 1 <= len(retrieval.evidence) <= MAX_SYNTHESIS_RETRIEVAL_ITEMS:
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval evidence exceeds its item limit.",
+                code="invalid_retrieval_evidence",
+            )
+        if (
+            sum(len(item.text) for item in retrieval.evidence)
+            > MAX_SYNTHESIS_RETRIEVAL_CHARS
+        ):
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval evidence exceeds its context limit.",
+                code="invalid_retrieval_evidence",
+            )
+        if tuple(item.final_rank for item in retrieval.evidence) != tuple(
+            range(1, len(retrieval.evidence) + 1)
+        ):
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval ranks are not contiguous.",
+                code="invalid_retrieval_evidence",
+            )
+        repository_state_identity = self._repository_state_identity(
+            intent,
+            evidence,
+        )
+        if (
+            retrieval.project_id != intent.project_run_id
+            or retrieval.scope_revision_id != intent.scope_revision_id
+            or retrieval.plan_revision_id != intent.plan_revision_id
+            or retrieval.repository_manifest_hash != intent.manifest_hash
+            or retrieval.repository_state_hash != repository_state_identity
+            or retrieval.project_state_version
+            != intent.expected_project_state_version
+        ):
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval evidence has a stale binding.",
+                code="stale_retrieval_evidence",
+            )
+        try:
+            artifact = self.artifacts.verify(
+                retrieval.retrieval_artifact_id,
+                expected_content_hash=retrieval.retrieval_artifact_hash,
+            )
+        except ProjectArtifactStoreError as exc:
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval artifact is missing or corrupt.",
+                code="invalid_retrieval_evidence",
+            ) from exc
+        binding = artifact.binding
+        if (
+            artifact.artifact_type != ProjectArtifactType.RETRIEVAL_EVIDENCE
+            or binding.project_run_id != intent.project_run_id
+            or binding.scope_revision_id != intent.scope_revision_id
+            or binding.plan_revision_id != intent.plan_revision_id
+            or binding.manifest_hash != intent.manifest_hash
+            or binding.authority_hash != retrieval.authority_id
+        ):
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval artifact binding is invalid.",
+                code="stale_retrieval_evidence",
+            )
+        request_binding = artifact.payload.get("request_binding")
+        stored_evidence = artifact.payload.get("evidence")
+        if (
+            not isinstance(request_binding, dict)
+            or request_binding.get("project_id") != retrieval.project_id
+            or request_binding.get("scope_hash") != retrieval.scope_hash
+            or request_binding.get("plan_hash") != retrieval.plan_hash
+            or request_binding.get("repository_state_hash")
+            != retrieval.repository_state_hash
+            or request_binding.get("expected_project_state_version")
+            != retrieval.project_state_version
+            or stored_evidence
+            != [
+                item.model_dump(mode="json")
+                for item in retrieval.evidence
+            ]
+        ):
+            raise CanonicalSynthesisBlocked(
+                "Canonical synthesis retrieval artifact content is invalid.",
+                code="invalid_retrieval_evidence",
+            )
+
+    @staticmethod
+    def _repository_state_identity(
+        intent: CoordinatorIntent,
+        evidence: dict[str, Any],
+    ) -> str:
+        return str(
+            evidence.get("repository_state_hash")
+            or evidence.get("repository_root_fingerprint")
+            or content_hash({
+                "manifest_hash": intent.manifest_hash,
+                "expected_project_state_version": (
+                    intent.expected_project_state_version
+                ),
+            })
+        )
 
     def _persist_proposal(
         self,
@@ -507,6 +676,33 @@ class CanonicalSynthesisOrchestrator:
             raise CanonicalSynthesisBlocked("The provider proposed a path outside exact canonical evidence.", code="scope_violation")
         if any(not item.get("evidence_references") for item in operations):
             raise CanonicalSynthesisBlocked("Every synthesized file operation requires explicit evidence references.", code="missing_evidence_reference")
+        if any(
+            item["operation"] == "modify"
+            and item.get("strategy") == "complete_content"
+            and isinstance(item.get("content"), str)
+            and hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+            == item.get("expected_sha256")
+            for item in operations
+        ):
+            raise CanonicalSynthesisBlocked(
+                "The provider proposed unchanged content as a repair.",
+                code="no_effect_patch",
+            )
+        if any(
+            item["operation"] == "modify"
+            and item.get("strategy") == "exact_replacements"
+            and item.get("replacements")
+            and all(
+                replacement.get("expected_text")
+                == replacement.get("replacement_text")
+                for replacement in item["replacements"]
+            )
+            for item in operations
+        ):
+            raise CanonicalSynthesisBlocked(
+                "The provider proposed unchanged replacements as a repair.",
+                code="no_effect_patch",
+            )
         return operations
 
 

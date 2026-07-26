@@ -19,9 +19,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.app.local_ai.config import load_local_ai_configuration
-from backend.app.local_ai.contracts import CapabilityStatus
+from backend.app.local_ai.contracts import CapabilityStatus, OllamaCapability
+from backend.app.local_ai.provider import ProviderClientError
 from backend.app.project_analysis.model_synthesis import (
     CanonicalProviderProfile,
+    CanonicalSynthesisBlocked,
     CanonicalSynthesisOrchestrator,
     UnavailableSynthesisGateway,
     build_synthesis_gateway_from_environment,
@@ -50,10 +52,117 @@ def _count(connection: sqlite3.Connection, table: str) -> int:
     return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
-def _enable_disposable_model_profile(gateway) -> None:
+_SMOKE_DIAGNOSTIC_FIELDS = (
+    "generation_failure_classification",
+    "provider_readiness_reason",
+    "provider_reachable",
+    "configured_model_missing",
+    "provider_error_code",
+    "provider_http_status",
+    "readiness_error_type",
+    "readiness_stage",
+    "admission_outcome",
+    "estimated_required_bytes",
+    "available_bytes",
+    "safety_reserve_bytes",
+    "admission_backend",
+    "admission_device",
+    "admitted_context",
+    "validation_error_location",
+    "validation_error_type",
+    "validation_error_reason",
+    "provider_identity",
+    "exact_model_tag",
+    "response_schema_identity",
+    "response_schema_hash",
+    "duration_ms",
+    "prompt_eval_count",
+    "eval_count",
+)
+
+
+def _readiness_diagnostic(gateway) -> dict[str, object]:
+    return {
+        "provider_identity": gateway.provider,
+        "exact_model_tag": gateway.model,
+        "response_schema_identity": "astra.project-synthesis.response.v1",
+        "provider_readiness_reason": None,
+        "provider_reachable": None,
+        "configured_model_missing": None,
+        "provider_error_code": None,
+        "provider_http_status": None,
+        "readiness_error_type": None,
+        "readiness_stage": None,
+    }
+
+
+def _safe_readiness_failure(
+    exc: Exception, *, stage: str
+) -> tuple[str, dict[str, object]]:
+    details: dict[str, object] = {
+        "readiness_error_type": type(exc).__name__[:120],
+        "readiness_stage": stage,
+        "provider_readiness_reason": f"{stage}_failed",
+    }
+    if isinstance(exc, ProviderClientError):
+        details.update({
+            "provider_error_code": exc.code.value,
+            "provider_http_status": exc.diagnostic.get("http_status"),
+            "provider_readiness_reason": " ".join(exc.safe_message.split())[:300],
+        })
+        return "provider_unavailable", details
+    safe_value_errors = {
+        "model_not_locally_available": "model_unavailable",
+        "model_profile_not_enabled": "model_unavailable",
+        "model profile not found": "model_unavailable",
+        "stale_configuration_version": "disposable_profile_enablement_failed",
+    }
+    if isinstance(exc, ValueError) and str(exc) in safe_value_errors:
+        details["provider_readiness_reason"] = str(exc)
+        return safe_value_errors[str(exc)], details
+    return (
+        "readiness_inspection_failed"
+        if stage == "capability_inspection"
+        else "disposable_profile_enablement_failed"
+    ), details
+
+
+def _enable_disposable_model_profile(gateway) -> dict[str, object]:
     """Enable only the confirmed model in this script's temporary database."""
     service = gateway.local_ai_service
-    service.capability_report(refresh=True)
+    readiness_diagnostic = _readiness_diagnostic(gateway)
+    try:
+        report = service.capability_report(refresh=True)
+    except Exception as exc:
+        code, details = _safe_readiness_failure(
+            exc, stage="capability_inspection"
+        )
+        readiness_diagnostic.update(details)
+        raise SynthesisGatewayError(
+            "The disposable smoke check could not inspect local-model readiness.",
+            code=code,
+            diagnostic=readiness_diagnostic,
+        ) from exc
+    ollama_capability = next(
+        (
+            capability
+            for capability in report.capabilities
+            if isinstance(capability, OllamaCapability)
+        ),
+        None,
+    )
+    if ollama_capability is None:
+        readiness_diagnostic["provider_readiness_reason"] = (
+            "provider_capability_missing"
+        )
+    else:
+        readiness_diagnostic.update({
+            "provider_readiness_reason": ollama_capability.reason,
+            "provider_reachable": ollama_capability.provider_reachable,
+            "configured_model_missing": (
+                ollama_capability.configured_model_missing
+            ),
+        })
     configured = next(
         (
             model
@@ -63,9 +172,13 @@ def _enable_disposable_model_profile(gateway) -> None:
         None,
     )
     if configured is None:
+        readiness_diagnostic["provider_readiness_reason"] = (
+            "configured_model_profile_missing"
+        )
         raise SynthesisGatewayError(
             "The configured local model profile is not registered.",
             code="model_unavailable",
+            diagnostic=readiness_diagnostic,
         )
     if not configured.local_available:
         provider_states = {
@@ -79,14 +192,54 @@ def _enable_disposable_model_profile(gateway) -> None:
                 if configured.policy_status in provider_states
                 else "model_unavailable"
             ),
+            diagnostic=readiness_diagnostic,
         )
-    service.set_model_enabled(
-        SYNTHESIS_MODEL_PROFILE_ID,
-        enabled=True,
-        actor_id="phase5b-smoke-user",
-        expected_version=configured.configuration_version,
-        idempotency_key="phase5b-smoke-enable-disposable-model",
-    )
+    try:
+        service.set_model_enabled(
+            SYNTHESIS_MODEL_PROFILE_ID,
+            enabled=True,
+            actor_id="phase5b-smoke-user",
+            expected_version=configured.configuration_version,
+            idempotency_key="phase5b-smoke-enable-disposable-model",
+        )
+    except Exception as exc:
+        code, details = _safe_readiness_failure(
+            exc, stage="disposable_profile_enablement"
+        )
+        readiness_diagnostic.update(details)
+        raise SynthesisGatewayError(
+            "The disposable model profile could not be enabled safely.",
+            code=code,
+            diagnostic=readiness_diagnostic,
+        ) from exc
+    return readiness_diagnostic
+
+
+def _smoke_failure_diagnostic(exc: Exception, configuration) -> dict[str, object]:
+    diagnostic = {
+        "provider_identity": configuration.provider_type,
+        "exact_model_tag": configuration.synthesis_model,
+        "response_schema_identity": "astra.project-synthesis.response.v1",
+    }
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (SynthesisGatewayError, CanonicalSynthesisBlocked)):
+            diagnostic.update(current.diagnostic)
+            diagnostic["generation_failure_classification"] = current.code
+            diagnostic.setdefault(
+                "provider_readiness_reason",
+                " ".join(str(current).split())[:300],
+            )
+            return diagnostic
+        current = current.__cause__ or current.__context__
+    diagnostic.update({
+        "generation_failure_classification": "smoke_internal_failure",
+        "provider_readiness_reason": "unexpected_smoke_failure",
+        "readiness_error_type": type(exc).__name__[:120],
+    })
+    return diagnostic
 
 
 def main() -> int:
@@ -111,6 +264,14 @@ def main() -> int:
         )
         return 2
 
+    readiness_diagnostic: dict[str, object] = {
+        "provider_identity": configuration.provider_type,
+        "exact_model_tag": configuration.synthesis_model,
+        "response_schema_identity": "astra.project-synthesis.response.v1",
+        "provider_readiness_reason": None,
+        "provider_reachable": None,
+        "configured_model_missing": None,
+    }
     try:
         with tempfile.TemporaryDirectory(prefix="astra-phase5b-smoke-") as temporary:
             root = Path(temporary)
@@ -217,7 +378,7 @@ def main() -> int:
             gateway = build_synthesis_gateway_from_environment(database_path=database)
             if isinstance(gateway, UnavailableSynthesisGateway):
                 raise RuntimeError(gateway.reason)
-            _enable_disposable_model_profile(gateway)
+            readiness_diagnostic = _enable_disposable_model_profile(gateway)
             orchestrator = CanonicalSynthesisOrchestrator(
                 invocations=invocations,
                 artifacts=artifacts,
@@ -253,62 +414,26 @@ def main() -> int:
             diagnostic = gateway.local_ai_service.generation_diagnostic(
                 proposal.generation_id
             )
-            allowed = (
-                "generation_failure_classification",
-                "validation_error_location",
-                "validation_error_type",
-                "provider_identity",
-                "exact_model_tag",
-                "response_schema_identity",
-                "response_schema_hash",
-                "duration_ms",
-                "prompt_eval_count",
-                "eval_count",
-            )
+            diagnostic = {**readiness_diagnostic, **diagnostic}
             print(
                 json.dumps(
-                    {key: diagnostic.get(key) for key in allowed},
+                    {key: diagnostic.get(key) for key in _SMOKE_DIAGNOSTIC_FIELDS},
                     indent=2,
                     sort_keys=True,
                 )
             )
             return 0
     except Exception as exc:
-        current: BaseException | None = exc
-        diagnostic: dict[str, object] = {}
-        while current is not None:
-            if isinstance(current, SynthesisGatewayError):
-                diagnostic = dict(current.diagnostic)
-                diagnostic.setdefault("generation_failure_classification", current.code)
-                break
-            current = current.__cause__
-        if not diagnostic:
-            diagnostic = {
-                "generation_failure_classification": "smoke_internal_failure",
-                "validation_error_location": None,
-                "validation_error_type": None,
-                "provider_identity": configuration.provider_type,
-                "exact_model_tag": configuration.synthesis_model,
-                "response_schema_identity": "astra.project-synthesis.response.v1",
-                "response_schema_hash": None,
-                "duration_ms": None,
-                "prompt_eval_count": None,
-                "eval_count": None,
-            }
-        allowed = (
-            "generation_failure_classification",
-            "validation_error_location",
-            "validation_error_type",
-            "provider_identity",
-            "exact_model_tag",
-            "response_schema_identity",
-            "response_schema_hash",
-            "duration_ms",
-            "prompt_eval_count",
-            "eval_count",
-        )
+        diagnostic = {
+            **readiness_diagnostic,
+            **_smoke_failure_diagnostic(exc, configuration),
+        }
         print(
-            json.dumps({key: diagnostic.get(key) for key in allowed}, indent=2, sort_keys=True),
+            json.dumps(
+                {key: diagnostic.get(key) for key in _SMOKE_DIAGNOSTIC_FIELDS},
+                indent=2,
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
         return 2

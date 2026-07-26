@@ -128,7 +128,8 @@ def test_out_of_scope_file_and_unapproved_delete_are_rejected(tmp_path: Path) ->
         sha = hashlib.sha256((project / "unrelated.py").read_bytes()).hexdigest()
         payload["operations"] = [{
             "operation": "delete", "path": "unrelated.py", "expected_sha256": sha,
-            "rationale": "Not actually authorized.", "affected_symbols": [], "evidence_references": [],
+            "rationale": "Not actually authorized.", "affected_symbols": [],
+            "evidence_references": ["unrelated.py"],
         }]
     with pytest.raises(ModelSynthesisError, match="unapproved deletion"):
         prepare_job_patch_bundle(project, _job(project), model_gateway=_gateway(mutate))

@@ -50,6 +50,9 @@ class ProviderInspection:
     provider_version: str | None
     installed_models: tuple[str, ...]
     loaded_models: tuple[str, ...] = ()
+    installed_model_sizes_bytes: tuple[tuple[str, int], ...] = ()
+    loaded_model_context_lengths: tuple[tuple[str, int], ...] = ()
+    supports_model_estimate_inspection: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,15 +100,88 @@ class OllamaProviderClient:
         version = self._get_json("/api/version", timeout_seconds, allow_missing=True)
         tags = self._get_json("/api/tags", timeout_seconds)
         loaded = self._get_json("/api/ps", timeout_seconds, allow_missing=True)
+        installed_models, installed_sizes = _model_inventory(tags)
         return ProviderInspection(
             provider_version=(
                 str(version["version"])
                 if isinstance(version.get("version"), str)
                 else None
             ),
-            installed_models=_model_names(tags),
+            installed_models=installed_models,
             loaded_models=_model_names(loaded),
+            installed_model_sizes_bytes=installed_sizes,
+            loaded_model_context_lengths=_loaded_model_context_lengths(loaded),
+            supports_model_estimate_inspection=True,
         )
+
+    def inspect_model_estimate(
+        self,
+        model: str,
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, int]:
+        """Return bounded provider-reported admission inputs for one exact tag."""
+        payload = self._request_json(
+            "/api/show",
+            {"model": model},
+            timeout_seconds,
+            maximum_bytes=MAX_INSPECTION_RESPONSE_BYTES,
+        )
+        model_info = payload.get("model_info")
+        if not isinstance(model_info, dict):
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The local model metadata is malformed.",
+            )
+        architecture = model_info.get("general.architecture")
+        if not isinstance(architecture, str) or not architecture:
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The local model architecture metadata is missing.",
+            )
+        values = {
+            "block_count": model_info.get(f"{architecture}.block_count"),
+            "embedding_length": model_info.get(
+                f"{architecture}.embedding_length"
+            ),
+            "head_count": model_info.get(
+                f"{architecture}.attention.head_count"
+            ),
+            "head_count_kv": model_info.get(
+                f"{architecture}.attention.head_count_kv"
+            ),
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in values.values()
+        ):
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The local model attention metadata is invalid.",
+            )
+        head_dimension = values["embedding_length"] // values["head_count"]
+        if (
+            head_dimension <= 0
+            or values["embedding_length"] % values["head_count"] != 0
+        ):
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The local model attention dimensions are invalid.",
+            )
+        # K and V tensors, conservatively treated as fp16 (2 bytes each).
+        kv_bytes_per_token = (
+            values["block_count"]
+            * values["head_count_kv"]
+            * head_dimension
+            * 2
+            * 2
+        )
+        if kv_bytes_per_token > 1024**2:
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The local model KV-cache estimate is outside its safe bound.",
+            )
+        return {"estimated_kv_bytes_per_token": kv_bytes_per_token}
 
     def generate(
         self,
@@ -252,6 +328,12 @@ class OllamaProviderClient:
 
 
 def _model_names(payload: dict[str, Any]) -> tuple[str, ...]:
+    return _model_inventory(payload)[0]
+
+
+def _model_inventory(
+    payload: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[tuple[str, int], ...]]:
     models = payload.get("models", [])
     if not isinstance(models, list):
         raise ProviderClientError(
@@ -259,6 +341,7 @@ def _model_names(payload: dict[str, Any]) -> tuple[str, ...]:
             "The local model inventory is malformed.",
         )
     names: list[str] = []
+    sizes: dict[str, int] = {}
     for item in models:
         if not isinstance(item, dict):
             raise ProviderClientError(
@@ -272,7 +355,55 @@ def _model_names(payload: dict[str, Any]) -> tuple[str, ...]:
                 "The local model inventory contains an invalid model identity.",
             )
         names.append(name)
-    return tuple(dict.fromkeys(names))
+        size = item.get("size")
+        if size is not None:
+            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                raise ProviderClientError(
+                    ProviderErrorCode.MALFORMED_RESPONSE,
+                    "The local model inventory contains an invalid model size.",
+                )
+            sizes[name] = size
+    unique_names = tuple(dict.fromkeys(names))
+    return unique_names, tuple(
+        (name, sizes[name])
+        for name in unique_names
+        if name in sizes
+    )
+
+
+def _loaded_model_context_lengths(
+    payload: dict[str, Any],
+) -> tuple[tuple[str, int], ...]:
+    models = payload.get("models", [])
+    if not isinstance(models, list):
+        raise ProviderClientError(
+            ProviderErrorCode.MALFORMED_RESPONSE,
+            "The loaded local model inventory is malformed.",
+        )
+    contexts: dict[str, int] = {}
+    for item in models:
+        if not isinstance(item, dict):
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The loaded local model inventory is malformed.",
+            )
+        name = item.get("name") or item.get("model")
+        context = item.get("context_length")
+        if context is None:
+            continue
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(context, int)
+            or isinstance(context, bool)
+            or context <= 0
+        ):
+            raise ProviderClientError(
+                ProviderErrorCode.MALFORMED_RESPONSE,
+                "The loaded local model context metadata is invalid.",
+            )
+        contexts[name] = context
+    return tuple(contexts.items())
 
 
 _UNGRAMMATABLE_SCHEMA_KEYWORDS = ("minLength", "maxLength")
