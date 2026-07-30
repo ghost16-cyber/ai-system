@@ -196,7 +196,7 @@ def make_styles() -> dict[str, ParagraphStyle]:
             textColor=HexColor("#DCE8F2"),
             alignment=TA_LEFT,
             spaceAfter=12,
-        "cover_title": ParagraphStyle(
+        ),
         "cover_title": ParagraphStyle(
 # <<<MISSING_LINE_201>>>
 # <<<MISSING_LINE_202>>>
@@ -1258,7 +1258,7 @@ def build_story() -> list:
 Operator starts Ollama
         |
         +-- FastAPI backend  ------ SQLite canonical state
-        ["Backend test functions", "1,508", "Substantial safety and behavior coverage."],
+        |
         +-- Continuous worker ---- coordinator intents / bounded execution
         |
         +-- React frontend  ------- canonical read model and approvals
@@ -1313,7 +1313,7 @@ Project worker -> disposable Docker snapshot -> focused validation
             "Typed intent, repository graph, retrieval candidates, file identities, existing tests.",
             "Versioned evidence artifact with approved paths, source excerpts, symbols, hashes, and provenance.",
             "Deterministic filters first, BM25/symbol ranking next, optional learned reranking last.",
-    # Chapter 5
+            "Missing or stale evidence blocks high-risk work; the model never fills absent source facts.",
             "Evidence recall@k, token/character budget, stale-evidence rate, downstream success.",
         ),
         (
@@ -1323,7 +1323,7 @@ Project worker -> disposable Docker snapshot -> focused validation
             "Immutable plan revision with work units, scope, expected artifacts, and validation recipe.",
             "Rule-based mapping from task family to capability graph; unresolved choices become clarification.",
             "No matching safe capability yields capability_gap, not free-form autonomy.",
-        "The deterministic plan compiler maps the intent to bounded work units.",
+            "Plan validity, unnecessary step count, scope precision, approval rejection rate.",
         ),
         (
             "Decision Engine and Strategy Ranker", "emerging",
@@ -1350,172 +1350,33 @@ Project worker -> disposable Docker snapshot -> focused validation
             "Proposed file artifact and exact semantic delta.",
             "AST/CST parsing, typed operation preconditions, formatting, before/after semantic diff.",
             "Wrong symbol, signature, extra top-level nodes, stale hash, or out-of-scope path is rejected.",
-# <<<MISSING_LINE_1353>>>
-# <<<MISSING_LINE_1354>>>
-# <<<MISSING_LINE_1355>>>
-# <<<MISSING_LINE_1356>>>
-# <<<MISSING_LINE_1357>>>
-# <<<MISSING_LINE_1358>>>
-# <<<MISSING_LINE_1359>>>
-# <<<MISSING_LINE_1360>>>
-# <<<MISSING_LINE_1361>>>
-# <<<MISSING_LINE_1362>>>
-# <<<MISSING_LINE_1363>>>
-# <<<MISSING_LINE_1364>>>
-# <<<MISSING_LINE_1365>>>
-# <<<MISSING_LINE_1366>>>
-# <<<MISSING_LINE_1367>>>
-# <<<MISSING_LINE_1368>>>
-# <<<MISSING_LINE_1369>>>
-# <<<MISSING_LINE_1370>>>
-# <<<MISSING_LINE_1371>>>
-# <<<MISSING_LINE_1372>>>
-# <<<MISSING_LINE_1373>>>
-# <<<MISSING_LINE_1374>>>
-    # Chapter 6 - components
-# <<<MISSING_LINE_1376>>>
-# <<<MISSING_LINE_1377>>>
-# <<<MISSING_LINE_1378>>>
-# <<<MISSING_LINE_1379>>>
-# <<<MISSING_LINE_1380>>>
-# <<<MISSING_LINE_1381>>>
-# <<<MISSING_LINE_1382>>>
-# <<<MISSING_LINE_1383>>>
-# <<<MISSING_LINE_1384>>>
-# <<<MISSING_LINE_1385>>>
-# <<<MISSING_LINE_1386>>>
-# <<<MISSING_LINE_1387>>>
-# <<<MISSING_LINE_1388>>>
-# <<<MISSING_LINE_1389>>>
-# <<<MISSING_LINE_1390>>>
-# <<<MISSING_LINE_1391>>>
-# <<<MISSING_LINE_1392>>>
-# <<<MISSING_LINE_1393>>>
-# <<<MISSING_LINE_1394>>>
-# <<<MISSING_LINE_1395>>>
-# <<<MISSING_LINE_1396>>>
-# <<<MISSING_LINE_1397>>>
-# <<<MISSING_LINE_1398>>>
-# <<<MISSING_LINE_1399>>>
-# <<<MISSING_LINE_1400>>>
-# <<<MISSING_LINE_1401>>>
-            "Allowlisted root, manifests, ASTs, imports, configuration, test discovery, diagnostics.",
-# <<<MISSING_LINE_1403>>>
-# <<<MISSING_LINE_1404>>>
-# <<<MISSING_LINE_1405>>>
-# <<<MISSING_LINE_1406>>>
-# <<<MISSING_LINE_1407>>>
-# <<<MISSING_LINE_1408>>>
-# <<<MISSING_LINE_1409>>>
-# <<<MISSING_LINE_1410>>>
-# <<<MISSING_LINE_1411>>>
-# <<<MISSING_LINE_1412>>>
-# <<<MISSING_LINE_1413>>>
-# <<<MISSING_LINE_1414>>>
-# <<<MISSING_LINE_1415>>>
-# <<<MISSING_LINE_1416>>>
-# <<<MISSING_LINE_1417>>>
-# <<<MISSING_LINE_1418>>>
-# <<<MISSING_LINE_1419>>>
-# <<<MISSING_LINE_1420>>>
-# <<<MISSING_LINE_1421>>>
-# <<<MISSING_LINE_1422>>>
-# <<<MISSING_LINE_1423>>>
-# <<<MISSING_LINE_1424>>>
-# <<<MISSING_LINE_1425>>>
-# <<<MISSING_LINE_1426>>>
-# <<<MISSING_LINE_1427>>>
-# <<<MISSING_LINE_1428>>>
-# <<<MISSING_LINE_1429>>>
-# <<<MISSING_LINE_1430>>>
-# <<<MISSING_LINE_1431>>>
-# <<<MISSING_LINE_1432>>>
-# <<<MISSING_LINE_1433>>>
-# <<<MISSING_LINE_1434>>>
-# <<<MISSING_LINE_1435>>>
-# <<<MISSING_LINE_1436>>>
-# <<<MISSING_LINE_1437>>>
-# <<<MISSING_LINE_1438>>>
-# <<<MISSING_LINE_1439>>>
-# <<<MISSING_LINE_1440>>>
-# <<<MISSING_LINE_1441>>>
-# <<<MISSING_LINE_1442>>>
-# <<<MISSING_LINE_1443>>>
-# <<<MISSING_LINE_1444>>>
-# <<<MISSING_LINE_1445>>>
-# <<<MISSING_LINE_1446>>>
-# <<<MISSING_LINE_1447>>>
-# <<<MISSING_LINE_1448>>>
-# <<<MISSING_LINE_1449>>>
-# <<<MISSING_LINE_1450>>>
-# <<<MISSING_LINE_1451>>>
-# <<<MISSING_LINE_1452>>>
-# <<<MISSING_LINE_1453>>>
-# <<<MISSING_LINE_1454>>>
-# <<<MISSING_LINE_1455>>>
-# <<<MISSING_LINE_1456>>>
-# <<<MISSING_LINE_1457>>>
-# <<<MISSING_LINE_1458>>>
-# <<<MISSING_LINE_1459>>>
-# <<<MISSING_LINE_1460>>>
-# <<<MISSING_LINE_1461>>>
-# <<<MISSING_LINE_1462>>>
-# <<<MISSING_LINE_1463>>>
-# <<<MISSING_LINE_1464>>>
-# <<<MISSING_LINE_1465>>>
-# <<<MISSING_LINE_1466>>>
-# <<<MISSING_LINE_1467>>>
-# <<<MISSING_LINE_1468>>>
-# <<<MISSING_LINE_1469>>>
-# <<<MISSING_LINE_1470>>>
-# <<<MISSING_LINE_1471>>>
-# <<<MISSING_LINE_1472>>>
-# <<<MISSING_LINE_1473>>>
-# <<<MISSING_LINE_1474>>>
-# <<<MISSING_LINE_1475>>>
-# <<<MISSING_LINE_1476>>>
-# <<<MISSING_LINE_1477>>>
-            "Transition coverage, concurrency convergence, replay behavior, stale-binding rejection.",
-# <<<MISSING_LINE_1479>>>
-# <<<MISSING_LINE_1480>>>
-# <<<MISSING_LINE_1481>>>
-# <<<MISSING_LINE_1482>>>
-# <<<MISSING_LINE_1483>>>
-# <<<MISSING_LINE_1484>>>
-# <<<MISSING_LINE_1485>>>
-# <<<MISSING_LINE_1486>>>
-# <<<MISSING_LINE_1487>>>
-# <<<MISSING_LINE_1488>>>
-# <<<MISSING_LINE_1489>>>
-# <<<MISSING_LINE_1490>>>
-# <<<MISSING_LINE_1491>>>
-# <<<MISSING_LINE_1492>>>
-# <<<MISSING_LINE_1493>>>
-# <<<MISSING_LINE_1494>>>
-# <<<MISSING_LINE_1495>>>
-            "Dataset coverage, leakage audits, class balance, temporal transfer, label confidence.",
-# <<<MISSING_LINE_1497>>>
-# <<<MISSING_LINE_1498>>>
-# <<<MISSING_LINE_1499>>>
-# <<<MISSING_LINE_1500>>>
-# <<<MISSING_LINE_1501>>>
-# <<<MISSING_LINE_1502>>>
-# <<<MISSING_LINE_1503>>>
-# <<<MISSING_LINE_1504>>>
-# <<<MISSING_LINE_1505>>>
-# <<<MISSING_LINE_1506>>>
-# <<<MISSING_LINE_1507>>>
-# <<<MISSING_LINE_1508>>>
-# <<<MISSING_LINE_1509>>>
-# <<<MISSING_LINE_1510>>>
-# <<<MISSING_LINE_1511>>>
-# <<<MISSING_LINE_1512>>>
-# <<<MISSING_LINE_1513>>>
+# <<<MISSING_LINE_SEMANTIC_EDIT_METRICS>>>
+        ),
+# <<<MISSING_COMPONENTS_BETWEEN_SEMANTIC_EDIT_AND_CAPABILITY_COMPILER>>>
+# attested-only metric fragments (bodies unread):
+# "Transition coverage, concurrency convergence, replay behavior, stale-binding rejection.",
+# "Dataset coverage, leakage audits, class balance, temporal transfer, label confidence.",
+        (
+            "Capability Compiler", "research",
+            "Compiles recurring verified procedures into deterministic, executable, model-independent capability artifacts.",
+            "Canonical trajectories, outcome ledger, repository profiles, trusted atomic operation vocabulary.",
+            "Candidate DSL artifact, applicability predicate, evidence contract, validators, benchmark dossier.",
+            "Pattern mining, anti-unification, parameterization, type checking, simulation, replay, held-out benchmarking.",
+            "No direct kernel writes; unsafe operations, poor transfer, redundancy, or weak evidence prevent promotion.",
+            "Promotion precision, held-out utility, reuse, regressions, deprecation, net verified capability gain.",
+        ),
+        (
+            "Capability Library", "research",
+            "Maintains production, experimental, degraded, deprecated, and revoked procedural artifacts.",
+            "Promoted compiler artifacts and manually authored atomic capabilities.",
+            "Content-addressed versions, dependency graph, benchmarks, provenance, and activation statistics.",
+            "Immutable versions plus explicit supersession; compactness and merge/prune analysis.",
+            "Revoked dependencies or failed canaries disable dependants; no silent fallback to unsafe behavior.",
             "Library utility, redundancy, coverage, survival, maintenance cost, model independence.",
-# <<<MISSING_LINE_1515>>>
-# <<<MISSING_LINE_1516>>>
-# <<<MISSING_LINE_1517>>>
-# <<<MISSING_LINE_1518>>>
+        ),
+        (
+            "Frontend Experience", "implemented",
+            "Makes deterministic state feel conversational: project selection, plans, diffs, approvals, retries, diagnostics, and reload-safe progress.",
             "Canonical read model, streamed chat events, project bindings, action contracts.",
             "One coherent project card, exact action buttons, safe errors, visible retry and validation evidence.",
             "Typed client mapping with no inferred lifecycle success; domain components and hooks replace a monolith over time.",
@@ -2664,9 +2525,7 @@ def main() -> None:
     story = build_story()
     doc.multiBuild(story)
     print(PDF_PATH)
-# <<<MISSING_LINE_2538>>>
-# <<<MISSING_LINE_2539>>>
-# <<<MISSING_LINE_2540>>>
-# <<<MISSING_LINE_2541>>>
-# <<<MISSING_LINE_2542>>>
-# <<<MISSING_LINE_2543>>>
+
+
+if __name__ == "__main__":
+    main()
