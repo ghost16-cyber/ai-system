@@ -1,27 +1,13 @@
-# Astra — Local-first Coding Assistant
+# AI Coding Assistant
 
 A local-first Python coding assistant backend built in working releases.
 
-## Current Checkpoint: Stage 3H — Reliable Canonical Local MVP
+## Current Checkpoint: Release 4.1 - Foundation Stabilization
 
-The active system is a local FastAPI backend plus a single chat-native React
-interface. `ProjectControlPlane` is the only project lifecycle authority. The
-canonical coordinator, durable model-invocation store, isolated worker,
-cancellation dispatcher, terminal reconciler, and read-only projector recover
-without browser or queue authority. Historical project records are read-only.
-This remains a local MVP, not a distributed or cloud production claim.
-
-### Astra Next research programme
-
-Programme sequencing (not a replacement for the Phase 1 charter) lives in:
-
-- [`docs/astra-next-master-plan.md`](docs/astra-next-master-plan.md) — phases, gates, claims, forbidden early work
-- [`docs/astra-next-master-status.json`](docs/astra-next-master-status.json) — machine-readable status
-- [`docs/astra-next-master-decision-index.md`](docs/astra-next-master-decision-index.md) — frozen decision index
-- [`artifacts/research/master/artifact-index.json`](artifacts/research/master/artifact-index.json) — hash-bound catalogue
-- [`output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf`](output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf) — explanatory monograph
-
-Authority order: Phase 1 charter → master plan → phase charters → protocols → decision logs → probe artifacts → monograph.
+Release 4.1 stabilizes the deterministic backend before any ML, RAG, or SLM
+layer is activated. The current system is a local FastAPI service with
+allowlisted tools, deterministic Python analysis, validated proposals, feedback,
+metrics, and queued project analysis.
 
 ### Active Capabilities
 
@@ -33,36 +19,19 @@ Authority order: Phase 1 charter → master plan → phase charters → protocol
 - Conservative deterministic fix suggestions with validation.
 - Compact patch proposals for validated single-file fixes returned by `POST /analyze-file`; no file edits are applied automatically.
 - Local SQLite-backed worker for queued project analysis.
-- SLM-ready orchestrator job loop with structured task state, advisor hooks, safe tool routing, policy-gated edits, validators, and redacted traces.
 - Project analysis summaries that exclude source code and validated replacement text.
 - Finding-linked feedback for helpfulness and validated suggestion acceptance.
-- Hardware-aware AI optimizer report endpoint with low-VRAM training recommendations.
-- Local Runtime Intelligence context for hardware, installed tools, capability planning, and task-specific execution settings.
-- Runtime-aware plan gating with trace audits and benchmark decision metrics.
-- Chat-native assignment parsing, planning, evidence, report, and workspace flows.
-- Versioned canonical project APIs and hydration v2 with one reload-safe project card.
-- Durable provider-neutral bounded synthesis with strict multi-file validation;
-  project RAG is disabled by default.
-- Immutable approved plan revisions with separately persisted work-unit runtime state.
-- Complete, fail-closed project-state manifests and fresh typed verifier results.
-- Explicit plan, patch, command, scope, rollback, and human-validation approval boundaries.
 
-### Current local-MVP boundary
+### Inactive / Future Layers
 
-File changes and commands remain exactly approval gated. New canonical projects
-use a transactional execution outbox, a separate worker process, durable file
-mutation journals, and fail-closed Docker isolation with networking disabled.
-FastAPI initializes and reports queue state but does not own the execution loop.
-Distributed/cloud execution, team collaboration, request-time dependency
-installation, arbitrary user images, and automatic approval remain out of scope.
-Legacy host project execution and direct compatibility-route mutation are
-retired; setting the former opt-in environment variable has no effect.
+The repository still contains experimental modules for later stages, but they are
+not loaded by the active backend:
 
-See [`docs/astra-local-operations.md`](docs/astra-local-operations.md) for the
-read-only doctor, prebuilt-image checks, startup, shutdown, and recovery guide.
-
-See [`docs/stage0-trust-integrity.md`](docs/stage0-trust-integrity.md) for the
-contracts, failure behavior, compatibility policy, and regression commands.
+- ML classifier hints are inactive.
+- RAG and embeddings are inactive.
+- Local SLM/Ollama coordination is inactive.
+- Dashboard and VS Code extension layers are inactive.
+- No automatic code rewriting is active.
 
 ## Active Rules
 
@@ -149,22 +118,6 @@ rejected validated suggestions, and suggestion acceptance rate.
 
 ## Run It
 
-For an already provisioned checkout, the supported local startup path performs
-no installation, image pull, or image build:
-
-```bash
-./scripts/astra_project_doctor.py --database-path data/app/ai_system.db
-./scripts/migrate_astra_database.py --database-path data/app/ai_system.db  # only if pending
-./scripts/astra_project_doctor.py --database-path data/app/ai_system.db
-./scripts/run_local_astra.sh
-```
-
-The migration command uses the reviewed additive registry and creates a
-SQLite-consistent pre-Stage-3H backup before historical record tagging.
-
-The setup commands below are provisioning steps and must only be run with
-explicit installation approval.
-
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -180,28 +133,12 @@ analysis:
 python -m backend.app.jobs
 ```
 
-Generate and run the controlled repair benchmark:
-
-```bash
-python tools/generate_repair_benchmark_cases.py
-python tools/run_repair_benchmark.py --allow-edits
-```
-
-For SLM-backed benchmark runs, keep Ollama, the FastAPI server, and the local
-worker running. The benchmark copies cases into `benchmarks/.runs/`, queues
-`POST /orchestrate` jobs, polls job status, and writes a JSON report.
-
 The live API is then available at:
 
 - `GET /health`
 - `POST /analyze`
 - `POST /analyze-file`
 - `POST /analyze-project`
-- `POST /orchestrate`
-- `GET /hardware-ai/report`
-- `GET /runtime/context`
-- `POST /runtime/validate-plan`
-- `POST /runtime/execution-profile`
 - `GET /rules`
 - `GET /tools`
 - `POST /feedback`
@@ -219,55 +156,12 @@ database is `data/app/ai_system.db`, which is excluded from Git. Set
 `AI_SYSTEM_WORKSPACE_ROOT` to limit `POST /analyze-file` to a specific local
 project root; file and project requests must stay within that root.
 
-### Canonical project worker
-
-Build the reviewed runtime image explicitly, then load its generated local
-configuration. Astra never pulls, builds, or installs dependencies while
-processing a request.
-
-```bash
-./scripts/build_stage2c_runtime.sh
-source ./.astra-stage2c-runtime.env
-export AI_SYSTEM_DB_PATH=data/app/ai_system.db
-export AI_SYSTEM_WORKSPACE_ROOT="$PWD"
-python -m backend.app.project_workers
-```
-
-`ASTRA_PROJECT_RECONCILIATION_ENABLED=1` is the default. Set it to `0` only
-after stopping workers and settling all in-flight cancellation rows during a
-controlled rollback; disabled recovery fails closed and does not restore host
-execution.
-
-The currently validated local image ID is
-`sha256:48e704e4391a936154583148f8d7950a1a15216bf38c8f4a57f153401a7bab2c`.
-Rebuilds must use the reviewed context, inspect the newly built ID, and update
-the generated untracked environment file rather than copying this value
-blindly.
-
-Use `--once` for one cycle or `--dispatch-only` to enqueue without executing.
-Isolation or cleanup failure blocks safely; there is no host fallback. Runtime
-health is available at `GET /chat/projects/runtime-capabilities`.
-
-See [`docs/stage2c-container-isolation-and-control.md`](docs/stage2c-container-isolation-and-control.md)
-for the ownership model, fail-closed isolation contract, worker startup, test
-commands, and current limitations. Exact stabilization evidence is recorded in
-[`docs/stabilization-checkpoint.md`](docs/stabilization-checkpoint.md).
-Stage 3C reconciliation ownership and recovery ordering are documented in
-[`docs/stage3c-terminal-reconciliation.md`](docs/stage3c-terminal-reconciliation.md).
-
 The `TMP=/tmp TEMP=/tmp` prefix prevents WSL pytest capture errors when the
 shell inherits a Windows temporary directory.
 
 ## Next Step
 
-Chat now answers exclusively through the canonical chat runtime
-(`CanonicalChatRuntimeService`): local generation goes only through
-`LocalAIService.execute_generation`, and retrieval is project-bound only, with no
-generic workspace-scan fallback. See
-[`docs/astra-phase9-canonical-chat-runtime.md`](docs/astra-phase9-canonical-chat-runtime.md)
-for the full integration. A compact frontend project selector now lets chat users pick
-a canonical project, which is durably remembered per-conversation and attached as
-`project_run_id` to future messages. Remaining open work: configuring a chat role
-through the durable role-mapping API in a real deployment (it is never seeded
-automatically). Model or classifier output remains non-authoritative for approval and
-verification decisions.
+After this stabilization checkpoint, the next planned implementation layer is a
+non-authoritative ML hints layer. ML hints should be returned separately from
+rule findings, should not produce validated patches, and should not affect safety
+decisions.
