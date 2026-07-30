@@ -1,0 +1,384 @@
+{
+  "schema_version": "astra.master-status.v1",
+  "programme": "astra-next",
+  "title": "Astra Next Master Plan \u2014 machine status",
+  "updated_at": "2026-07-30T16:03:06Z",
+  "normative_charter": "phase1",
+  "charter_precedence": "Phase 1 Research Charter overrides less precise monograph and master-plan language on definitions, authority, evidence, and research claims.",
+  "monograph": {
+    "path": "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
+    "identity": "Astra Next Research Blueprint v1.1 \u2014 Phase 1 Normative Revision",
+    "sha256": "1adc5e6441ed273cb43acaacc0374f7059d1c764b4dfee1241dc48f4f4c66244",
+    "bytes": 333938,
+    "role": "explanatory",
+    "note": "PDF builder and v1.1 monograph are tracked on branch cursor/blueprint-v11-final-d240 (PR #3). Hash below is from that artifact when present in the combined workspace; bind again after merge.",
+    "present_in_this_branch": false
+  },
+  "master_plan_path": "docs/astra-next-master-plan.md",
+  "decision_index_path": "docs/astra-next-master-decision-index.md",
+  "artifact_index_path": "artifacts/research/master/artifact-index.json",
+  "current_phase": 3,
+  "current_phase_name": "evidence-architecture",
+  "parallel_tracks": [
+    {
+      "id": "track-e",
+      "name": "engineering-health",
+      "status": "ongoing",
+      "rule": "Refactoring must not be reported as research improvement."
+    },
+    {
+      "id": "track-r",
+      "name": "isolated-research",
+      "status": "allowed",
+      "rule": "No production imports until an explicit promotion gate."
+    }
+  ],
+  "baseline_ladder": [
+    "B0",
+    "B1",
+    "B2",
+    "B3",
+    "B3.5",
+    "B4",
+    "B5"
+  ],
+  "forbidden_early": [
+    "miner_before_evidence_recomputation",
+    "learned_applicability_before_normalized_negatives",
+    "promotion_before_replay_and_held_out",
+    "production_execution_before_governance",
+    "intelligence_growth_claim_before_chronological_baselines",
+    "model_independence_claim_before_model_swap_or_removal"
+  ],
+  "phases": [
+    {
+      "phase": 0,
+      "name": "deterministic-baseline",
+      "status": "complete",
+      "gate_status": "passed",
+      "evidence_artifacts": [
+        "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
+        "docs/stage1-canonical-project-control-plane.md",
+        "docs/stage2c-container-isolation-and-control.md",
+        "docs/astra-phase9-canonical-chat-runtime.md"
+      ],
+      "open_questions": [
+        "Preserve regression health while reducing complexity debt on Track E."
+      ],
+      "forbidden_next_steps": [
+        "Treat architectural cleanup as experimental capability gain."
+      ],
+      "claims_allowed": [
+        "Bounded deterministic engineering operation under fixed safety kernel."
+      ],
+      "claims_forbidden": [
+        "Capability growth",
+        "Transfer",
+        "Model independence"
+      ]
+    },
+    {
+      "phase": 1,
+      "name": "research-identity-charter",
+      "status": "frozen",
+      "gate_status": "passed",
+      "evidence_artifacts": [
+        "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf#phase-1-normative-summary"
+      ],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Silent redefinition of intelligence, capability, learning, or transfer."
+      ],
+      "reopening_rule": "explicit_charter_amendment_only",
+      "claims_allowed": [
+        "Normative definitions and epistemic rules."
+      ],
+      "claims_forbidden": [
+        "Empirical performance claims beyond definitional probes."
+      ]
+    },
+    {
+      "phase": 2,
+      "name": "knowledge-representation",
+      "status": "complete",
+      "gate_status": "passed",
+      "housekeeping_remaining": [
+        "patch_level_grammar_versions",
+        "freeze_operation_versus_binding_in_decision_index",
+        "record_granularity_pressure_points",
+        "hash_bind_all_phase2_artifacts"
+      ],
+      "evidence_artifacts": [],
+      "probe_summary": {
+        "fastapi": {
+          "operations": 7,
+          "evidence_features": 8,
+          "invariants": 6,
+          "verifiers": 4,
+          "supported_fixtures": 3,
+          "distinct_graphs": 3,
+          "declared_gaps": 1,
+          "fixture_specific_features": 0
+        },
+        "pytest": {
+          "operations": 6,
+          "typed_bindings": 1,
+          "evidence_features": 6,
+          "invariants": 4,
+          "verification_contracts": 3,
+          "supported_fixtures": 3,
+          "distinct_graphs": 3,
+          "declared_gaps": 1,
+          "fixture_specific_features": 0
+        }
+      },
+      "open_questions": [
+        "Operation granularity pressure points under evolution decisions."
+      ],
+      "forbidden_next_steps": [
+        "Automatic discovery",
+        "Learned applicability",
+        "Transfer claims",
+        "Promotion",
+        "Capability-growth claims"
+      ],
+      "claims_allowed": [
+        "Two structurally distinct bounded grammars can represent multiple evidence-conditioned procedures without fixture identity or unrestricted generation."
+      ],
+      "claims_forbidden": [
+        "Discovery works",
+        "Applicability is learned",
+        "Transfer is demonstrated"
+      ]
+    },
+    {
+      "phase": 3,
+      "name": "evidence-architecture",
+      "status": "in_progress",
+      "gate_status": "open",
+      "evidence_artifacts": [],
+      "scientific_question": "Can Astra recompute a derived claim under a new evidence vocabulary while preserving original observations and the historical assessment unchanged?",
+      "gate_criteria": [
+        "unchanged_observation_hashes",
+        "new_interpretations_under_vocabulary_v2",
+        "superseded_but_unmodified_v1_assessment",
+        "explicit_changed_result",
+        "no_held_out_leakage",
+        "no_preference_contamination",
+        "no_episode_fragmentation"
+      ],
+      "required_deliverables": [
+        "CanonicalEngineeringEpisode",
+        "observation_references",
+        "repository_snapshot_identity",
+        "feature_interpretations",
+        "explicit_missingness",
+        "extractor_and_vocabulary_versions",
+        "derived_assessments",
+        "supersession",
+        "append_only_research_store",
+        "recomputation_engine",
+        "leakage_validation",
+        "preference_quarantine",
+        "evidence_recomputation_probe"
+      ],
+      "open_questions": [
+        "Exact on-disk schema for observation/interpretation/assessment tables."
+      ],
+      "forbidden_next_steps": [
+        "Start Phase 6 miner",
+        "Rely on mutable working-tree state as sole evidence",
+        "Allow preference records into compilation inputs"
+      ]
+    },
+    {
+      "phase": 4,
+      "name": "trajectory-normalization",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        3
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Success-only dataset construction"
+      ]
+    },
+    {
+      "phase": 5,
+      "name": "manual-compiler-baseline",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        3,
+        4
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Production activation of candidates",
+        "Compiler self-promotion"
+      ]
+    },
+    {
+      "phase": 6,
+      "name": "pattern-mining",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        3,
+        4,
+        5
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Treat failed bounded unification as committed split"
+      ]
+    },
+    {
+      "phase": 7,
+      "name": "applicability-learning",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        4,
+        5,
+        6
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Encode alternate procedures inside applicability predicates"
+      ]
+    },
+    {
+      "phase": 8,
+      "name": "simulation-mutation-replay",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        5,
+        6,
+        7
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Held-out evaluation before mutation and replay reports"
+      ]
+    },
+    {
+      "phase": 9,
+      "name": "held-out-transfer",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        8
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Use adaptation targets as transfer evidence for the adapted version"
+      ]
+    },
+    {
+      "phase": 10,
+      "name": "capability-governance",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        9
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Compiler-direct lifecycle mutation"
+      ]
+    },
+    {
+      "phase": 11,
+      "name": "capability-library-execution",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        10
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Bypass approvals, scope, isolation, artifact identity, or verification"
+      ]
+    },
+    {
+      "phase": 12,
+      "name": "strategy-ranking",
+      "status": "emerging_baseline",
+      "gate_status": "open_shadow_only",
+      "blocked_by": [
+        11
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [
+        "When does shadow ranker beat rules on held-out ledger + phase0 without unsafe selection?"
+      ],
+      "forbidden_next_steps": [
+        "Ranker introduces non-allowlisted strategies",
+        "Promote without beating rules baseline"
+      ]
+    },
+    {
+      "phase": 13,
+      "name": "chronological-growth",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        11,
+        12
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Claim intelligence growth without B0-B5 comparison",
+        "Treat episode count as independent repository sample count"
+      ],
+      "checkpoints_episodes": [
+        0,
+        100,
+        250,
+        500,
+        750,
+        1000
+      ]
+    },
+    {
+      "phase": 14,
+      "name": "model-independence",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        13
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Claim model independence without swap or removal condition"
+      ]
+    },
+    {
+      "phase": 15,
+      "name": "capstone-delivery",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "blocked_by": [
+        14
+      ],
+      "evidence_artifacts": [],
+      "open_questions": [],
+      "forbidden_next_steps": [
+        "Submit without reproducible artifact index and commands"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "schema_version": "astra.artifact-index.v1",
+  "programme": "astra-next",
+  "created_at": "2026-07-30T16:04:30Z",
+  "git_commit": "bcfb83887496047346463886a0fd1bab0253ac26",
+  "normative_charter": "phase1",
+  "catalog": [
+    {
+      "path": "docs/astra-next-master-plan.md",
+      "status": "present",
+      "bytes": 24514,
+      "sha256": "19547b9f8a415629dcac3591b8daaf312782914272943759c2788cb1d55a5bd6",
+      "role": "master_plan"
+    },
+    {
+      "path": "docs/astra-next-master-status.json",
+      "status": "present",
+      "bytes": 10592,
+      "sha256": "8d36a68609b5ce1edd5247989e4a8d49f2063cf35400e60321868e9c7df3f627",
+      "role": "master_status"
+    },
+    {
+      "path": "docs/astra-next-master-decision-index.md",
+      "status": "present",
+      "bytes": 7114,
+      "sha256": "f9143e495f21d9fb12981818376b7be56c2f76b147e131a9661ad06a8346ea50",
+      "role": "decision_index"
+    },
+    {
+      "path": "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
+      "status": "pending_merge_from_blueprint_pr",
+      "role": "research_monograph",
+      "note": "Present on cursor/blueprint-v11-final-d240 (PR #3)."
+    },
+    {
+      "path": "tmp/pdfs/build_astra_next_pdf.py",
+      "status": "pending_merge_from_blueprint_pr",
+      "role": "monograph_builder",
+      "note": "Present on cursor/blueprint-v11-final-d240 (PR #3)."
+    },
+    {
+      "path": "docs/stage1-canonical-project-control-plane.md",
+      "status": "present",
+      "bytes": 13218,
+      "sha256": "f02091bbb772b69c9a86115b245b95e2ae6c0a414a5b277d04480e67e2941973",
+      "role": "supporting_doc"
+    },
+    {
+      "path": "docs/stage2c-container-isolation-and-control.md",
+      "status": "present",
+      "bytes": 7102,
+      "sha256": "815d02a7307eff298e64fe2b17b9f5d399e30beab639df9560f5d10e91ab33cc",
+      "role": "supporting_doc"
+    },
+    {
+      "path": "docs/astra-phase9-canonical-chat-runtime.md",
+      "status": "present",
+      "bytes": 8936,
+      "sha256": "3a9955de803717b4c9f36ad9029c6fc14bde2d15f648425aaa1d36eee42f750f",
+      "role": "supporting_doc"
+    },
+    {
+      "path": "docs/stabilization-checkpoint.md",
+      "status": "present",
+      "bytes": 8567,
+      "sha256": "72e35b6e8a0b5d8762dbfa29a0c07338bc7f7cdf4dc927b3d1c531cf310e84da",
+      "role": "supporting_doc"
+    },
+    {
+      "path": "docs/astra-next-phase1-research-charter.md",
+      "role": "phase1_charter",
+      "status": "external_or_pending",
+      "note": "Normative charter; must be hash-bound when synced into this repository."
+    },
+    {
+      "path": "artifacts/research/phase2/fastapi-grammar/",
+      "role": "phase2_grammar",
+      "status": "external_or_pending"
+    },
+    {
+      "path": "artifacts/research/phase2/pytest-grammar/",
+      "role": "phase2_grammar",
+      "status": "external_or_pending"
+    },
+    {
+      "path": "artifacts/research/phase2/probe-report.json",
+      "role": "phase2_probe",
+      "status": "external_or_pending"
+    },
+    {
+      "path": "artifacts/research/phase3/recomputation-probe/",
+      "role": "phase3_probe",
+      "status": "not_started"
+    },
+    {
+      "path": "benchmarks/results/baseline_phase0.v1.json",
+      "role": "phase0_benchmark",
+      "status": "external_or_pending",
+      "note": "Monograph cites 40/40 phase0.v1; bind exact results file when available in-repo."
+    }
+  ],
+  "commands": {
+    "rebuild_monograph": "python3 tmp/pdfs/build_astra_next_pdf.py",
+    "validate_status_json": "python3 -m json.tool docs/astra-next-master-status.json > /dev/null"
+  },
+  "notes": [
+    "Pending entries are intentionally listed so Phase 2/3 local probe artifacts can be bound without renaming IDs.",
+    "Do not delete superseded assessments; record supersession in Phase 3 stores."
+  ]
+}
