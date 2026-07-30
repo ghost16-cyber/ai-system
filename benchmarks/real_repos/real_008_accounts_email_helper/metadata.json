@@ -1,0 +1,25 @@
+{
+  "bug_type": "helper_function_bug",
+  "case_id": "real_008_accounts_email_helper",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "todo_app/helpers.py"
+  ],
+  "expected_source_file": "todo_app/helpers.py",
+  "expected_test_file": "tests/test_accounts.py",
+  "goal": "Fix the failing account canonical email test.",
+  "known_patch": {
+    "new": "return value.strip().lower()",
+    "old": "return value.strip()",
+    "path": "todo_app/helpers.py"
+  },
+  "multi_file": true,
+  "real_repo": true,
+  "relevant_files": [
+    "tests/test_accounts.py",
+    "todo_app/__init__.py",
+    "todo_app/accounts.py",
+    "todo_app/helpers.py"
+  ],
+  "repo_family": "flask_todo_app"
+}

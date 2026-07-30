@@ -1,0 +1,22 @@
+{
+  "bug_type": "duplicate_handling",
+  "case_id": "case_017_duplicate_handling",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "dedupe.py"
+  ],
+  "expected_patch_hint": "dict.fromkeys",
+  "expected_source_file": "dedupe.py",
+  "expected_test_file": "test_dedupe.py",
+  "goal": "Fix the failing unique-list test.",
+  "known_patch": {
+    "new": "return list(dict.fromkeys(values))",
+    "old": "return values",
+    "path": "dedupe.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "dedupe.py",
+    "test_dedupe.py"
+  ]
+}

@@ -1,0 +1,606 @@
+{
+  "assignment_number": 1,
+  "credentials_included": false,
+  "dataset_path": null,
+  "document_path": "<inline>",
+  "evidence_checklist": {
+    "items": [
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-1b5d825713",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-36b41a1700",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-a73a6d2ebf",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-4b27affcd2",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-1008d1d030",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-a87a624f84",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-5c612a96b7",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-75eac930ad",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-2eb45d118e",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-51adf6b1c5",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-9b417d65fa",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-260a8e084f",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-2c94b7c32c",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-d1bba6f980",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-e071afea75",
+        "evidence_type": "screenshot",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-31c5cffe26",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Kafka Producer"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-eafd8694ef",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Consumer with Enrichment"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-41c1cbc15c",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Sink to InfluxDB"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-eb8593e914",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Grafana Dashboard"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-6c4ab2b5e6",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Analysis"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-59fe0ebb10",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Consumer computes a meaningful derived field and outputs for"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-f11731d431",
+        "evidence_type": "terminal_output",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Terminal output for Consumer computes a meaningful derived field and outputs for"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-2b3f0bd739",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for InfluxDB receives enriched data; tags and fields are correct"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-e7c8a1af3f",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Dashboard has 4+ panels with live data, auto-refreshes, clea"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-cf3b8705fb",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Analysis answers are accurate and well-argued 4"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-b8eb579427",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Load, Clean & Profile"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-4147937801",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Aggregations & Spark SQL"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-19f2407d6b",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Window Functions"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-705e38edab",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Load Data into Snowflake"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-f301a8017f",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Build an Interactive Dashboard"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-d100d72a78",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Data loaded and cleaned, types cast, derived column adds val"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-981d2d409d",
+        "evidence_type": "terminal_output",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Terminal output for Data loaded and cleaned, types cast, derived column adds val"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-762813bab4",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Four business questions answered correctly using both DataFr"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-8360f4e6d6",
+        "evidence_type": "terminal_output",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Terminal output for Four business questions answered correctly using both DataFr"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-be5a114adf",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Rank, cumulative total, and growth metric window functions a"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-72f38ec99f",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Data loaded into Snowflake; SQL queries run correctly and re"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-86ae769fd2",
+        "evidence_type": "terminal_output",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Terminal output for Data loaded into Snowflake; SQL queries run correctly and re"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-b05ab8d27d",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Dashboard queries Snowflake, filter is reactive, all visual"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-d4c85bcba9",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Kafka Replay Producer"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-d5fc973ac6",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for PySpark Structured Streaming Job"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-6dad6eac90",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Watermarking & Late Data"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-138fcba293",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Streamlit Live Dashboard"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-a2f4f02c7b",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Streaming job parses JSON, applies windowed aggregations, cl"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-6323f93b79",
+        "evidence_type": "terminal_output",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Terminal output for Streaming job parses JSON, applies windowed aggregations, cl"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-f15b500399",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Watermark correctly applied; late data handling explained in"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-87f2da7f5f",
+        "evidence_type": "code_file",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Code evidence for Dashboard auto-refreshes with live data across all required"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-a2ea7848f9",
+        "evidence_type": "report_answer",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Report answer: \u2022 How would you make this pipeline resilient to a Kafka broker failure"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-d5423d48b3",
+        "evidence_type": "report_answer",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Report answer: Analysis Questions [2 marks]"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-e9ee074cd3",
+        "evidence_type": "report_answer",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Report answer: \u2022 Compare the behaviour of your pipeline in Assignment 3 to your batch"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-af4ee27765",
+        "evidence_type": "validation_query",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Validation evidence: Task 2 \u2014 Aggregations & Spark SQL [6 marks]"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-68c7c4893d",
+        "evidence_type": "validation_query",
+        "priority": "blocker",
+        "status": "missing",
+        "title": "Validation evidence: Task 4 \u2014 Load Data into Snowflake [6 marks]"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-00ed1b5fd0",
+        "evidence_type": "code_file",
+        "priority": "optional",
+        "status": "missing",
+        "title": "Optional bonus evidence: Bonus (+3 marks): Demonstrate Snowflake Time Travel by query"
+      },
+      {
+        "assignment_name": "General Instructions",
+        "evidence_id": "ev-a726830088",
+        "evidence_type": "code_file",
+        "priority": "optional",
+        "status": "missing",
+        "title": "Optional bonus evidence: Bonus (+3 marks): Add a second streaming query that uses a s"
+      }
+    ],
+    "summary": {
+      "by_assignment": {
+        "General Instructions": {
+          "missing": 53,
+          "total": 53
+        }
+      },
+      "by_evidence_type": {
+        "code_file": 28,
+        "report_answer": 3,
+        "screenshot": 15,
+        "terminal_output": 5,
+        "validation_query": 2
+      },
+      "missing_count": 53,
+      "provided_count": 0,
+      "total_required": 51,
+      "verified_count": 0
+    },
+    "title": "General Instructions evidence checklist"
+  },
+  "files_written": false,
+  "generated_files": [
+    "consumer_to_influx.py",
+    "docker-compose.yml",
+    "producer.py"
+  ],
+  "last_updated": "2026-07-09T19:05:32.505237Z",
+  "missing_report_sections": [
+    "Report answer: \u2022 How would you make this pipeline resilient to a Kafka broker failure",
+    "Report answer: Analysis Questions [2 marks]",
+    "Report answer: \u2022 Compare the behaviour of your pipeline in Assignment 3 to your batch"
+  ],
+  "missing_screenshots": [
+    "Screenshot: \ud83d\udcf8 SCREENSHOT REQUIRED",
+    "Terminal output for Consumer computes a meaningful derived field and outputs for",
+    "Terminal output for Data loaded and cleaned, types cast, derived column adds val",
+    "Terminal output for Four business questions answered correctly using both DataFr",
+    "Terminal output for Data loaded into Snowflake; SQL queries run correctly and re",
+    "Terminal output for Streaming job parses JSON, applies windowed aggregations, cl",
+    "Validation evidence: Task 2 \u2014 Aggregations & Spark SQL [6 marks]",
+    "Validation evidence: Task 4 \u2014 Load Data into Snowflake [6 marks]"
+  ],
+  "readiness_level": "in_progress",
+  "report_files": [
+    "report_package/report_outline.md",
+    "report_package/evidence_checklist.md",
+    "report_package/runbook.md",
+    "report_package/marking_readiness.md",
+    "report_package/appendix_code_checklist.md"
+  ],
+  "runbook_steps": [
+    {
+      "command_suggestion": {
+        "allowed": true,
+        "command": "docker compose up",
+        "executed": false,
+        "expected_output_hint": "Container startup logs.",
+        "purpose": "Start services defined in docker-compose.yml.",
+        "requires_confirmation": true,
+        "risk_level": "medium",
+        "why_safe": "Starts project-declared containers after confirmation.",
+        "working_directory": "/home/palla/projects/ai-system-1"
+      },
+      "expected_result": "Containers show as running.",
+      "explanation": "Start Kafka, InfluxDB, and Grafana from docker-compose.yml.",
+      "screenshot_to_take": "Docker containers running",
+      "step_id": "a1-01",
+      "title": "Start Docker services",
+      "troubleshooting_hint": "If Docker is unavailable, start Docker Desktop first."
+    },
+    {
+      "command_suggestion": {
+        "allowed": true,
+        "command": "python producer.py",
+        "executed": false,
+        "expected_output_hint": "Script logs or a Python traceback.",
+        "purpose": "Run Python script producer.py.",
+        "requires_confirmation": true,
+        "risk_level": "medium",
+        "why_safe": "Runs one explicit project script after confirmation.",
+        "working_directory": "/home/palla/projects/ai-system-1"
+      },
+      "expected_result": "Producer terminal prints sent events.",
+      "explanation": "Send sample records into the Kafka topic.",
+      "screenshot_to_take": "Producer terminal",
+      "step_id": "a1-02",
+      "title": "Run Kafka producer",
+      "troubleshooting_hint": "Check bootstrap server and topic name."
+    },
+    {
+      "command_suggestion": {
+        "allowed": true,
+        "command": "python consumer_to_influx.py",
+        "executed": false,
+        "expected_output_hint": "Script logs or a Python traceback.",
+        "purpose": "Run Python script consumer_to_influx.py.",
+        "requires_confirmation": true,
+        "risk_level": "medium",
+        "why_safe": "Runs one explicit project script after confirmation.",
+        "working_directory": "/home/palla/projects/ai-system-1"
+      },
+      "expected_result": "Consumer terminal prints processed events.",
+      "explanation": "Consume Kafka events and write them to InfluxDB.",
+      "screenshot_to_take": "Consumer terminal",
+      "step_id": "a1-03",
+      "title": "Run consumer to InfluxDB",
+      "troubleshooting_hint": "Check InfluxDB URL, token placeholders, and bucket."
+    },
+    {
+      "command_suggestion": null,
+      "expected_result": "Recent measurements are visible.",
+      "explanation": "Open InfluxDB and verify records arrived.",
+      "screenshot_to_take": "InfluxDB Data Explorer",
+      "step_id": "a1-04",
+      "title": "Check InfluxDB Data Explorer",
+      "troubleshooting_hint": "Check the bucket and time range."
+    },
+    {
+      "command_suggestion": null,
+      "expected_result": "Dashboard panels refresh with recent values.",
+      "explanation": "Open Grafana and confirm live panels show data.",
+      "screenshot_to_take": "Grafana dashboard",
+      "step_id": "a1-05",
+      "title": "Check Grafana dashboard",
+      "troubleshooting_hint": "Check data source configuration."
+    },
+    {
+      "command_suggestion": null,
+      "expected_result": "Services are stopped without deleting project files.",
+      "explanation": "Stop containers when evidence has been captured.",
+      "screenshot_to_take": null,
+      "step_id": "a1-06",
+      "title": "Stop services safely",
+      "troubleshooting_hint": "Avoid destructive volume deletion unless you intentionally want a reset."
+    }
+  ],
+  "safe_commands": [
+    {
+      "allowed": true,
+      "command": "python -m pytest -q",
+      "executed": false,
+      "expected_output_hint": "Dots and a final pass/fail summary.",
+      "purpose": "Run the project test suite.",
+      "requires_confirmation": false,
+      "risk_level": "low",
+      "why_safe": "Pytest is a local read/write test command and is explicit.",
+      "working_directory": "/home/palla/projects/ai-system-1"
+    },
+    {
+      "allowed": true,
+      "command": "docker ps",
+      "executed": false,
+      "expected_output_hint": "A table of running containers.",
+      "purpose": "List running Docker containers.",
+      "requires_confirmation": false,
+      "risk_level": "low",
+      "why_safe": "Read-only Docker status command.",
+      "working_directory": "/home/palla/projects/ai-system-1"
+    },
+    {
+      "allowed": true,
+      "command": "docker compose up",
+      "executed": false,
+      "expected_output_hint": "Container startup logs.",
+      "purpose": "Start services defined in docker-compose.yml.",
+      "requires_confirmation": true,
+      "risk_level": "medium",
+      "why_safe": "Starts project-declared containers after confirmation.",
+      "working_directory": "/home/palla/projects/ai-system-1"
+    }
+  ],
+  "tools_executed": false
+}

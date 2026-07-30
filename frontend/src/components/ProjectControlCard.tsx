@@ -1,0 +1,151 @@
+import { Activity, CheckCircle2, ChevronDown, CircleAlert, FileText, ShieldCheck, X, XCircle } from "lucide-react";
+import { useState } from "react";
+import type { CanonicalProjectActionDescriptor, CanonicalProjectEventSummary } from "../types/contracts";
+import {
+  isCancelledCanonicalProject,
+  isCompletedCanonicalProject,
+  sortCanonicalProjectEvents,
+  type CanonicalProjectAction,
+} from "../state/projectControlState";
+
+export function ProjectControlCard({
+  project,
+  events = [],
+  busy = false,
+  onAction,
+  onManualEvidence,
+}: {
+  project: CanonicalProjectAction;
+  events?: CanonicalProjectEventSummary[];
+  busy?: boolean;
+  onAction: (action: CanonicalProjectActionDescriptor) => void;
+  onManualEvidence?: (criterionId: string, notes: string, decision: "passed" | "failed") => void;
+}) {
+  const completed = project.progress.completed_work_units ?? 0;
+  const total = project.progress.total_work_units ?? 0;
+  const passed = project.verificationSummary.passed ?? 0;
+  const criteria = project.verificationSummary.total ?? Object.keys(project.criterionStates).length;
+  const executionStatus = project.execution.cancellationStatus
+    ?? project.execution.workerStatus
+    ?? project.execution.dispatchStatus
+    ?? project.execution.attemptStatus;
+  const manualCriteria = Object.entries(project.criterionStates).filter(([, state]) =>
+    ["manual_required", "manual_evidence_required"].includes(String(state.outcome ?? "")),
+  );
+  const patchApprovalAction = project.nextPermittedActions.find((action) => action.action === "approve_patch");
+  const patchReviewArtifacts = project.artifacts.filter((artifact) =>
+    artifact.artifact_id === patchApprovalAction?.artifact_id
+      && ["patch_preview", "repair_preview"].includes(artifact.artifact_type),
+  );
+  const patchReviewReady = patchReviewArtifacts.some((artifact) => artifact.patch_review?.review_complete === true);
+  return <div className="action-card project-delivery-card" data-project-run-id={project.projectRunId}>
+    <div className="card-heading"><div><span className="eyebrow">Canonical project</span><h2>Bounded project task</h2></div><span className={`status status-${project.lifecycleState}`}>{project.lifecycleState.replace(/_/g, " ")}</span></div>
+    <div className="delivery-progress" aria-label="Canonical project progress">
+      <span><strong>{completed} of {total}</strong> work units complete</span>
+      <span><strong>{passed} of {criteria}</strong> verification criteria passed</span>
+      <span><strong>State {project.stateVersion}</strong> canonical revision</span>
+    </div>
+    <section className="job-section"><h3>Control state</h3><div className="synthesis-facts">
+      <span><strong>Approval</strong>{project.approvalState.replace(/_/g, " ")}</span>
+      <span><strong>Manifest</strong>{project.manifestComplete ? "complete" : "incomplete"}</span>
+      <span><strong>Projection</strong>{project.projection.status ?? "current"}{project.projection.lag ? ` · ${project.projection.lag} events behind` : ""}</span>
+      <span><strong>Artifacts</strong>{project.artifacts.length}</span>
+    </div></section>
+    {project.coordinator && <div className="progress-line"><Activity className={project.coordinator.status === "claimed" ? "spin" : ""} size={16} /><span>Coordinator: {project.coordinator.intent_type.replace(/_/g, " ")} · {project.coordinator.status}</span></div>}
+    {project.artifacts.filter((artifact) => artifact.artifact_type === "retrieval_evidence").map((artifact) => <section className="job-section rag-evidence-card" key={artifact.artifact_id} aria-label="Advisory retrieval evidence">
+      <div className="card-heading"><div><span className="eyebrow">Advisory evidence</span><h3>Cited repository context</h3></div><span className={`status ${artifact.invalidated ? "status-failed" : "status-completed"}`}>{artifact.invalidated ? "stale or invalidated" : "fresh when retrieved"}</span></div>
+      <p>Retrieved passages are untrusted reference material. They grant no approval, execution, or mutation authority.</p>
+      <div className="synthesis-facts">
+        <span><strong>Mode</strong>{artifact.retrieval_mode?.replace(/_/g, " ") ?? "hybrid retrieval"}</span>
+        <span><strong>Reranker</strong>{artifact.reranker_fallback ? "deterministic fallback" : artifact.reranker_identity ?? "deterministic"}</span>
+        <span><strong>Authority</strong>advisory only</span>
+      </div>
+      {(artifact.retrieval_evidence ?? []).map((citation) => <details className="technical rag-citation" key={citation.evidence_id}>
+        <summary><FileText size={15} /><span>{citation.citation_label} · <span className="path-wrap">{citation.relative_path}</span> · lines {citation.line_start}–{citation.line_end}</span></summary>
+        <div className="technical-body"><pre>{citation.excerpt}</pre><small>Untrusted retrieved content</small></div>
+      </details>)}
+    </section>)}
+    {patchReviewArtifacts.map((artifact) => artifact.patch_review && <section className="job-section patch-review-card" key={`review:${artifact.artifact_id}`} aria-label="Exact patch review">
+      <div className="card-heading"><div><span className="eyebrow">{artifact.artifact_type === "repair_preview" ? "Repair proposal" : "Patch proposal"}</span><h3>Review exact proposed changes</h3></div><span className={`status ${artifact.patch_review.review_complete ? "status-completed" : "status-failed"}`}>{artifact.patch_review.review_complete ? "complete review" : "review unavailable"}</span></div>
+      {artifact.patch_review.summary && <p>{artifact.patch_review.summary}</p>}
+      <p className="muted">Nothing has been changed. Approval applies only to this immutable artifact and its displayed operations.</p>
+      <div className="synthesis-facts">
+        <span><strong>Operations</strong>{artifact.patch_review.operation_count}</span>
+        <span><strong>Source</strong>{artifact.patch_review.advisory_only ? "local model · advisory" : "deterministic"}</span>
+        <span><strong>Approval</strong>exact artifact only</span>
+      </div>
+      {artifact.patch_review.operations.map((operation, index) => <details className="patch-file" open key={`${operation.path}:${index}`}>
+        <summary><ChevronDown size={15} /><code>{operation.path}</code><span>{operation.operation.replace(/_/g, " ")}</span></summary>
+        {operation.rationale && <p>{operation.rationale}</p>}
+        {operation.affected_symbols.length > 0 && <div className="source-chips">{operation.affected_symbols.map((symbol) => <code key={symbol}>{symbol}</code>)}</div>}
+        {operation.replacements.map((replacement, replacementIndex) => <pre className="patch-diff" key={`${replacement.start_line}:${replacementIndex}`}>{replacementDiff(replacement)}</pre>)}
+        {operation.content !== null && <pre className="patch-diff">{operation.content}</pre>}
+        {Object.keys(operation.additional_details).length > 0 && <details className="technical"><summary><ChevronDown size={14} />Additional exact operation fields</summary><pre>{JSON.stringify(operation.additional_details, null, 2)}</pre></details>}
+        {operation.expected_sha256 && <small>Expected source SHA-256: <code>{operation.expected_sha256}</code></small>}
+      </details>)}
+      <details className="technical"><summary><ChevronDown size={15} />Immutable binding</summary><div className="technical-body"><span>Artifact: {artifact.artifact_id}</span><span>Content hash: {artifact.content_hash}</span><span>Binding hash: {artifact.binding_hash}</span></div></details>
+    </section>)}
+    {patchApprovalAction && !patchReviewReady && <div className="result failed"><CircleAlert size={17} /><div><strong>Patch approval withheld</strong><p>The exact current patch review is missing or incomplete. Refresh the project before approving; no files have changed.</p></div></div>}
+    {manualCriteria.map(([criterionId, state]) => <ManualEvidenceCard key={criterionId} criterionId={criterionId} state={state} busy={busy} onSubmit={onManualEvidence} />)}
+    {(project.execution.attemptId || project.execution.dispatchId || project.execution.workerRequestId || project.execution.cancellationId) && <section className="job-section"><h3>Isolated execution</h3><div className="synthesis-facts">
+      <span><strong>Attempt</strong>{project.execution.attemptType?.replace(/_/g, " ") ?? "pending"}</span>
+      <span><strong>Status</strong>{executionStatus?.replace(/_/g, " ") ?? "pending"}</span>
+      <span><strong>Identity</strong>{project.execution.workerRequestId ?? project.execution.dispatchId ?? project.execution.attemptId ?? "persisting"}</span>
+      <span><strong>Cancellation</strong>{project.execution.cancellationStatus?.replace(/_/g, " ") ?? "not requested"}</span>
+    </div></section>}
+    {Object.keys(project.repairState).length > 0 && <div className="result failed"><CircleAlert size={17} /><div><strong>Bounded repair state</strong><p>{String(project.repairState.status ?? "prepared").replace(/_/g, " ")}. A repair is never applied automatically.</p></div></div>}
+    {project.blockedReason && <div className="result failed"><CircleAlert size={17} /><div><strong>Project paused safely</strong><p>{project.blockedReason}</p></div></div>}
+    {project.execution.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Execution failure</strong><p>{project.execution.failureClassification.replace(/_/g, " ")}</p></div></div>}
+    {project.projection.failureClassification && <div className="result failed"><CircleAlert size={17} /><div><strong>Projection recovery required</strong><p>{project.projection.failureClassification.replace(/_/g, " ")}</p></div></div>}
+    {isCompletedCanonicalProject(project) && <div className="result completed"><CheckCircle2 size={17} /><div><strong>Canonical project completed</strong><p>The durable control plane recorded the terminal state.</p></div></div>}
+    {isCancelledCanonicalProject(project) && <div className="result cancelled"><XCircle size={17} /><div><strong>Canonical project cancelled</strong><p>The durable control plane recorded the terminal state. No further work will occur.</p></div></div>}
+    {events.length > 0 && <details className="technical project-timeline"><summary><ChevronDown size={15} />Timeline</summary><ol className="technical-body">
+      {sortCanonicalProjectEvents(events).map((event) => <li key={event.sequence}><CheckCircle2 size={13} /><span>{event.label}</span><small>{new Date(event.occurred_at).toLocaleString()}</small></li>)}
+    </ol></details>}
+    <div className="button-row">
+      {project.nextPermittedActions.map((action) => <button
+        key={`${action.action}:${action.expected_state_version}:${action.artifact_id ?? "none"}`}
+        className={action.action === "cancel_project" ? "secondary-button danger" : "primary-button"}
+        disabled={busy || (action.action === "approve_patch" && !patchReviewReady)}
+        onClick={() => onAction(action)}
+      >{action.action === "cancel_project" ? <X size={16} /> : action.action.includes("approve") ? <ShieldCheck size={16} /> : <FileText size={16} />}{action.label}</button>)}
+    </div>
+    <details className="technical"><summary><ChevronDown size={15} />Technical details</summary><div className="technical-body">
+      <span>Project: {project.projectRunId}</span><span>Pending: {project.pendingUserAction ?? "none"}</span>
+      <pre>{JSON.stringify(project.response, null, 2)}</pre>
+    </div></details>
+  </div>;
+}
+
+function replacementDiff(replacement: {
+  start_line: number;
+  end_line: number;
+  expected_text: string;
+  replacement_text: string;
+}): string {
+  const before = replacement.expected_text.split("\n").map((line) => `- ${line}`).join("\n");
+  const after = replacement.replacement_text.split("\n").map((line) => `+ ${line}`).join("\n");
+  return `@@ lines ${replacement.start_line}-${replacement.end_line} @@\n${before}\n${after}`;
+}
+
+function ManualEvidenceCard({ criterionId, state, busy, onSubmit }: {
+  criterionId: string;
+  state: Record<string, unknown>;
+  busy: boolean;
+  onSubmit?: (criterionId: string, notes: string, decision: "passed" | "failed") => void;
+}) {
+  const [notes, setNotes] = useState("");
+  return <div className="result pending" data-manual-criterion-id={criterionId}>
+    <CircleAlert size={17} /><div><strong>Manual evidence required</strong>
+      <p>Criterion {criterionId} could not be decided automatically. Handoff remains blocked until bounded evidence is submitted and reviewed.</p>
+      {Boolean(state.evidence_id) && <p>Evidence: {String(state.evidence_id)} · {String(state.manual_status ?? state.outcome)}</p>}
+      {onSubmit && <div className="manual-evidence-form">
+        <textarea aria-label={`Evidence for ${criterionId}`} maxLength={4000} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Describe the observation or checklist result" />
+        <div className="button-row">
+          <button className="primary-button" disabled={busy || !notes.trim()} onClick={() => onSubmit(criterionId, notes.trim(), "passed")}>Submit as passed</button>
+          <button className="secondary-button" disabled={busy || !notes.trim()} onClick={() => onSubmit(criterionId, notes.trim(), "failed")}>Submit as failed</button>
+        </div>
+      </div>}
+    </div>
+  </div>;
+}

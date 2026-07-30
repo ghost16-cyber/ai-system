@@ -1,0 +1,24 @@
+{
+  "bug_type": "off_by_one",
+  "case_id": "real_004_todo_count_items",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "todo_app/stats.py"
+  ],
+  "expected_source_file": "todo_app/stats.py",
+  "expected_test_file": "tests/test_stats.py",
+  "goal": "Fix the failing todo count test.",
+  "known_patch": {
+    "new": "return len(values)",
+    "old": "return len(values) - 1",
+    "path": "todo_app/stats.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "tests/test_stats.py",
+    "todo_app/__init__.py",
+    "todo_app/stats.py"
+  ],
+  "repo_family": "flask_todo_app"
+}

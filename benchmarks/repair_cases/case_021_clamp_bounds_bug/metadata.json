@@ -1,0 +1,22 @@
+{
+  "bug_type": "bounds_logic",
+  "case_id": "case_021_clamp_bounds_bug",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "bounds.py"
+  ],
+  "expected_patch_hint": "min(value, high)",
+  "expected_source_file": "bounds.py",
+  "expected_test_file": "test_bounds.py",
+  "goal": "Fix the failing clamp upper-bound test.",
+  "known_patch": {
+    "new": "return max(low, min(value, high))",
+    "old": "return max(low, value)",
+    "path": "bounds.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "bounds.py",
+    "test_bounds.py"
+  ]
+}

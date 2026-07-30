@@ -1,0 +1,11 @@
+{
+  "base_image": "node:22-bookworm-slim",
+  "base_image_digest": "sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3",
+  "node": "22.23.1",
+  "npm": "10.9.8",
+  "python_debian_package": "3.11.2-1+b1",
+  "pip_debian_package": "23.0.1+dfsg-1",
+  "pytest_debian_package": "7.2.1-2",
+  "runtime_gid": 65532,
+  "runtime_uid": 65532
+}

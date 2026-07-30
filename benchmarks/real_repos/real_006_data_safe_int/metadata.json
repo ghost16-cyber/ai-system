@@ -1,0 +1,24 @@
+{
+  "bug_type": "wrong_exception_handling",
+  "case_id": "real_006_data_safe_int",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "data_utils/parser.py"
+  ],
+  "expected_source_file": "data_utils/parser.py",
+  "expected_test_file": "tests/test_parser.py",
+  "goal": "Fix the failing safe integer parsing test.",
+  "known_patch": {
+    "new": "try:\n        return int(value)\n    except ValueError:\n        return 0",
+    "old": "return int(value)",
+    "path": "data_utils/parser.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "data_utils/__init__.py",
+    "data_utils/parser.py",
+    "tests/test_parser.py"
+  ],
+  "repo_family": "data_utils_package"
+}

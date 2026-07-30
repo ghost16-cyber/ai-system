@@ -38,11 +38,12 @@ ai-coding-assistant/
 
 The active system is a deterministic local backend. It exposes FastAPI endpoints,
 static Python rule analysis, validated single-file proposals, SQLite persistence,
-and a local queued worker for project analysis.
+and a local queued worker for project analysis and orchestrated assistant tasks.
 
 ML, RAG, local SLM/Ollama coordination, frontend dashboard work, and VS Code
-extension work remain staged future layers. They are not part of the active
-runtime path.
+extension work remain staged future layers. The active orchestrator currently
+uses a deterministic scripted proposer and explicit interfaces for future SLM
+and DL advisor adapters.
 
 ## Active Module Mapping
 
@@ -57,6 +58,7 @@ runtime path.
 | SQLite job queue | `backend/app/jobs/queue.py` |
 | Local worker | `backend/app/jobs/worker.py` |
 | Project job handlers | `backend/app/jobs/handlers.py` |
+| SLM-ready task orchestrator | `backend/app/orchestrator/` |
 | Repository scanner | `backend/app/repo_scanner/` |
 | Tool metadata | `backend/app/tools/` |
 | Utilities and configuration | `backend/app/core/` |
@@ -89,6 +91,9 @@ The active backend has three execution paths:
    and may return compact validated patch proposals.
 3. `POST /analyze-project` queues project analysis and returns a job ID. The
    local worker processes the job and stores a project-level result.
+4. `POST /orchestrate` queues a controlled task loop and returns a job ID. The
+   local worker runs advisors, requests structured actions from the proposer,
+   routes safe tools, validates results, and returns a redacted trace.
 
 Project job results are intentionally summary-oriented. They include file paths,
 parse status, findings, counts by rule/severity, and read errors. They exclude
@@ -109,7 +114,8 @@ For a complete local demonstration, see `docs/demo.md`.
 Release 4.1 exposes the FastAPI and SQLite foundation, deterministic Python AST
 findings, conservative validated fixes for simple `None` and boolean
 comparisons, compact single-file patch proposals, privacy-preserving aggregate
-metrics, finding-linked user feedback, and queued project analysis.
+metrics, finding-linked user feedback, queued project analysis, and the
+SLM-ready orchestrator spine.
 
 Experimental ML, retrieval, and model-loading modules are preserved for staged
 integration after this foundation is live-tested.

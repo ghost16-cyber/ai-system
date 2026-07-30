@@ -1,0 +1,576 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from backend.app.project_control.contracts import (
+    ApprovalType,
+    ProjectCommand,
+    ProjectCommandType,
+    ProjectLifecycle,
+    ProjectReadModel,
+    content_hash,
+)
+from backend.app.project_control.compatibility import CompatibilityClassificationService
+from backend.app.project_control.errors import ProjectControlError, ProjectControlErrorCode
+from backend.app.project_control.service import ProjectControlPlane
+from backend.app.project_artifacts.contracts import (
+    ProjectArtifactBinding,
+    ProjectArtifactType,
+    build_project_artifact,
+)
+from backend.app.project_artifacts.store import ProjectArtifactStore
+
+
+class ProjectDeliveryControlAdapter:
+    """Compatibility boundary: legacy evidence in, canonical commands out."""
+
+    def __init__(
+        self,
+        control: ProjectControlPlane,
+        artifact_store: ProjectArtifactStore | None = None,
+        classification: CompatibilityClassificationService | None = None,
+    ) -> None:
+        self.control = control
+        self.artifact_store = artifact_store
+        self.classification = classification or CompatibilityClassificationService(
+            control.database_path
+        )
+
+    def _ensure_not_historical(self, job: dict[str, Any]) -> None:
+        source_id = str(job.get("delivery_job_id") or "")
+        if self.classification.is_historical_read_only(source_id):
+            raise ProjectControlError(
+                ProjectControlErrorCode.HISTORICAL_RECORD_READ_ONLY,
+                "Historical project delivery records are read-only; explicitly import "
+                "and reapprove them before mutation.",
+            )
+
+    def ensure(self, job: dict[str, Any], root: str | Path, *, migrated: bool) -> ProjectReadModel:
+        self._ensure_not_historical(job)
+        return self.control.reconcile_legacy_delivery(
+            job, migrated=migrated, repository_root=str(Path(root).resolve()),
+        )
+
+    def _current_artifact_fields(
+        self,
+        run: ProjectReadModel | Any,
+        artifact_types: tuple[ProjectArtifactType, ...],
+    ) -> dict[str, Any]:
+        if self.artifact_store is None:
+            return {}
+        for artifact_type in artifact_types:
+            # The read model and aggregate deliberately expose different names
+            # for the same canonical map. This adapter accepts either without
+            # reconstructing current authority from compatibility state.
+            artifact_ids = getattr(run, "artifact_references", None)
+            if artifact_ids is None:
+                artifact_ids = run.current_artifact_ids
+            current_id = artifact_ids.get(artifact_type.value)
+            if not current_id:
+                continue
+            for item in self.artifact_store.list_for_project(
+                run.project_run_id, artifact_type=artifact_type
+            ):
+                if item.artifact_id == current_id:
+                    return {
+                        "artifact_id": item.artifact_id,
+                        "artifact_type": item.artifact_type.value,
+                        "artifact_hash": item.content_hash,
+                        "artifact_binding_hash": item.binding_hash,
+                    }
+        return {}
+
+    def decorate(self, job: dict[str, Any], root: str | Path, *, migrated: bool = True) -> dict[str, Any]:
+        del root, migrated
+        source_id = str(job.get("delivery_job_id") or "")
+        historical = self.classification.is_historical_read_only(source_id)
+        try:
+            read_model = self.control.get_read_model(source_id)
+        except ProjectControlError as error:
+            if error.code != ProjectControlErrorCode.PROJECT_NOT_FOUND:
+                raise
+            return {
+                **job,
+                "record_generation": "legacy",
+                "historical_read_only": True,
+                "project_control": None,
+            }
+        return {
+            **job,
+            "record_generation": "historical" if historical else "canonical",
+            "historical_read_only": historical,
+            "project_control": read_model.model_dump(mode="json"),
+            "compatibility_action_binding": {
+                "project_run_id": read_model.project_run_id,
+                "workspace_id": read_model.workspace_id,
+                "actor_id": read_model.actor_id,
+                "repository_root_fingerprint": read_model.repository_root_fingerprint,
+                "plan_revision_id": read_model.plan_revision_id,
+                "scope_revision_id": read_model.scope_revision_id,
+                "manifest_hash": read_model.manifest_hash,
+                "expected_state_version": read_model.state_version,
+                **self._current_artifact_fields(
+                    read_model,
+                    (
+                        ProjectArtifactType.PLAN,
+                        ProjectArtifactType.PATCH_PREVIEW,
+                        ProjectArtifactType.REPAIR_PREVIEW,
+                        ProjectArtifactType.COMMAND_PREVIEW,
+                        ProjectArtifactType.ROLLBACK_PREVIEW,
+                    ),
+                ),
+            },
+        }
+
+    def apply_transition(
+        self,
+        current: dict[str, Any],
+        updated: dict[str, Any],
+        root: str | Path,
+        operation: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ProjectReadModel:
+        metadata = dict(metadata or {})
+        if current.get("historical_read_only") is True:
+            raise ProjectControlError(
+                ProjectControlErrorCode.HISTORICAL_RECORD_READ_ONLY,
+                "Historical project delivery records are read-only; explicitly import and reapprove them before mutation.",
+            )
+        self.ensure(current, root, migrated=True)
+        run = self.control.get_project(str(current["delivery_job_id"]))
+        prefix = str(metadata.get("idempotency_key") or f"legacy:{operation}:{content_hash(metadata)[:20]}")
+        if operation == "plan_approval_granted":
+            self._execute(run, ProjectCommandType.APPROVE_PLAN, prefix, authority={
+                "operation": "prepare_work_units",
+                "plan_hash": str((updated.get("plan") or {}).get("plan_hash") or ""),
+            })
+        elif operation in {"patch_preview", "stage8_repair_preview"}:
+            work_unit_id = str(updated.get("active_work_unit_id") or metadata.get("work_unit_id") or "")
+            if run.lifecycle_status == ProjectLifecycle.READY_FOR_WORK:
+                self._execute(run, ProjectCommandType.BEGIN_WORK_UNIT, f"{prefix}:begin", payload={"work_unit_id": work_unit_id}, authority={"work_unit_id": work_unit_id})
+                run = self.control.get_project(run.project_run_id)
+            previews = [item for item in updated.get("patch_references") or [] if isinstance(item, dict)]
+            self._execute(run, ProjectCommandType.RECORD_PATCH_PREVIEW, f"{prefix}:preview", payload={
+                "patch_id": str(metadata.get("patch_id") or ""),
+                "preview": previews[-1] if previews else {},
+            }, authority={
+                "coordinator_intent_id": str(metadata.get("coordinator_intent_id") or "")
+            }, artifact_type=(
+                ProjectArtifactType.REPAIR_PREVIEW
+                if operation == "stage8_repair_preview"
+                else ProjectArtifactType.PATCH_PREVIEW
+            ))
+        elif operation == "patch_application":
+            patch_id = str(metadata.get("patch_id") or "")
+            self._execute(run, ProjectCommandType.RECORD_PATCH_RESULT, prefix, payload={
+                "patch_id": patch_id, "succeeded": True,
+                "resulting_manifest_hash": str(updated.get("project_state_hash") or (updated.get("project_state_manifest") or {}).get("manifest_hash") or ""),
+                "result_reference": {"patch_id": patch_id},
+            }, authority={"patch_id": patch_id})
+        elif operation == "command_plan":
+            previews = [item for item in updated.get("command_references") or [] if isinstance(item, dict)]
+            self._execute(run, ProjectCommandType.RECORD_COMMAND_PREVIEW, prefix, payload={
+                "command_id": str(metadata.get("plan_id") or ""),
+                "preview": previews[-1] if previews else {},
+            }, authority={
+                "coordinator_intent_id": str(metadata.get("coordinator_intent_id") or "")
+            })
+        elif operation == "verifier_completion":
+            self._record_verification(run, updated, prefix, metadata)
+        elif operation in {"scope_revision", "engagement_scope_change", "repair_scope_change", "scope_change_detection"}:
+            self._revise(run, updated, prefix, operation)
+        elif operation == "rollback_execution":
+            self._execute(run, ProjectCommandType.RECORD_ROLLBACK, prefix, payload={
+                "patch_id": str(metadata.get("patch_id") or ""), "succeeded": True,
+                "resulting_manifest_hash": str(updated.get("project_state_hash") or ""),
+            })
+        elif operation == "handoff_generation":
+            final_hash = str(updated.get("project_state_hash") or (updated.get("project_state_manifest") or {}).get("manifest_hash") or "")
+            self._execute(run, ProjectCommandType.REQUEST_HANDOFF, f"{prefix}:request", payload={
+                "final_manifest_hash": final_hash,
+                "handoff": dict(updated.get("handoff") or {}),
+            })
+            run = self.control.get_project(run.project_run_id)
+            self._execute(run, ProjectCommandType.FINALIZE_PROJECT, f"{prefix}:handoff")
+            run = self.control.get_project(run.project_run_id)
+            self._execute(run, ProjectCommandType.FINALIZE_PROJECT, f"{prefix}:complete")
+        elif operation == "cancellation":
+            self._execute(run, ProjectCommandType.CANCEL_PROJECT, prefix, payload={"reason": "Cancelled through the legacy delivery endpoint."})
+        elif operation in {"limit_reached", "stage8_diagnosis"}:
+            self._execute(run, ProjectCommandType.MARK_BLOCKED, prefix, payload={"reason": operation})
+        elif operation == "clarification_response" and run.lifecycle_status == ProjectLifecycle.PLANNING:
+            self._propose_plan(run, updated, prefix)
+        return self.control.get_read_model(run.project_run_id)
+
+    def approve_plan_bound(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        *,
+        plan_hash: str,
+        idempotency_key: str,
+        expected_state_version: int | None,
+        plan_revision_id: str | None,
+        scope_revision_id: str | None,
+        manifest_hash: str | None = None,
+        artifact_id: str | None = None,
+        artifact_type: str | None = None,
+        artifact_hash: str | None = None,
+        artifact_binding_hash: str | None = None,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        if any(value is None for value in (
+            expected_state_version, plan_revision_id, scope_revision_id,
+            manifest_hash, artifact_id, artifact_type, artifact_hash,
+            artifact_binding_hash,
+        )):
+            raise ProjectControlError(
+                ProjectControlErrorCode.INVALID_COMMAND,
+                "A bound plan approval requires the exact state version, plan revision, "
+                "and scope revision; no current-state substitution is permitted.",
+            )
+        displayed_hash = str((job.get("plan") or {}).get("plan_hash") or "")
+        if plan_hash != displayed_hash and not self.control.has_idempotency_key(str(job["delivery_job_id"]), idempotency_key):
+            raise ProjectControlError(ProjectControlErrorCode.PLAN_REVISION_MISMATCH, "The approved plan hash is not the displayed immutable plan.")
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        current_artifact = self._current_artifact_fields(run, (ProjectArtifactType.PLAN,))
+        supplied_artifact = {
+            "artifact_id": artifact_id,
+            "artifact_type": artifact_type,
+            "artifact_hash": artifact_hash,
+            "artifact_binding_hash": artifact_binding_hash,
+        }
+        if supplied_artifact != current_artifact:
+            raise ProjectControlError(
+                ProjectControlErrorCode.NON_CURRENT_ARTIFACT,
+                "The compatibility approval does not reference the exact current plan artifact.",
+            )
+        self.control.execute(ProjectCommand(
+            command_type=ProjectCommandType.APPROVE_PLAN,
+            project_run_id=run.project_run_id, conversation_id=run.conversation_id,
+            workspace_id=run.workspace_id, repository_root=run.repository_root,
+            repository_root_fingerprint=run.repository_root_fingerprint, actor_id=run.actor_id,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+            plan_revision_id=plan_revision_id,
+            scope_revision_id=scope_revision_id,
+            manifest_hash=manifest_hash,
+            authority_scope={"operation": "prepare_work_units", "plan_hash": plan_hash},
+            **supplied_artifact,
+        ))
+        return self.control.get_read_model(run.project_run_id)
+
+    def approve_patch(self, job: dict[str, Any], root: str | Path, patch_id: str) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        self._execute(run, ProjectCommandType.APPROVE_PATCH, f"legacy:patch-approval:{patch_id}",
+                      payload={"patch_id": patch_id}, authority={"patch_id": patch_id, "operation": "apply_exact_patch"})
+        return self.control.get_read_model(run.project_run_id)
+
+    def begin_patch_application(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        patch_id: str,
+        *,
+        worker_dispatch: dict[str, Any] | None = None,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        payload: dict[str, Any] = {"patch_id": patch_id}
+        if worker_dispatch is not None:
+            payload["worker_dispatch"] = worker_dispatch
+        self._execute(run, ProjectCommandType.BEGIN_PATCH_APPLICATION, f"legacy:patch-start:{patch_id}",
+                      payload=payload, authority={"patch_id": patch_id, "operation": "apply_exact_patch"})
+        return self.control.get_read_model(run.project_run_id)
+
+    def approve_command(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        command_id: str,
+        *,
+        execution_hash: str | None = None,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        authority = {"command_id": command_id, "operation": "execute_exact_command"}
+        payload: dict[str, Any] = {"command_id": command_id}
+        if execution_hash is not None:
+            authority["execution_hash"] = execution_hash
+            payload["execution_hash"] = execution_hash
+        self._execute(run, ProjectCommandType.APPROVE_COMMAND, f"legacy:command-approval:{command_id}",
+                      payload=payload, authority=authority)
+        return self.control.get_read_model(run.project_run_id)
+
+    def begin_command_execution(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        command_id: str,
+        *,
+        execution_hash: str | None = None,
+        worker_dispatch: dict[str, Any] | None = None,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        payload: dict[str, Any] = {"command_id": command_id}
+        authority = {"command_id": command_id}
+        if execution_hash is not None:
+            payload["execution_hash"] = execution_hash
+            authority["execution_hash"] = execution_hash
+        if worker_dispatch is not None:
+            payload["worker_dispatch"] = worker_dispatch
+            for attempt in reversed(self.control.list_attempts(run.project_run_id)):
+                if (
+                    attempt.attempt_type.value == "command_execution"
+                    and str(attempt.authority.get("command_id") or "") == command_id
+                    and str(attempt.authority.get("execution_hash") or "") == execution_hash
+                ):
+                    return self.control.get_read_model(run.project_run_id)
+        self._execute(run, ProjectCommandType.BEGIN_COMMAND_EXECUTION, f"legacy:command-start:{command_id}",
+                      payload=payload, authority=authority)
+        return self.control.get_read_model(run.project_run_id)
+
+    def record_rollback_preview(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        self._execute(
+            run,
+            ProjectCommandType.RECORD_ROLLBACK_PREVIEW,
+            f"legacy:rollback-preview:{rollback_id}",
+            payload={"rollback_id": rollback_id},
+            authority={"rollback_id": rollback_id},
+        )
+        return self.control.get_read_model(run.project_run_id)
+
+    def approve_rollback(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+        *,
+        mutation_spec_hash: str,
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        self._execute(
+            run,
+            ProjectCommandType.APPROVE_ROLLBACK,
+            f"legacy:rollback-approval:{rollback_id}",
+            payload={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+            authority={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+        )
+        return self.control.get_read_model(run.project_run_id)
+
+    def begin_rollback(
+        self,
+        job: dict[str, Any],
+        root: str | Path,
+        rollback_id: str,
+        *,
+        mutation_spec_hash: str,
+        worker_dispatch: dict[str, Any],
+    ) -> ProjectReadModel:
+        self.ensure(job, root, migrated=True)
+        run = self.control.get_project(str(job["delivery_job_id"]))
+        for attempt in reversed(self.control.list_attempts(run.project_run_id)):
+            if (
+                attempt.attempt_type.value == "rollback"
+                and str(attempt.authority.get("rollback_id") or "") == rollback_id
+                and str(attempt.authority.get("mutation_spec_hash") or "")
+                == mutation_spec_hash
+            ):
+                return self.control.get_read_model(run.project_run_id)
+        self._execute(
+            run,
+            ProjectCommandType.BEGIN_ROLLBACK,
+            f"legacy:rollback-start:{rollback_id}",
+            payload={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+                "worker_dispatch": worker_dispatch,
+            },
+            authority={
+                "rollback_id": rollback_id,
+                "mutation_spec_hash": mutation_spec_hash,
+            },
+        )
+        return self.control.get_read_model(run.project_run_id)
+
+    def _record_verification(self, run, updated: dict[str, Any], prefix: str, metadata: dict[str, Any]) -> None:
+        command_id = str(metadata.get("plan_id") or "")
+        succeeded = str(metadata.get("exit_code") or "0") == "0" and str(metadata.get("status") or "") != "failed"
+        if run.lifecycle_status == ProjectLifecycle.WORK_IN_PROGRESS and command_id:
+            self._execute(run, ProjectCommandType.RECORD_COMMAND_RESULT, f"{prefix}:command", payload={
+                "command_id": command_id, "succeeded": succeeded,
+                "result_reference": {"command_id": command_id},
+            }, authority={"command_id": command_id})
+            run = self.control.get_project(run.project_run_id)
+            if not succeeded:
+                return
+        if run.lifecycle_status in {ProjectLifecycle.WORK_IN_PROGRESS, ProjectLifecycle.READY_FOR_WORK}:
+            self._execute(run, ProjectCommandType.REQUEST_VERIFICATION, f"{prefix}:request", authority={"criterion_id": str(metadata.get("criterion_id") or "")})
+            run = self.control.get_project(run.project_run_id)
+        results = [item for item in updated.get("verifier_results") or [] if isinstance(item, dict)]
+        result = results[-1] if results else {}
+        criterion_id = str(metadata.get("criterion_id") or result.get("criterion_id") or "")
+        plan = self.control.get_plan_revision(str(run.current_plan_revision_id))
+        criterion = next((item for item in plan.acceptance_criteria if str(item.get("criterion_id") or item.get("id")) == criterion_id), None)
+        if criterion is None:
+            raise ProjectControlError(ProjectControlErrorCode.STALE_VERIFICATION, "The legacy verifier criterion is not in the canonical plan.")
+        outcome = str(result.get("outcome") or ("passed" if succeeded else "failed"))
+        self._execute(run, ProjectCommandType.RECORD_VERIFIER_RESULT, f"{prefix}:result", payload={
+            "criterion_id": criterion_id, "outcome": outcome,
+            "result_hash": str(result.get("result_hash") or content_hash(result)),
+            "criterion_hash": content_hash(criterion),
+            "plan_revision_id": run.current_plan_revision_id,
+            "scope_revision_id": run.current_scope_revision_id,
+            "manifest_hash": str(result.get("input_manifest_hash") or run.current_manifest_hash or ""),
+            "result_reference": {"verifier_result_id": str(result.get("verifier_result_id") or "")},
+        })
+        run = self.control.get_project(run.project_run_id)
+        active = str(updated.get("active_work_unit_id") or "")
+        runtime = next((item for item in updated.get("work_unit_execution_states") or [] if item.get("work_unit_id") == active), {})
+        if active and str(runtime.get("status") or "") in {"completed", "satisfied"} and outcome == "passed":
+            self._execute(run, ProjectCommandType.COMPLETE_WORK_UNIT, f"{prefix}:complete-unit", payload={"work_unit_id": active})
+
+    def _revise(self, run, updated: dict[str, Any], prefix: str, reason: str) -> None:
+        specification = dict(updated.get("specification") or {})
+        plan = dict(updated.get("plan_revision") or updated.get("plan") or {})
+        included = sorted({str(path) for item in plan.get("work_units", []) for path in item.get("expected_files", [])})
+        self._execute(run, ProjectCommandType.REVISE_SCOPE, f"{prefix}:scope", payload={
+            "specification_hash": str(specification.get("specification_hash") or run.specification_hash or ""),
+            "included_paths": included, "excluded_paths": list(specification.get("explicit_exclusions") or []),
+            "allowed_operations": ["read", "patch_preview", "approved_patch", "approved_command", "verification"],
+            "reason": reason,
+            "specification": specification,
+        })
+        run = self.control.get_project(run.project_run_id)
+        self._propose_plan(run, updated, f"{prefix}:plan")
+
+    def _propose_plan(self, run, updated: dict[str, Any], key: str) -> None:
+        specification = dict(updated.get("specification") or {})
+        plan = dict(updated.get("plan_revision") or updated.get("plan") or {})
+        self._execute(run, ProjectCommandType.PROPOSE_PLAN_REVISION, key, payload={
+            "acceptance_criteria": list(specification.get("acceptance_criteria") or []),
+            "work_units": list(plan.get("work_units") or []),
+            "configured_limits": dict(updated.get("limits") or {}),
+            "plan": plan,
+        })
+
+    def _execute(
+        self,
+        run,
+        kind: ProjectCommandType,
+        key: str,
+        *,
+        payload=None,
+        authority=None,
+        artifact_type: ProjectArtifactType | None = None,
+    ):
+        command_payload = payload or {}
+        artifact_fields: dict[str, Any] = {}
+        approval_artifact_types = {
+            ProjectCommandType.APPROVE_PLAN: (ProjectArtifactType.PLAN,),
+            ProjectCommandType.APPROVE_PATCH: (
+                ProjectArtifactType.PATCH_PREVIEW,
+                ProjectArtifactType.REPAIR_PREVIEW,
+            ),
+            ProjectCommandType.APPROVE_COMMAND: (ProjectArtifactType.COMMAND_PREVIEW,),
+            ProjectCommandType.APPROVE_ROLLBACK: (ProjectArtifactType.ROLLBACK_PREVIEW,),
+        }
+        if kind in approval_artifact_types and run.canonical_generation == "canonical":
+            artifact_fields = self._current_artifact_fields(
+                run, approval_artifact_types[kind]
+            )
+            approval_authority = dict(authority or {})
+            if self.artifact_store is not None and artifact_fields.get("artifact_id"):
+                artifact = self.artifact_store.get(str(artifact_fields["artifact_id"]))
+                if artifact is not None and artifact.binding.coordinator_intent_id:
+                    approval_authority["coordinator_intent_id"] = (
+                        artifact.binding.coordinator_intent_id
+                    )
+            return self.control.execute(ProjectCommand(
+                command_type=kind, project_run_id=run.project_run_id,
+                conversation_id=run.conversation_id, workspace_id=run.workspace_id,
+                repository_root=run.repository_root,
+                repository_root_fingerprint=run.repository_root_fingerprint,
+                actor_id=run.actor_id, expected_state_version=run.state_version,
+                idempotency_key=key, plan_revision_id=run.current_plan_revision_id,
+                scope_revision_id=run.current_scope_revision_id,
+                manifest_hash=run.current_manifest_hash,
+                authority_scope=approval_authority, payload=command_payload,
+                **artifact_fields,
+            ))
+        artifact_types = {
+            ProjectCommandType.RECORD_PATCH_PREVIEW: ProjectArtifactType.PATCH_PREVIEW,
+            ProjectCommandType.RECORD_COMMAND_PREVIEW: ProjectArtifactType.COMMAND_PREVIEW,
+            ProjectCommandType.RECORD_ROLLBACK_PREVIEW: ProjectArtifactType.ROLLBACK_PREVIEW,
+            ProjectCommandType.RECORD_VERIFIER_RESULT: ProjectArtifactType.VERIFIER_RESULT,
+            ProjectCommandType.REQUEST_HANDOFF: ProjectArtifactType.HANDOFF,
+            ProjectCommandType.REVISE_SCOPE: ProjectArtifactType.SPECIFICATION,
+            ProjectCommandType.PROPOSE_PLAN_REVISION: ProjectArtifactType.PLAN,
+        }
+        artifact_type = artifact_type or artifact_types.get(kind)
+        if artifact_type is not None and run.canonical_generation == "canonical":
+            if self.artifact_store is None:
+                raise ProjectControlError(
+                    ProjectControlErrorCode.CORRUPTED_STORED_STATE,
+                    "Canonical compatibility actions require the immutable artifact store.",
+                )
+            existing = self.artifact_store.list_for_project(
+                run.project_run_id, artifact_type=artifact_type
+            )
+            if self.control.has_idempotency_key(run.project_run_id, key):
+                if not any(item.payload == command_payload for item in existing):
+                    raise ProjectControlError(
+                        ProjectControlErrorCode.IDEMPOTENCY_CONFLICT,
+                        "The compatibility action key is bound to different artifact content.",
+                    )
+                return None
+            artifact = self.artifact_store.put(build_project_artifact(
+                artifact_type=artifact_type,
+                binding=ProjectArtifactBinding(
+                    project_run_id=run.project_run_id,
+                    plan_revision_id=run.current_plan_revision_id,
+                    scope_revision_id=run.current_scope_revision_id,
+                    manifest_hash=run.current_manifest_hash,
+                    coordinator_intent_id=(authority or {}).get("coordinator_intent_id") or None,
+                ),
+                payload=command_payload,
+                revision_number=len(existing) + 1,
+            ))
+            artifact_fields = {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type.value,
+                "artifact_hash": artifact.content_hash,
+                "artifact_binding_hash": artifact.binding_hash,
+            }
+        return self.control.execute(ProjectCommand(
+            command_type=kind, project_run_id=run.project_run_id,
+            conversation_id=run.conversation_id, workspace_id=run.workspace_id,
+            repository_root=run.repository_root,
+            repository_root_fingerprint=run.repository_root_fingerprint,
+            actor_id=run.actor_id, expected_state_version=run.state_version,
+            idempotency_key=key, plan_revision_id=run.current_plan_revision_id,
+            scope_revision_id=run.current_scope_revision_id,
+            manifest_hash=run.current_manifest_hash,
+            authority_scope=authority or {}, payload=command_payload,
+            **artifact_fields,
+        ))
+
+
+__all__ = ["ProjectDeliveryControlAdapter"]

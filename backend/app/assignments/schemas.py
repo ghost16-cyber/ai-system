@@ -1,0 +1,814 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from backend.app.rag.corpus_retrieval import CorpusSourceMetadata
+
+
+class IntakeStrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SourceSpan(IntakeStrictModel):
+    schema_version: Literal["astra.document-source-span.v1"] = "astra.document-source-span.v1"
+    source_id: str
+    source_type: str
+    document_path_or_name: str
+    block_index: int = Field(ge=0)
+    paragraph_index: int | None = Field(default=None, ge=0)
+    table_index: int | None = Field(default=None, ge=0)
+    row_index: int | None = Field(default=None, ge=0)
+    column_index: int | None = Field(default=None, ge=0)
+
+
+DocumentBlockType = Literal[
+    "paragraph", "heading", "table", "table_row", "table_cell", "list_item"
+]
+
+
+class DocumentBlock(IntakeStrictModel):
+    schema_version: Literal["astra.document-block.v1"] = "astra.document-block.v1"
+    block_id: str
+    block_type: DocumentBlockType
+    order_index: int = Field(ge=0)
+    text: str
+    raw_text: str
+    source_span: SourceSpan
+    style_name: str | None = None
+    heading_level: int | None = Field(default=None, ge=1, le=9)
+    table_id: str | None = None
+    row_index: int | None = Field(default=None, ge=0)
+    column_index: int | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ParsedAssignmentDocument(BaseModel):
+    schema_version: Literal["astra.parsed-assignment-document.v2"] = "astra.parsed-assignment-document.v2"
+    document_id: str
+    title: str
+    source_path: str
+    extracted_text: str
+    document_blocks: list[DocumentBlock] = Field(default_factory=list)
+    created_at: datetime
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssignmentTask(BaseModel):
+    task_id: str
+    title: str
+    description: str
+    technologies: list[str] = Field(default_factory=list)
+    marks: float | None = None
+    required_output: str | None = None
+    optional: bool = False
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+
+class ScreenshotRequirement(BaseModel):
+    requirement_id: str
+    description: str
+    assignment_name: str | None = None
+    task_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+
+class MarkingCriterion(BaseModel):
+    criterion_id: str
+    description: str
+    marks: float | None = None
+    assignment_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+
+class AnalysisQuestion(BaseModel):
+    question_id: str
+    question: str
+    assignment_name: str | None = None
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+
+class AssignmentSection(BaseModel):
+    section_id: str
+    title: str
+    technologies: list[str] = Field(default_factory=list)
+    tasks: list[AssignmentTask] = Field(default_factory=list)
+    screenshot_requirements: list[ScreenshotRequirement] = Field(default_factory=list)
+    marking_criteria: list[MarkingCriterion] = Field(default_factory=list)
+    analysis_questions: list[AnalysisQuestion] = Field(default_factory=list)
+    bonus_requirements: list[AssignmentTask] = Field(default_factory=list)
+    dataset_requirements: list[str] = Field(default_factory=list)
+    report_requirements: list[str] = Field(default_factory=list)
+    global_instructions: list[str] = Field(default_factory=list)
+    report_guidance: list[str] = Field(default_factory=list)
+    source_spans: list[SourceSpan] = Field(default_factory=list)
+    source_block_ids: list[str] = Field(default_factory=list)
+
+
+class AssignmentBrief(BaseModel):
+    title: str
+    technologies: list[str] = Field(default_factory=list)
+    sections: list[AssignmentSection] = Field(default_factory=list)
+    screenshot_requirements: list[ScreenshotRequirement] = Field(default_factory=list)
+    marking_criteria: list[MarkingCriterion] = Field(default_factory=list)
+    analysis_questions: list[AnalysisQuestion] = Field(default_factory=list)
+    bonus_requirements: list[AssignmentTask] = Field(default_factory=list)
+    dataset_requirements: list[str] = Field(default_factory=list)
+    report_requirements: list[str] = Field(default_factory=list)
+    global_instructions: list[str] = Field(default_factory=list)
+    report_guidance: list[str] = Field(default_factory=list)
+
+
+ChecklistStatus = Literal["todo", "doing", "done", "blocked"]
+
+
+class AssignmentChecklistItem(BaseModel):
+    task_id: str
+    title: str
+    assignment_name: str
+    technology_area: str
+    required_output: str
+    evidence_needed: list[str] = Field(default_factory=list)
+    screenshot_needed: bool = False
+    report_section_needed: bool = False
+    status: ChecklistStatus = "todo"
+    optional: bool = False
+    group: str = "Pipeline/code implementation"
+
+
+class AssignmentPlan(BaseModel):
+    title: str
+    checklist: list[AssignmentChecklistItem]
+    groups: dict[str, list[AssignmentChecklistItem]]
+    summary_groups: list[str]
+
+
+class AssignmentTemplateFile(BaseModel):
+    file_path: str
+    purpose: str
+    content_preview: str
+    technology_area: str
+    assignment_number: int
+    safe_to_create: bool = True
+
+
+class AssignmentTemplatePlan(BaseModel):
+    assignment_number: int
+    assignment_name: str
+    files: list[AssignmentTemplateFile]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssignmentTemplateWriteResult(BaseModel):
+    workspace_root: str
+    created_files: list[str] = Field(default_factory=list)
+    skipped_files: list[str] = Field(default_factory=list)
+    refused_files: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+
+
+EvidenceType = Literal[
+    "screenshot",
+    "terminal_output",
+    "code_file",
+    "dashboard",
+    "report_answer",
+    "appendix",
+    "validation_query",
+]
+EvidenceStatus = Literal["missing", "provided", "verified", "rejected"]
+EvidencePriority = Literal["blocker", "normal", "optional"]
+
+
+class AssignmentEvidenceItem(BaseModel):
+    evidence_id: str
+    assignment_name: str
+    task_name: str
+    evidence_type: EvidenceType
+    title: str
+    description: str
+    required: bool = True
+    source_requirement: str
+    status: EvidenceStatus = "missing"
+    priority: EvidencePriority = "blocker"
+    marks: float | None = None
+    rubric_reference: str | None = None
+    suggested_filename: str
+    notes: str = ""
+
+
+class AssignmentEvidenceSummary(BaseModel):
+    total_required: int
+    total_optional: int = 0
+    missing_count: int
+    required_missing_count: int = 0
+    optional_missing_count: int = 0
+    provided_count: int
+    verified_count: int
+    by_assignment: dict[str, dict[str, int]]
+    by_evidence_type: dict[str, int]
+
+
+class AssignmentEvidenceChecklist(BaseModel):
+    title: str
+    items: list[AssignmentEvidenceItem]
+    required_items: list[AssignmentEvidenceItem] = Field(default_factory=list)
+    optional_items: list[AssignmentEvidenceItem] = Field(default_factory=list)
+    summary: AssignmentEvidenceSummary
+
+
+class ReportSectionDraft(BaseModel):
+    section_id: str
+    title: str
+    content: str
+    needs_user_evidence: bool = False
+
+
+class AssignmentReportDraft(BaseModel):
+    title: str
+    sections: list[ReportSectionDraft]
+    markdown: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+DifficultyLevel = Literal["easy", "medium", "hard"]
+
+
+class AssignmentTaskBreakdownItem(BaseModel):
+    order: int
+    assignment_name: str
+    task_id: str
+    title: str
+    explanation: str
+    expected_output: str
+    related_evidence: list[str] = Field(default_factory=list)
+    difficulty: DifficultyLevel = "medium"
+    optional: bool = False
+
+
+class AssignmentTaskBreakdown(BaseModel):
+    title: str
+    tasks: list[AssignmentTaskBreakdownItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+CriterionStatus = Literal["missing", "partial", "ready", "optional"]
+
+
+class MarkingCriterionResult(BaseModel):
+    criterion_id: str
+    title: str
+    marks: float
+    status: CriterionStatus
+    evidence_required: bool
+    report_required: bool
+    reason: str
+    next_action: str
+
+
+class AssignmentMarkingReadiness(BaseModel):
+    assignment_name: str
+    total_marks_available: float
+    estimated_ready_marks: float
+    missing_critical_items: list[str]
+    criterion_results: list[MarkingCriterionResult]
+    advisory_note: str = "Estimated readiness only; this is not a guaranteed grade."
+
+
+class AssignmentCopilotResult(BaseModel):
+    parsed_document_summary: dict[str, Any]
+    extracted_assignment_sections: list[AssignmentSection]
+    action_plan: AssignmentPlan
+    recommended_starter_files: list[AssignmentTemplatePlan]
+    evidence_checklist: AssignmentEvidenceChecklist
+    safe_next_commands: list[dict[str, Any]]
+    report_draft: AssignmentReportDraft
+    report_skeleton: AssignmentReportDraft | None = None
+    task_breakdown: AssignmentTaskBreakdown | None = None
+    marking_readiness: list[AssignmentMarkingReadiness]
+    next_recommended_step: str
+    workspace_inspection: dict[str, Any] | None = None
+    dataset_profile: dict[str, Any] | None = None
+    workspace_build_plans: list[dict[str, Any]] = Field(default_factory=list)
+    runbooks: list[dict[str, Any]] = Field(default_factory=list)
+    code_blueprints: list[dict[str, Any]] = Field(default_factory=list)
+    analysis_plans: list[dict[str, Any]] = Field(default_factory=list)
+    dashboard_specs: list[dict[str, Any]] = Field(default_factory=list)
+    final_readiness: dict[str, Any] | None = None
+    corpus_retrieval_used: bool = False
+    corpus_retrieval_skip_reason: str | None = None
+    corpus_context_count: int = 0
+    corpus_sources: list[CorpusSourceMetadata] = Field(default_factory=list)
+    workspace_generation_plan: list[GroundedWorkspaceGenerationPlan] = Field(default_factory=list)
+    grounded_file_blueprints: list[GroundedFileBlueprint] = Field(default_factory=list)
+    corpus_grounding_summary: list[CorpusGroundingSummary] = Field(default_factory=list)
+    unsupported_components: list[str] = Field(default_factory=list)
+    generation_warnings: list[str] = Field(default_factory=list)
+    generation_ready: bool = False
+    generation_mode: GenerationMode = "mixed"
+    tools_executed: bool = False
+    files_written: bool = False
+    training_performed: bool = False
+
+
+class AssignmentWorkspaceBuildPlan(BaseModel):
+    assignment_number: int
+    assignment_name: str
+    workspace_root: str
+    folders_to_create: list[str] = Field(default_factory=list)
+    files_to_create: list[AssignmentTemplateFile] = Field(default_factory=list)
+    files_to_skip: list[str] = Field(default_factory=list)
+    dataset_copy_or_reference_plan: str
+    config_files_needed: list[str] = Field(default_factory=list)
+    commands_to_run_manually: list[dict[str, Any]] = Field(default_factory=list)
+    screenshots_to_capture: list[str] = Field(default_factory=list)
+    report_sections_to_complete: list[str] = Field(default_factory=list)
+    risks_warnings: list[str] = Field(default_factory=list)
+    write_result: AssignmentTemplateWriteResult | None = None
+    files_written: bool = False
+
+
+class AssignmentRunbookStep(BaseModel):
+    step_id: str
+    title: str
+    explanation: str
+    command_suggestion: dict[str, Any] | None = None
+    expected_result: str
+    screenshot_to_take: str | None = None
+    troubleshooting_hint: str
+
+
+class AssignmentRunbook(BaseModel):
+    assignment_number: int
+    title: str
+    steps: list[AssignmentRunbookStep]
+    commands_executed: bool = False
+
+
+class AssignmentReportExportResult(BaseModel):
+    output_directory: str
+    created_files: list[str] = Field(default_factory=list)
+    skipped_files: list[str] = Field(default_factory=list)
+    refused_files: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssignmentCodeBlueprint(BaseModel):
+    file_path: str
+    purpose: str
+    assignment_number: int
+    technology_area: str
+    required_inputs: list[str] = Field(default_factory=list)
+    generated_content: str
+    placeholders: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    expected_screenshot_links: list[str] = Field(default_factory=list)
+
+
+class AssignmentCodeBlueprintSet(BaseModel):
+    assignment_number: int
+    blueprints: list[AssignmentCodeBlueprint]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssignmentCodeWriteResult(BaseModel):
+    workspace_path: str
+    created_files: list[str] = Field(default_factory=list)
+    skipped_files: list[str] = Field(default_factory=list)
+    refused_files: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    next_manual_steps: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+    commands_executed: bool = False
+    credentials_written: bool = False
+
+
+GenerationMode = Literal["template_only", "corpus_grounded", "mixed"]
+
+
+class GroundingProvenance(BaseModel):
+    source_path: str
+    chunk_id: str
+    chunk_index: int
+    score: float
+    start_line: int | None = None
+    end_line: int | None = None
+    influence: str
+
+
+class GroundedFileBlueprint(BaseModel):
+    file_path: str
+    purpose: str
+    assignment_number: int
+    technology_area: str
+    generation_mode: Literal["template_only", "corpus_grounded"]
+    source_ids: list[str] = Field(default_factory=list)
+    grounding: list[GroundingProvenance] = Field(default_factory=list)
+    generated_content: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GroundedWorkspaceFilePlan(BaseModel):
+    path: str
+    purpose: str
+    generation_mode: Literal["template_only", "corpus_grounded"]
+    source_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GroundedWorkspaceGenerationPlan(BaseModel):
+    assignment_number: int
+    assignment_title: str
+    workspace_path: str
+    generation_mode: GenerationMode
+    technologies: list[str] = Field(default_factory=list)
+    directories: list[str] = Field(default_factory=list)
+    files: list[GroundedWorkspaceFilePlan] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    unresolved_requirements: list[str] = Field(default_factory=list)
+    evidence_placeholders: list[str] = Field(default_factory=list)
+    report_placeholders: list[str] = Field(default_factory=list)
+    recommended_manual_configuration_steps: list[str] = Field(default_factory=list)
+    commands_executed: bool = False
+
+
+class CorpusGroundingSummary(BaseModel):
+    candidate_source_count: int = 0
+    usable_source_count: int = 0
+    grounded_file_count: int = 0
+    template_file_count: int = 0
+    excluded_source_count: int = 0
+    source_paths: list[str] = Field(default_factory=list)
+
+
+class GroundedGenerationResult(BaseModel):
+    workspace_generation_plan: GroundedWorkspaceGenerationPlan
+    grounded_file_blueprints: list[GroundedFileBlueprint] = Field(default_factory=list)
+    corpus_grounding_summary: CorpusGroundingSummary
+    unsupported_components: list[str] = Field(default_factory=list)
+    generation_warnings: list[str] = Field(default_factory=list)
+    generation_ready: bool = False
+    generation_mode: GenerationMode = "mixed"
+
+
+class GroundedWorkspaceWriteResult(BaseModel):
+    workspace_path: str
+    created_files: list[str] = Field(default_factory=list)
+    skipped_files: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    refused_files: list[str] = Field(default_factory=list)
+    grounding_summary: CorpusGroundingSummary
+    warnings: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+    commands_executed: bool = False
+    generated_code_executed: bool = False
+
+
+class DatasetMappingSuggestion(BaseModel):
+    column: str
+    reason: str
+    placeholder: bool = False
+
+
+class MappingEvidence(IntakeStrictModel):
+    schema_version: Literal["astra.dataset-mapping-evidence.v1"] = "astra.dataset-mapping-evidence.v1"
+    evidence_type: Literal["dataset_schema", "dataset_sample", "assignment_requirement", "derived_rule"]
+    source_identifier: str
+    source_columns: tuple[str, ...] = ()
+    observation: str
+
+
+class SourceColumn(IntakeStrictModel):
+    name: str
+    inferred_type: str
+    roles: tuple[str, ...] = ()
+
+
+class SemanticField(IntakeStrictModel):
+    name: str
+    field_type: Literal["source", "derived"]
+    semantic_role: Literal["time", "measure", "dimension"]
+    source_columns: tuple[str, ...]
+    rationale: str
+    provenance: tuple[MappingEvidence, ...]
+
+
+class DerivedColumnPlan(IntakeStrictModel):
+    name: str
+    expression_type: Literal[
+        "combine_datetime", "date_part", "numeric_bin", "time_band"
+    ]
+    source_columns: tuple[str, ...]
+    deterministic_operation: str
+    output_type: str
+    rationale: str
+    provenance: tuple[MappingEvidence, ...]
+
+
+class DatasetSemanticMapping(IntakeStrictModel):
+    schema_version: Literal["astra.dataset-semantic-mapping.v1"] = "astra.dataset-semantic-mapping.v1"
+    source_columns: tuple[SourceColumn, ...]
+    derived_columns: tuple[DerivedColumnPlan, ...]
+    time_dimension: SemanticField | None
+    numeric_measures: tuple[SemanticField, ...]
+    categorical_dimensions: tuple[SemanticField, ...]
+    quality_warnings: tuple[str, ...] = ()
+    unresolved_requirements: tuple[str, ...] = ()
+    provenance: tuple[MappingEvidence, ...] = ()
+
+    @model_validator(mode="after")
+    def derivations_reference_source_columns(self) -> "DatasetSemanticMapping":
+        known = {item.name for item in self.source_columns}
+        for derived in self.derived_columns:
+            missing = set(derived.source_columns) - known
+            if missing:
+                raise ValueError(f"derived column {derived.name!r} references unknown source columns: {sorted(missing)}")
+        return self
+
+
+class AssignmentDatasetMapping(BaseModel):
+    schema_version: Literal["astra.assignment-dataset-mapping.v2"] = "astra.assignment-dataset-mapping.v2"
+    dataset_path: str | None = None
+    timestamp_column: DatasetMappingSuggestion
+    primary_numeric_indicator: DatasetMappingSuggestion
+    secondary_numeric_fields: list[DatasetMappingSuggestion] = Field(default_factory=list)
+    category_grouping_column: DatasetMappingSuggestion
+    classification_threshold_idea: str
+    dashboard_filter_column: DatasetMappingSuggestion
+    spark_aggregation_columns: list[str] = Field(default_factory=list)
+    snowflake_table_names: list[str] = Field(default_factory=list)
+    redis_key_patterns: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    placeholders_used: bool = False
+    semantic_mapping: DatasetSemanticMapping | None = None
+    unresolved_requirements: list[str] = Field(default_factory=list)
+
+
+class AssignmentProjectManifest(BaseModel):
+    assignment_number: int
+    dataset_path: str | None = None
+    document_path: str | None = None
+    generated_files: list[str] = Field(default_factory=list)
+    report_files: list[str] = Field(default_factory=list)
+    evidence_checklist: dict[str, Any] = Field(default_factory=dict)
+    task_breakdown: dict[str, Any] = Field(default_factory=dict)
+    report_skeleton: dict[str, Any] = Field(default_factory=dict)
+    runbook_steps: list[dict[str, Any]] = Field(default_factory=list)
+    safe_commands: list[dict[str, Any]] = Field(default_factory=list)
+    missing_screenshots: list[str] = Field(default_factory=list)
+    missing_report_sections: list[str] = Field(default_factory=list)
+    readiness_level: str = "not_started"
+    last_updated: datetime
+    tools_executed: bool = False
+    files_written: bool = False
+    credentials_included: bool = False
+
+
+class AssignmentManifestWriteResult(BaseModel):
+    workspace_path: str
+    manifest_path: str
+    written: bool
+    skipped: bool = False
+    refused: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+
+
+VerificationStatus = Literal[
+    "not_started",
+    "detected",
+    "partially_verified",
+    "verified",
+    "missing",
+    "failed",
+    "requires_manual_review",
+    "not_applicable",
+]
+ManualEvidenceDecision = Literal["accepted", "rejected", "needs_replacement"]
+
+
+class WorkspaceEvidenceItem(BaseModel):
+    evidence_reference: str
+    relative_path: str
+    file_type: str
+    size: int
+    sha256: str
+    modified_at: datetime
+    evidence_category: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RequirementVerification(BaseModel):
+    requirement_id: str
+    title: str
+    description: str
+    source_reference: str
+    requirement_category: str
+    required_deliverable_type: str
+    expected_evidence: list[str] = Field(default_factory=list)
+    verification_method: str
+    status: VerificationStatus
+    confidence: float = Field(ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+    linked_workspace_files: list[str] = Field(default_factory=list)
+    linked_execution_evidence: list[str] = Field(default_factory=list)
+    reviewer_notes: list[str] = Field(default_factory=list)
+
+
+class ManualEvidenceReview(BaseModel):
+    requirement_id: str
+    evidence_reference: str
+    decision: ManualEvidenceDecision
+    note: str
+    timestamp: datetime
+
+
+class AssignmentReadinessSummaryV2(BaseModel):
+    assignment_id: str
+    verification_timestamp: datetime
+    total_requirements: int
+    status_distribution: dict[str, int]
+    verified_count: int
+    partially_verified_count: int
+    missing_count: int
+    failed_count: int
+    manual_review_count: int
+    blocking_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    evidence_coverage_percentage: float
+    execution_evidence_freshness: str
+    recommended_next_actions: list[str] = Field(default_factory=list)
+    academic_completion_inferred: bool = False
+
+
+class AssignmentVerificationSnapshot(BaseModel):
+    schema_version: int
+    snapshot_id: str
+    assignment_id: str
+    workspace: str
+    verification_timestamp: datetime
+    inventory: list[WorkspaceEvidenceItem]
+    requirements: list[RequirementVerification]
+    readiness: AssignmentReadinessSummaryV2
+    manual_reviews: list[ManualEvidenceReview] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+ReportSectionState = Literal[
+    "verified",
+    "manually_accepted",
+    "partially_supported",
+    "unsupported",
+    "missing",
+    "stale",
+    "requires_manual_review",
+    "not_applicable",
+]
+ReportExportFormat = Literal["markdown", "json", "docx", "zip"]
+
+
+class GroundedReportContentBlock(BaseModel):
+    block_id: str
+    block_type: Literal["grounded_statement", "requirement", "evidence_note", "placeholder", "user_authored"]
+    text: str
+    evidence_references: list[str] = Field(default_factory=list)
+    user_authored: bool = False
+
+
+class GroundedReportSection(BaseModel):
+    section_id: str
+    title: str
+    purpose: str
+    originating_requirement_ids: list[str] = Field(default_factory=list)
+    grounded_content_blocks: list[GroundedReportContentBlock] = Field(default_factory=list)
+    linked_evidence: list[str] = Field(default_factory=list)
+    selected_evidence: list[str] = Field(default_factory=list)
+    verification_state: ReportSectionState
+    citations: list[str] = Field(default_factory=list)
+    user_editable_notes: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    placeholders: list[str] = Field(default_factory=list)
+    inclusion_status: Literal["included", "excluded"] = "included"
+    mandatory: bool = True
+
+
+class ReportRevision(BaseModel):
+    revision_id: str
+    timestamp: datetime
+    changed_sections: list[str] = Field(default_factory=list)
+    previous_revision_reference: str | None = None
+    user_authored_fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportExportReadiness(BaseModel):
+    report_id: str
+    calculated_at: datetime
+    supported_section_count: int
+    unsupported_section_count: int
+    unresolved_placeholder_count: int
+    stale_evidence_count: int
+    failed_evidence_count: int
+    manual_review_count: int
+    missing_mandatory_section_count: int
+    traceability_coverage_percentage: float
+    export_blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    status: Literal["blocked", "eligible_for_final_human_submission_review"] = "blocked"
+
+
+class GroundedAssignmentReport(BaseModel):
+    schema_version: int
+    report_id: str
+    assignment_id: str
+    workspace: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    source_verification_snapshot: str
+    report_sections: list[GroundedReportSection]
+    requirement_coverage: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_references: list[str] = Field(default_factory=list)
+    unresolved_items: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    export_status: str = "not_exported"
+    current_revision_id: str
+    revisions: list[ReportRevision] = Field(default_factory=list)
+    recommended_submission_files: list[str] = Field(default_factory=list)
+
+
+class ReportExportRecord(BaseModel):
+    schema_version: int
+    export_id: str
+    report_id: str
+    assignment_id: str
+    workspace: str
+    format: ReportExportFormat
+    created_at: datetime
+    filename: str
+    media_type: str
+    sha256: str
+    size: int
+    selected_files: list[dict[str, Any]] = Field(default_factory=list)
+    readiness: ReportExportReadiness
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AssignmentAnalysisQuestion(BaseModel):
+    question_id: str
+    assignment_number: int
+    question: str
+    method: str
+    suggested_logic: str
+    expected_output_columns: list[str] = Field(default_factory=list)
+    report_prompt: str
+
+
+class AssignmentAnalysisPlan(BaseModel):
+    assignment_number: int
+    questions: list[AssignmentAnalysisQuestion]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DashboardChartSpec(BaseModel):
+    chart_id: str
+    title: str
+    chart_type: str
+    data_fields: list[str] = Field(default_factory=list)
+    purpose: str
+
+
+class DashboardSpec(BaseModel):
+    assignment_number: int
+    dashboard_title: str
+    dashboard_type: str
+    data_source: str
+    required_filters: list[str] = Field(default_factory=list)
+    kpi_cards: list[str] = Field(default_factory=list)
+    charts: list[DashboardChartSpec] = Field(default_factory=list)
+    tables: list[str] = Field(default_factory=list)
+    refresh_behavior: str
+    screenshot_requirements: list[str] = Field(default_factory=list)
+    implementation_notes: list[str] = Field(default_factory=list)
+
+
+ReadinessLevel = Literal["not_started", "in_progress", "almost_ready", "ready_for_review"]
+
+
+class FinalReadinessReport(BaseModel):
+    readiness_level: ReadinessLevel
+    missing_blockers: list[str] = Field(default_factory=list)
+    missing_screenshots: list[str] = Field(default_factory=list)
+    missing_code_files: list[str] = Field(default_factory=list)
+    missing_report_sections: list[str] = Field(default_factory=list)
+    dataset_risks: list[str] = Field(default_factory=list)
+    command_runbook_summary: list[str] = Field(default_factory=list)
+    next_best_action: str
+    final_submission_checklist: list[str] = Field(default_factory=list)
+    advisory_note: str = "Ready for review is not a guaranteed grade or full marks."

@@ -1,0 +1,22 @@
+{
+  "bug_type": "date_formatting",
+  "case_id": "case_013_datetime_formatting",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "dates.py"
+  ],
+  "expected_patch_hint": "%Y-%m-%d",
+  "expected_source_file": "dates.py",
+  "expected_test_file": "test_dates.py",
+  "goal": "Fix the failing ISO date formatting test.",
+  "known_patch": {
+    "new": "return value.strftime('%Y-%m-%d')",
+    "old": "return value.strftime('%m/%d/%Y')",
+    "path": "dates.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "dates.py",
+    "test_dates.py"
+  ]
+}

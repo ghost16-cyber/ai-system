@@ -1,0 +1,23 @@
+{
+  "bug_type": "dataclass_validation_bug",
+  "case_id": "case_025_dataclass_validation_bug",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "models.py"
+  ],
+  "expected_patch_hint": "18",
+  "expected_source_file": "models.py",
+  "expected_test_file": "test_validators.py",
+  "goal": "Fix the failing signup validation test.",
+  "known_patch": {
+    "new": "min_age: int = 18",
+    "old": "min_age: int = 21",
+    "path": "models.py"
+  },
+  "multi_file": true,
+  "relevant_files": [
+    "models.py",
+    "test_validators.py",
+    "validators.py"
+  ]
+}

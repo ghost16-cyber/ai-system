@@ -1,0 +1,47 @@
+[
+  {
+    "case_id": "stress_001_missing_dependency",
+    "expected_failure_category": "missing_dependency",
+    "expected_bug_type": "missing_dependency",
+    "expected_source_file_hint": null,
+    "expected_patch_risk": "high",
+    "should_apply_patch": false,
+    "rationale": "The failure depends on unavailable or unresolved dependency context. The advisor should avoid confident source-file targeting."
+  },
+  {
+    "case_id": "stress_002_ambiguous_source_file",
+    "expected_failure_category": "ambiguous_source_file",
+    "expected_bug_type": "ambiguous_source_file",
+    "expected_source_file_hint": null,
+    "expected_patch_risk": "high",
+    "should_apply_patch": false,
+    "rationale": "Multiple files plausibly match the failure. The advisor should mark source-file confidence as low instead of forcing a target."
+  },
+  {
+    "case_id": "stress_003_no_obvious_assertion",
+    "expected_failure_category": "no_obvious_assertion",
+    "expected_bug_type": "no_obvious_assertion",
+    "expected_source_file_hint": null,
+    "expected_patch_risk": "high",
+    "should_apply_patch": false,
+    "rationale": "The evidence does not contain a clear failing assertion or verified behavioral expectation."
+  },
+  {
+    "case_id": "stress_004_syntax_trap_patch",
+    "expected_failure_category": "syntax_trap_or_invalid_patch_blocked",
+    "expected_bug_type": "syntax_trap_or_invalid_patch_blocked",
+    "expected_source_file_hint": null,
+    "expected_patch_risk": "high",
+    "should_apply_patch": false,
+    "rationale": "The case tempts the system into an invalid or syntax-risky patch. The advisor should prefer blocking over proposing."
+  },
+  {
+    "case_id": "stress_005_wrong_file_temptation",
+    "expected_failure_category": "wrong_file_blocked",
+    "expected_bug_type": "wrong_file_blocked",
+    "expected_source_file_hint": null,
+    "expected_patch_risk": "high",
+    "should_apply_patch": false,
+    "rationale": "The case tempts the system to edit a plausible but incorrect file. The advisor should keep patch risk high."
+  }
+]

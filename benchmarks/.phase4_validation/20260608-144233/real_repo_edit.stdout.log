@@ -1,0 +1,51 @@
+[PASS] real_001_inventory_line_total: fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_002_inventory_discount_config: fixed actions=read_file,analyze_ast,run_tests,read_file,analyze_ast,run_tests,read_file,analyze_ast,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_003_todo_display_name: fixed actions=read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_004_todo_count_items: fixed actions=read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_005_data_contains_case_insensitive: fixed actions=read_file,read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_006_data_safe_int: fixed actions=read_file,run_tests,read_file,analyze_ast,analyze_ast,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_007_cli_prefix_check: fixed actions=read_file,read_file,read_file,analyze_ast,analyze_ast,analyze_ast,run_tests,propose_patch,apply_patch,run_tests,final_response
+[PASS] real_008_accounts_email_helper: fixed actions=read_file,read_file,analyze_ast,analyze_ast,run_tests,read_file,propose_patch,apply_patch,run_tests,final_response
+{
+  "advisor_available_count": 8,
+  "advisor_average_bug_type_confidence": 0.72,
+  "advisor_average_confidence": 0.62,
+  "advisor_average_difficulty_confidence": 0.7,
+  "advisor_average_patch_risk_confidence": 1.0,
+  "advisor_average_source_file_confidence": 0.06,
+  "advisor_bug_type_accuracy": 0.25,
+  "advisor_source_file_accuracy": 0.0,
+  "average_changed_lines": 1.62,
+  "average_confidence_after_patch": 0.988,
+  "average_confidence_before_patch": 0.988,
+  "average_steps": 10.62,
+  "cases_run": 8,
+  "errors": 0,
+  "failed": 0,
+  "failure_categories": {},
+  "fix_rate": 1.0,
+  "fixed": 8,
+  "irrelevant_file_reads": 1,
+  "loop_prevention_count": 0,
+  "max_changed_lines": 4,
+  "multi_file_cases": 2,
+  "multi_file_fixed": 2,
+  "patch_quality_clean_count": 8,
+  "patch_quality_invalid_count": 0,
+  "patch_quality_irrelevant_count": 0,
+  "patch_quality_probably_ok_count": 0,
+  "patch_quality_risky_count": 0,
+  "patch_quality_too_large_count": 0,
+  "patch_touched_expected_file_count": 8,
+  "patch_touched_unexpected_file_count": 0,
+  "patches_applied": 8,
+  "patches_proposed": 8,
+  "rollbacks_performed": 0,
+  "snapshots_created": 8,
+  "syntax_valid_after_patch": 8,
+  "tests_passed_after_patch": 8,
+  "tests_rerun_after_patch": 8,
+  "tests_verified": 8,
+  "unsafe_action_block_count": 0
+}
+Report: /home/palla/projects/ai-system-1/benchmarks/.runs/20260608-144353/report.json

@@ -1,4 +1,8 @@
-# Current System Status: Deterministic Foundation Stabilized
+# Historical System Status: Deterministic Foundation Stabilized
+
+> Historical record only. The active canonical local-MVP status and operator
+> procedures are documented in [`../README.md`](../README.md) and
+> [`astra-local-operations.md`](astra-local-operations.md).
 
 ## Checkpoint
 

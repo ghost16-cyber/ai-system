@@ -1,0 +1,21 @@
+{
+  "bug_type": "ambiguous_source",
+  "case_id": "stress_002_ambiguous_source_file",
+  "difficulty": "hard",
+  "expected_changed_files": [
+    "app/normalize.py"
+  ],
+  "expected_failure_category": "wrong_file_selected",
+  "expected_source_file": "app/normalize.py",
+  "expected_test_file": "tests/test_normalize.py",
+  "goal": "Fix the failing normalize test; there are two similar modules.",
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "app/__init__.py",
+    "app/normalize.py",
+    "app/normalizer.py",
+    "tests/test_normalize.py"
+  ],
+  "stress_case": true
+}

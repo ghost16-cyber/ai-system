@@ -1,0 +1,133 @@
+{
+  "comparisons": {},
+  "controlled_edit_summary": {},
+  "controlled_no_edit_summary": {},
+  "created_at": "2026-06-06T05:52:02Z",
+  "gates": {
+    "advisor_evaluation_passed": true,
+    "advisor_training_passed": true,
+    "overall_passed": true,
+    "pytest_passed": true,
+    "real_repo_edit_passed_or_skipped": true,
+    "real_repo_no_edit_applied_no_patches": true,
+    "real_repo_no_edit_generated_report": true,
+    "real_repo_no_edit_passed": true,
+    "unsafe_actions_zero": true
+  },
+  "real_repo_no_edit_summary": {
+    "advisor_available_count": 8,
+    "advisor_average_bug_type_confidence": 0.72,
+    "advisor_average_confidence": 0.62,
+    "advisor_average_difficulty_confidence": 0.7,
+    "advisor_average_patch_risk_confidence": 1.0,
+    "advisor_average_source_file_confidence": 0.06,
+    "advisor_bug_type_accuracy": 0.25,
+    "advisor_source_file_accuracy": 0.0,
+    "average_changed_lines": 1.62,
+    "average_confidence_after_patch": 0.0,
+    "average_confidence_before_patch": 1.0,
+    "average_steps": 8.88,
+    "cases_run": 8,
+    "errors": 0,
+    "failed": 8,
+    "failure_categories": {
+      "patch_not_applied": 8
+    },
+    "fix_rate": 0.0,
+    "fixed": 0,
+    "irrelevant_file_reads": 1,
+    "loop_prevention_count": 0,
+    "max_changed_lines": 4,
+    "multi_file_cases": 2,
+    "multi_file_fixed": 0,
+    "patch_quality_clean_count": 0,
+    "patch_quality_invalid_count": 0,
+    "patch_quality_irrelevant_count": 0,
+    "patch_quality_probably_ok_count": 8,
+    "patch_quality_risky_count": 0,
+    "patch_quality_too_large_count": 0,
+    "patch_touched_expected_file_count": 8,
+    "patch_touched_unexpected_file_count": 0,
+    "patches_applied": 0,
+    "patches_proposed": 8,
+    "rollbacks_performed": 0,
+    "snapshots_created": 0,
+    "syntax_valid_after_patch": 0,
+    "tests_passed_after_patch": 0,
+    "tests_rerun_after_patch": 0,
+    "tests_verified": 0,
+    "unsafe_action_block_count": 0
+  },
+  "real_repo_summary": {},
+  "root": "/home/palla/projects/ai-system-1",
+  "steps": [
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "copied_report_path": null,
+      "duration_seconds": 7.185,
+      "name": "pytest",
+      "passed": true,
+      "report_path": null,
+      "returncode": 0,
+      "stderr_log": "pytest.stderr.log",
+      "stdout_log": "pytest.stdout.log"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/train_repair_advisor.py"
+      ],
+      "copied_report_path": null,
+      "duration_seconds": 1.572,
+      "name": "train_advisor",
+      "passed": true,
+      "report_path": null,
+      "returncode": 0,
+      "stderr_log": "train_advisor.stderr.log",
+      "stdout_log": "train_advisor.stdout.log"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/evaluate_repair_advisor.py",
+        "--out",
+        "/home/palla/projects/ai-system-1/benchmarks/.phase4_validation/20260606-095039/advisor_evaluation.json"
+      ],
+      "copied_report_path": null,
+      "duration_seconds": 1.037,
+      "name": "evaluate_advisor",
+      "passed": true,
+      "report_path": null,
+      "returncode": 0,
+      "stderr_log": "evaluate_advisor.stderr.log",
+      "stdout_log": "evaluate_advisor.stdout.log"
+    },
+    {
+      "command": [
+        "/home/palla/projects/ai-system-1/.venv/bin/python",
+        "tools/run_real_repo_benchmark.py",
+        "--proposer",
+        "slm",
+        "--max-steps",
+        "24",
+        "--poll-timeout",
+        "300.0",
+        "--api-base-url",
+        "http://127.0.0.1:8000"
+      ],
+      "copied_report_path": "real_repo_no_edit.report.json",
+      "duration_seconds": 74.354,
+      "name": "real_repo_no_edit",
+      "passed": true,
+      "report_path": "/home/palla/projects/ai-system-1/benchmarks/.runs/20260606-095049/report.json",
+      "returncode": 0,
+      "stderr_log": "real_repo_no_edit.stderr.log",
+      "stdout_log": "real_repo_no_edit.stdout.log"
+    }
+  ]
+}

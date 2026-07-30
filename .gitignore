@@ -12,6 +12,7 @@ testing/pytest-cache-files-*/
 testing/pytest_tmp/
 data/datasets-main/
 data/app/
+benchmarks/.runs/
 legacy_archive/
 repo_scanner.zip
 logs/
@@ -19,3 +20,65 @@ model_offload/
 .ipynb_checkpoints/
 .vscode/*
 !/.vscode/settings.json
+
+# Local/generated specialist data
+data/specialists/
+astra_corpus/
+# Local assignment datasets / large input files
+assignment_inputs/
+*.parquet
+*.snappy.parquet
+
+# Local RAG corpus data
+astra_corpus/
+data/rag/corpus_index/
+data/rag/corpus_vectors/
+data/assignment_command_runs/
+*.db
+*.sqlite
+.venv*/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Local generated/corpus/runtime files
+data/python programming/
+models/specialists/
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+.venv*/
+
+# Local generated/corpus/runtime files
+data/python programming/
+models/specialists/
+*.db
+*.sqlite
+*.sqlite3
+.venv/
+.venv*/
+
+# Local Astra assignment runtime artifacts
+/assignment_workspaces/
+/data/assignment_uploads/
+/data/assignment_verification/
+/astra-assignment-*.zip
+/astra-assignment-*.patch
+*:Zone.Identifier
+
+# Local Astra assignment runtime artifacts
+/assignment_workspaces/
+/data/assignment_uploads/
+/data/assignment_verification/
+/astra-assignment-*.zip
+/astra-assignment-*.patch
+*:Zone.Identifier
+
+# Generated assignment test workspaces
+assignment_tests/
+
+# Generated local Stage 2C runtime configuration
+/.astra-stage2c-runtime.env

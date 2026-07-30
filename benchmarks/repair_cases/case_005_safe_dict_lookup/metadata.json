@@ -1,0 +1,22 @@
+{
+  "bug_type": "missing_default",
+  "case_id": "case_005_safe_dict_lookup",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "users.py"
+  ],
+  "expected_patch_hint": "user.get",
+  "expected_source_file": "users.py",
+  "expected_test_file": "test_users.py",
+  "goal": "Fix the failing user lookup test.",
+  "known_patch": {
+    "new": "return user.get('role', 'guest')",
+    "old": "return user['role']",
+    "path": "users.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "test_users.py",
+    "users.py"
+  ]
+}

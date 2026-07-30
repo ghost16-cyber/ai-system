@@ -252,16 +252,99 @@ def test_tools_endpoint_lists_only_available_coordinator_tools(client):
     tools = {item["name"]: item for item in response.json()["items"]}
 
     assert set(tools) == {
+        "analyze_ai_hardware",
         "analyze_code",
         "analyze_file",
         "analyze_project",
+        "authorize_runtime_plan",
+        "build_execution_profile",
+        "get_runtime_context",
         "get_rules",
         "get_metrics",
+        "orchestrate",
+        "validate_runtime_plan",
     }
     assert tools["analyze_code"]["input_schema"]["language"] == "python"
-    assert all(item["read_only"] is True for item in tools.values())
+    assert all(
+        item["read_only"] is True
+        for name, item in tools.items()
+        if name != "orchestrate"
+    )
+    assert tools["orchestrate"]["read_only"] is False
     assert tools["analyze_project"]["execution"] == "job_backed"
+    assert tools["orchestrate"]["execution"] == "job_backed"
     assert tools["analyze_file"]["execution"] == "synchronous"
+    assert tools["analyze_ai_hardware"]["read_only"] is True
+    assert tools["get_runtime_context"]["read_only"] is True
+    assert tools["validate_runtime_plan"]["read_only"] is True
+    assert tools["build_execution_profile"]["read_only"] is True
+
+
+def test_hardware_ai_report_endpoint_returns_probe_and_recommendations(client):
+    response = client.get("/hardware-ai/report")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "report" in data
+    assert "recommendations" in data
+    assert data["report"]["cpu_count"] >= 1
+    assert data["report"]["ram"]["total_mb"] is None or data["report"]["ram"]["total_mb"] > 0
+    assert len(data["recommendations"]["recommended_batch_size_range"]) == 2
+    assert isinstance(data["recommendations"]["low_vram_mode"], bool)
+
+
+def test_runtime_context_endpoint_returns_task_optimization(client):
+    response = client.get("/runtime/context?task=run%20a%20local%20SLM")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "hardware" in data
+    assert "tools" in data
+    assert "capabilities" in data
+    assert data["task_optimization"]["task_type"] == "local_slm"
+    assert "machine_summary" in data["slm_context"]
+    assert "planning_rules" in data["slm_context"]
+
+
+def test_runtime_plan_validation_endpoint_allows_cpu_classical_ml(client):
+    response = client.post(
+        "/runtime/validate-plan",
+        json={
+            "task": "classical_ml",
+            "requested_plan": {
+                "strategy": "sklearn_pipeline",
+                "requires_gpu": False,
+                "device": "cpu",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["allowed"] is True
+    assert data["decision"] == "allow"
+    assert data["blocked_signals"] == []
+
+
+def test_runtime_execution_profile_endpoint_builds_cpu_classical_ml(client):
+    response = client.post(
+        "/runtime/execution-profile",
+        json={
+            "task": "classical_ml",
+            "requested_plan": {
+                "strategy": "sklearn_pipeline",
+                "requires_gpu": False,
+                "device": "cpu",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["task_type"] == "classical_ml"
+    assert data["runtime"] == "scikit_learn"
+    assert data["device"] == "cpu"
+    assert data["settings"]["gpu_required"] is False
 
 
 def test_metrics_aggregate_findings_parse_failures_and_validated_fixes(client):

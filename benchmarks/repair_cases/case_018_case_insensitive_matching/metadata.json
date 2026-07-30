@@ -1,0 +1,22 @@
+{
+  "bug_type": "case_insensitive_matching",
+  "case_id": "case_018_case_insensitive_matching",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "matching.py"
+  ],
+  "expected_patch_hint": "lower",
+  "expected_source_file": "matching.py",
+  "expected_test_file": "test_matching.py",
+  "goal": "Fix the failing case-insensitive contains test.",
+  "known_patch": {
+    "new": "return needle.lower() in haystack.lower()",
+    "old": "return needle in haystack",
+    "path": "matching.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "matching.py",
+    "test_matching.py"
+  ]
+}

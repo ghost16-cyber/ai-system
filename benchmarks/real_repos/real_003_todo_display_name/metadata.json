@@ -1,0 +1,24 @@
+{
+  "bug_type": "none_handling",
+  "case_id": "real_003_todo_display_name",
+  "difficulty": "medium",
+  "expected_changed_files": [
+    "todo_app/users.py"
+  ],
+  "expected_source_file": "todo_app/users.py",
+  "expected_test_file": "tests/test_users.py",
+  "goal": "Fix the failing todo owner display-name test.",
+  "known_patch": {
+    "new": "if user is None:\n        return 'anonymous'\n    return user['name']",
+    "old": "return user['name']",
+    "path": "todo_app/users.py"
+  },
+  "multi_file": false,
+  "real_repo": true,
+  "relevant_files": [
+    "tests/test_users.py",
+    "todo_app/__init__.py",
+    "todo_app/users.py"
+  ],
+  "repo_family": "flask_todo_app"
+}

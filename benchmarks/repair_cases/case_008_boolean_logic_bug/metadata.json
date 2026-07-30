@@ -1,0 +1,22 @@
+{
+  "bug_type": "boolean_logic",
+  "case_id": "case_008_boolean_logic_bug",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "access.py"
+  ],
+  "expected_patch_hint": "or",
+  "expected_source_file": "access.py",
+  "expected_test_file": "test_access.py",
+  "goal": "Fix the failing access-control boolean test.",
+  "known_patch": {
+    "new": "return is_owner or is_admin",
+    "old": "return is_owner and is_admin",
+    "path": "access.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "access.py",
+    "test_access.py"
+  ]
+}

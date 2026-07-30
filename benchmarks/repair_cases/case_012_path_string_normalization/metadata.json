@@ -1,0 +1,22 @@
+{
+  "bug_type": "string_normalization",
+  "case_id": "case_012_path_string_normalization",
+  "difficulty": "easy",
+  "expected_changed_files": [
+    "slugs.py"
+  ],
+  "expected_patch_hint": "replace(' ', '-')",
+  "expected_source_file": "slugs.py",
+  "expected_test_file": "test_slugs.py",
+  "goal": "Fix the failing slug normalization test.",
+  "known_patch": {
+    "new": "return value.lower().replace(' ', '-')",
+    "old": "return value.lower().replace(' ', '')",
+    "path": "slugs.py"
+  },
+  "multi_file": false,
+  "relevant_files": [
+    "slugs.py",
+    "test_slugs.py"
+  ]
+}
