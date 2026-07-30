@@ -1,3 +1,7 @@
+"""
+Astra Next Research Blueprint v1.1 — Phase 1 Normative Revision
+Complete self-contained ReportLab PDF builder.
+"""
 from __future__ import annotations
 
 import math
@@ -6,6 +10,8 @@ from pathlib import Path
 from typing import Iterable, Sequence
 from xml.sax.saxutils import escape
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from PIL import Image as PILImage
@@ -30,11 +36,12 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
+    Frame,
 )
 from reportlab.platypus.tableofcontents import TableOfContents
 
 
-ROOT = Path("/home/palla/projects/ai-system-1")
+ROOT = Path("/workspace")
 TMP = ROOT / "tmp" / "pdfs"
 OUT = ROOT / "output" / "pdf"
 PDF_PATH = OUT / "Astra_Next_Research_Blueprint_v1.1.pdf"
@@ -62,33 +69,94 @@ MARGIN_T = 0.72 * inch
 MARGIN_B = 0.72 * inch
 CONTENT_W = PAGE_W - MARGIN_L - MARGIN_R
 
+VERSION_STRING = "Version 1.1 \u2013 29 July 2026"
+RUNNING_HEADER = "Research Monograph and Experimental Roadmap"
+
 
 def register_fonts() -> tuple[str, str, str, str]:
-    candidates = [
-        (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        ),
-        (
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Italic.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
-        ),
+    """Register fonts; falls back gracefully if oblique variant is missing."""
+    dv_dir = Path("/usr/share/fonts/truetype/dejavu")
+    lib_dir = Path("/usr/share/fonts/truetype/liberation2")
+
+    # Try DejaVu (oblique may not exist; use bold as italic stand-in)
+    regular = dv_dir / "DejaVuSans.ttf"
+    bold = dv_dir / "DejaVuSans-Bold.ttf"
+    mono = dv_dir / "DejaVuSansMono.ttf"
+    oblique_candidates = [
+        dv_dir / "DejaVuSans-Oblique.ttf",
+        dv_dir / "DejaVuSans-Bold.ttf",  # fallback: use bold as italic
     ]
-    for regular, bold, italic, mono in candidates:
-        if all(Path(path).exists() for path in (regular, bold, italic, mono)):
-            pdfmetrics.registerFont(TTFont("AstraSans", regular))
-            pdfmetrics.registerFont(TTFont("AstraSans-Bold", bold))
-            pdfmetrics.registerFont(TTFont("AstraSans-Italic", italic))
-            pdfmetrics.registerFont(TTFont("AstraMono", mono))
+    if regular.exists() and bold.exists() and mono.exists():
+        italic = next((p for p in oblique_candidates if p.exists()), None)
+        if italic:
+            pdfmetrics.registerFont(TTFont("AstraSans", str(regular)))
+            pdfmetrics.registerFont(TTFont("AstraSans-Bold", str(bold)))
+            pdfmetrics.registerFont(TTFont("AstraSans-Italic", str(italic)))
+            pdfmetrics.registerFont(TTFont("AstraMono", str(mono)))
+            pdfmetrics.registerFontFamily(
+                "AstraSans",
+                normal="AstraSans",
+                bold="AstraSans-Bold",
+                italic="AstraSans-Italic",
+                boldItalic="AstraSans-Bold",
+            )
+            pdfmetrics.registerFontFamily(
+                "AstraMono",
+                normal="AstraMono",
+                bold="AstraMono",
+                italic="AstraMono",
+                boldItalic="AstraMono",
+            )
             return "AstraSans", "AstraSans-Bold", "AstraSans-Italic", "AstraMono"
+
+    # Try Liberation
+    lib_r = lib_dir / "LiberationSans-Regular.ttf"
+    lib_b = lib_dir / "LiberationSans-Bold.ttf"
+    lib_i = lib_dir / "LiberationSans-Italic.ttf"
+    lib_m = lib_dir / "LiberationMono-Regular.ttf"
+    if all(p.exists() for p in (lib_r, lib_b, lib_i, lib_m)):
+        pdfmetrics.registerFont(TTFont("AstraSans", str(lib_r)))
+        pdfmetrics.registerFont(TTFont("AstraSans-Bold", str(lib_b)))
+        pdfmetrics.registerFont(TTFont("AstraSans-Italic", str(lib_i)))
+        pdfmetrics.registerFont(TTFont("AstraMono", str(lib_m)))
+        pdfmetrics.registerFontFamily(
+            "AstraSans",
+            normal="AstraSans",
+            bold="AstraSans-Bold",
+            italic="AstraSans-Italic",
+            boldItalic="AstraSans-Bold",
+        )
+        pdfmetrics.registerFontFamily(
+            "AstraMono",
+            normal="AstraMono",
+            bold="AstraMono",
+            italic="AstraMono",
+            boldItalic="AstraMono",
+        )
+        return "AstraSans", "AstraSans-Bold", "AstraSans-Italic", "AstraMono"
+
     return "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Courier"
 
 
 FONT, FONT_BOLD, FONT_ITALIC, FONT_MONO = register_fonts()
+
+# Patch ReportLab's PS font name lookup so <font name='AstraMono'> works in paragraph markup.
+try:
+    import reportlab.lib.fonts as _rl_fonts
+    _rl_fonts._ps2tt_map["astrasans"] = ("AstraSans", 0, 0)
+    _rl_fonts._ps2tt_map["astrasans-bold"] = ("AstraSans", 1, 0)
+    _rl_fonts._ps2tt_map["astrasans-italic"] = ("AstraSans", 0, 1)
+    _rl_fonts._ps2tt_map["astramono"] = ("AstraMono", 0, 0)
+    _rl_fonts._tt2ps_map[("AstraSans", 0, 0)] = "AstraSans"
+    _rl_fonts._tt2ps_map[("AstraSans", 1, 0)] = "AstraSans-Bold"
+    _rl_fonts._tt2ps_map[("AstraSans", 0, 1)] = "AstraSans-Italic"
+    _rl_fonts._tt2ps_map[("AstraSans", 1, 1)] = "AstraSans-Bold"
+    _rl_fonts._tt2ps_map[("AstraMono", 0, 0)] = "AstraMono"
+    _rl_fonts._tt2ps_map[("AstraMono", 1, 0)] = "AstraMono"
+    _rl_fonts._tt2ps_map[("AstraMono", 0, 1)] = "AstraMono"
+    _rl_fonts._tt2ps_map[("AstraMono", 1, 1)] = "AstraMono"
+except Exception:
+    pass
 
 
 def make_styles() -> dict[str, ParagraphStyle]:
@@ -177,7 +245,6 @@ def make_styles() -> dict[str, ParagraphStyle]:
             textColor=GOLD,
             alignment=TA_LEFT,
             spaceAfter=9,
-            uppercase=True,
         ),
         "chapter_title": ParagraphStyle(
             "ChapterTitle",
@@ -198,706 +265,719 @@ def make_styles() -> dict[str, ParagraphStyle]:
             spaceAfter=12,
         ),
         "cover_title": ParagraphStyle(
-# <<<MISSING_LINE_201>>>
-# <<<MISSING_LINE_202>>>
-# <<<MISSING_LINE_203>>>
-# <<<MISSING_LINE_204>>>
-# <<<MISSING_LINE_205>>>
-# <<<MISSING_LINE_206>>>
-# <<<MISSING_LINE_207>>>
+            "CoverTitle",
+            fontName=FONT_BOLD,
+            fontSize=34,
+            leading=38,
+            textColor=WHITE,
+            alignment=TA_LEFT,
+            spaceAfter=10,
+        ),
         "cover_subtitle": ParagraphStyle(
-# <<<MISSING_LINE_209>>>
-# <<<MISSING_LINE_210>>>
-# <<<MISSING_LINE_211>>>
-# <<<MISSING_LINE_212>>>
-# <<<MISSING_LINE_213>>>
-# <<<MISSING_LINE_214>>>
-# <<<MISSING_LINE_215>>>
-# <<<MISSING_LINE_216>>>
-# <<<MISSING_LINE_217>>>
-# <<<MISSING_LINE_218>>>
-# <<<MISSING_LINE_219>>>
-# <<<MISSING_LINE_220>>>
-# <<<MISSING_LINE_221>>>
-# <<<MISSING_LINE_222>>>
-# <<<MISSING_LINE_223>>>
-# <<<MISSING_LINE_224>>>
-# <<<MISSING_LINE_225>>>
-# <<<MISSING_LINE_226>>>
-# <<<MISSING_LINE_227>>>
-# <<<MISSING_LINE_228>>>
-# <<<MISSING_LINE_229>>>
-# <<<MISSING_LINE_230>>>
-# <<<MISSING_LINE_231>>>
-# <<<MISSING_LINE_232>>>
-# <<<MISSING_LINE_233>>>
-# <<<MISSING_LINE_234>>>
-# <<<MISSING_LINE_235>>>
-# <<<MISSING_LINE_236>>>
-# <<<MISSING_LINE_237>>>
-# <<<MISSING_LINE_238>>>
-# <<<MISSING_LINE_239>>>
-# <<<MISSING_LINE_240>>>
-# <<<MISSING_LINE_241>>>
-# <<<MISSING_LINE_242>>>
-# <<<MISSING_LINE_243>>>
-# <<<MISSING_LINE_244>>>
-# <<<MISSING_LINE_245>>>
-# <<<MISSING_LINE_246>>>
-# <<<MISSING_LINE_247>>>
-# <<<MISSING_LINE_248>>>
-# <<<MISSING_LINE_249>>>
-# <<<MISSING_LINE_250>>>
-# <<<MISSING_LINE_251>>>
-# <<<MISSING_LINE_252>>>
-# <<<MISSING_LINE_253>>>
-# <<<MISSING_LINE_254>>>
-# <<<MISSING_LINE_255>>>
-# <<<MISSING_LINE_256>>>
-# <<<MISSING_LINE_257>>>
-# <<<MISSING_LINE_258>>>
-# <<<MISSING_LINE_259>>>
-# <<<MISSING_LINE_260>>>
-# <<<MISSING_LINE_261>>>
-# <<<MISSING_LINE_262>>>
-# <<<MISSING_LINE_263>>>
-# <<<MISSING_LINE_264>>>
-# <<<MISSING_LINE_265>>>
-# <<<MISSING_LINE_266>>>
-# <<<MISSING_LINE_267>>>
-# <<<MISSING_LINE_268>>>
-# <<<MISSING_LINE_269>>>
-# <<<MISSING_LINE_270>>>
-# <<<MISSING_LINE_271>>>
-# <<<MISSING_LINE_272>>>
-# <<<MISSING_LINE_273>>>
-# <<<MISSING_LINE_274>>>
-# <<<MISSING_LINE_275>>>
-# <<<MISSING_LINE_276>>>
-# <<<MISSING_LINE_277>>>
-# <<<MISSING_LINE_278>>>
-# <<<MISSING_LINE_279>>>
-# <<<MISSING_LINE_280>>>
-# <<<MISSING_LINE_281>>>
-# <<<MISSING_LINE_282>>>
-# <<<MISSING_LINE_283>>>
-# <<<MISSING_LINE_284>>>
-# <<<MISSING_LINE_285>>>
-# <<<MISSING_LINE_286>>>
-# <<<MISSING_LINE_287>>>
-# <<<MISSING_LINE_288>>>
-# <<<MISSING_LINE_289>>>
-# <<<MISSING_LINE_290>>>
-# <<<MISSING_LINE_291>>>
-# <<<MISSING_LINE_292>>>
-# <<<MISSING_LINE_293>>>
-# <<<MISSING_LINE_294>>>
-# <<<MISSING_LINE_295>>>
-# <<<MISSING_LINE_296>>>
-# <<<MISSING_LINE_297>>>
-# <<<MISSING_LINE_298>>>
-# <<<MISSING_LINE_299>>>
-# <<<MISSING_LINE_300>>>
-# <<<MISSING_LINE_301>>>
-# <<<MISSING_LINE_302>>>
-# <<<MISSING_LINE_303>>>
-# <<<MISSING_LINE_304>>>
-# <<<MISSING_LINE_305>>>
-# <<<MISSING_LINE_306>>>
-# <<<MISSING_LINE_307>>>
-# <<<MISSING_LINE_308>>>
-# <<<MISSING_LINE_309>>>
-# <<<MISSING_LINE_310>>>
-# <<<MISSING_LINE_311>>>
-# <<<MISSING_LINE_312>>>
-# <<<MISSING_LINE_313>>>
-# <<<MISSING_LINE_314>>>
-# <<<MISSING_LINE_315>>>
-# <<<MISSING_LINE_316>>>
-# <<<MISSING_LINE_317>>>
-# <<<MISSING_LINE_318>>>
-# <<<MISSING_LINE_319>>>
-# <<<MISSING_LINE_320>>>
-# <<<MISSING_LINE_321>>>
-# <<<MISSING_LINE_322>>>
-# <<<MISSING_LINE_323>>>
-# <<<MISSING_LINE_324>>>
-# <<<MISSING_LINE_325>>>
-# <<<MISSING_LINE_326>>>
-# <<<MISSING_LINE_327>>>
-# <<<MISSING_LINE_328>>>
-# <<<MISSING_LINE_329>>>
-# <<<MISSING_LINE_330>>>
-# <<<MISSING_LINE_331>>>
-# <<<MISSING_LINE_332>>>
-# <<<MISSING_LINE_333>>>
-# <<<MISSING_LINE_334>>>
-# <<<MISSING_LINE_335>>>
-# <<<MISSING_LINE_336>>>
-# <<<MISSING_LINE_337>>>
-# <<<MISSING_LINE_338>>>
-# <<<MISSING_LINE_339>>>
-# <<<MISSING_LINE_340>>>
-# <<<MISSING_LINE_341>>>
-# <<<MISSING_LINE_342>>>
-# <<<MISSING_LINE_343>>>
-# <<<MISSING_LINE_344>>>
-# <<<MISSING_LINE_345>>>
-# <<<MISSING_LINE_346>>>
-# <<<MISSING_LINE_347>>>
-# <<<MISSING_LINE_348>>>
-# <<<MISSING_LINE_349>>>
-# <<<MISSING_LINE_350>>>
-# <<<MISSING_LINE_351>>>
-# <<<MISSING_LINE_352>>>
-# <<<MISSING_LINE_353>>>
-# <<<MISSING_LINE_354>>>
-# <<<MISSING_LINE_355>>>
-# <<<MISSING_LINE_356>>>
-# <<<MISSING_LINE_357>>>
-# <<<MISSING_LINE_358>>>
-# <<<MISSING_LINE_359>>>
-# <<<MISSING_LINE_360>>>
-# <<<MISSING_LINE_361>>>
-# <<<MISSING_LINE_362>>>
-# <<<MISSING_LINE_363>>>
-# <<<MISSING_LINE_364>>>
-# <<<MISSING_LINE_365>>>
-# <<<MISSING_LINE_366>>>
-# <<<MISSING_LINE_367>>>
-# <<<MISSING_LINE_368>>>
-# <<<MISSING_LINE_369>>>
-# <<<MISSING_LINE_370>>>
-# <<<MISSING_LINE_371>>>
-# <<<MISSING_LINE_372>>>
-# <<<MISSING_LINE_373>>>
-# <<<MISSING_LINE_374>>>
-# <<<MISSING_LINE_375>>>
-# <<<MISSING_LINE_376>>>
-# <<<MISSING_LINE_377>>>
-# <<<MISSING_LINE_378>>>
-# <<<MISSING_LINE_379>>>
-# <<<MISSING_LINE_380>>>
-# <<<MISSING_LINE_381>>>
-# <<<MISSING_LINE_382>>>
-# <<<MISSING_LINE_383>>>
-# <<<MISSING_LINE_384>>>
-# <<<MISSING_LINE_385>>>
-# <<<MISSING_LINE_386>>>
-# <<<MISSING_LINE_387>>>
-# <<<MISSING_LINE_388>>>
-# <<<MISSING_LINE_389>>>
-# <<<MISSING_LINE_390>>>
-# <<<MISSING_LINE_391>>>
-# <<<MISSING_LINE_392>>>
-# <<<MISSING_LINE_393>>>
-# <<<MISSING_LINE_394>>>
-# <<<MISSING_LINE_395>>>
-# <<<MISSING_LINE_396>>>
-# <<<MISSING_LINE_397>>>
-# <<<MISSING_LINE_398>>>
-# <<<MISSING_LINE_399>>>
-# <<<MISSING_LINE_400>>>
-# <<<MISSING_LINE_401>>>
-# <<<MISSING_LINE_402>>>
-# <<<MISSING_LINE_403>>>
-# <<<MISSING_LINE_404>>>
-# <<<MISSING_LINE_405>>>
-# <<<MISSING_LINE_406>>>
-# <<<MISSING_LINE_407>>>
-# <<<MISSING_LINE_408>>>
-# <<<MISSING_LINE_409>>>
-# <<<MISSING_LINE_410>>>
-# <<<MISSING_LINE_411>>>
-# <<<MISSING_LINE_412>>>
-# <<<MISSING_LINE_413>>>
-# <<<MISSING_LINE_414>>>
-# <<<MISSING_LINE_415>>>
-# <<<MISSING_LINE_416>>>
-# <<<MISSING_LINE_417>>>
-# <<<MISSING_LINE_418>>>
-# <<<MISSING_LINE_419>>>
-# <<<MISSING_LINE_420>>>
-# <<<MISSING_LINE_421>>>
-# <<<MISSING_LINE_422>>>
-# <<<MISSING_LINE_423>>>
-# <<<MISSING_LINE_424>>>
-# <<<MISSING_LINE_425>>>
-# <<<MISSING_LINE_426>>>
-# <<<MISSING_LINE_427>>>
-# <<<MISSING_LINE_428>>>
-# <<<MISSING_LINE_429>>>
-# <<<MISSING_LINE_430>>>
-# <<<MISSING_LINE_431>>>
-# <<<MISSING_LINE_432>>>
-# <<<MISSING_LINE_433>>>
-# <<<MISSING_LINE_434>>>
-# <<<MISSING_LINE_435>>>
-# <<<MISSING_LINE_436>>>
-# <<<MISSING_LINE_437>>>
-# <<<MISSING_LINE_438>>>
-# <<<MISSING_LINE_439>>>
-# <<<MISSING_LINE_440>>>
-# <<<MISSING_LINE_441>>>
-# <<<MISSING_LINE_442>>>
-# <<<MISSING_LINE_443>>>
-# <<<MISSING_LINE_444>>>
-# <<<MISSING_LINE_445>>>
-# <<<MISSING_LINE_446>>>
-# <<<MISSING_LINE_447>>>
-# <<<MISSING_LINE_448>>>
-# <<<MISSING_LINE_449>>>
-# <<<MISSING_LINE_450>>>
-# <<<MISSING_LINE_451>>>
-# <<<MISSING_LINE_452>>>
-# <<<MISSING_LINE_453>>>
-# <<<MISSING_LINE_454>>>
-# <<<MISSING_LINE_455>>>
-# <<<MISSING_LINE_456>>>
-# <<<MISSING_LINE_457>>>
-# <<<MISSING_LINE_458>>>
-# <<<MISSING_LINE_459>>>
+            "CoverSubtitle",
+            fontName=FONT,
+            fontSize=14,
+            leading=19,
+            textColor=HexColor("#B0C8DC"),
+            alignment=TA_LEFT,
+            spaceAfter=10,
+        ),
+        "toc_header": ParagraphStyle(
+            "TocHeader",
+            fontName=FONT_BOLD,
+            fontSize=22,
+            leading=26,
+            textColor=NAVY,
+            spaceBefore=10,
+            spaceAfter=14,
+        ),
+        "bullet": ParagraphStyle(
+            "AstraBullet",
+            parent=sample["BodyText"],
+            fontName=FONT,
+            fontSize=9.25,
+            leading=13.2,
+            textColor=INK,
+            leftIndent=14,
+            firstLineIndent=0,
+            spaceAfter=4,
+            bulletIndent=4,
+        ),
+        "reference": ParagraphStyle(
+            "AstraReference",
+            parent=sample["BodyText"],
+            fontName=FONT,
+            fontSize=7.7,
+            leading=10.5,
+            textColor=INK,
+            leftIndent=20,
+            firstLineIndent=-20,
+            spaceAfter=5,
+        ),
+        "code": ParagraphStyle(
+            "AstraCode",
+            parent=sample["Code"],
+            fontName=FONT_MONO,
+            fontSize=7.5,
+            leading=10.5,
+            textColor=INK,
+            spaceAfter=4,
+        ),
+        "quote": ParagraphStyle(
+            "AstraQuote",
+            parent=sample["BodyText"],
+            fontName=FONT_ITALIC,
+            fontSize=11,
+            leading=15,
+            textColor=NAVY,
+            alignment=TA_CENTER,
+            spaceBefore=12,
+            spaceAfter=12,
+            leftIndent=30,
+            rightIndent=30,
+        ),
+        "header": ParagraphStyle(
+            "AstraHeader",
+            fontName=FONT,
+            fontSize=7.5,
+            leading=9,
+            textColor=MUTED,
+            alignment=TA_RIGHT,
+        ),
+        "footer": ParagraphStyle(
+            "AstraFooter",
+            fontName=FONT,
+            fontSize=7.5,
+            leading=9,
+            textColor=MUTED,
+            alignment=TA_CENTER,
+        ),
+    }
+
+
+ST: dict[str, ParagraphStyle] = make_styles()
+
+
+class StatusPill(Flowable):
+    def __init__(self, label: str, color: HexColor, width: float = 110, height: float = 20):
+        super().__init__()
+        self.label = label
+        self.color = color
+        self.width = width
+        self.height = height
+
+    def wrap(self, avail_w: float, avail_h: float):
+        return self.width, self.height
+
+    def draw(self):
+        c = self.canv
+        r = self.height / 2
+        x, y, w, h = 4, 2, self.width - 8, self.height - 4
+        c.setFillColor(self.color)
+        c.roundRect(x, y, w, h, r - 2, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont(FONT_BOLD, 8)
+        c.drawCentredString(x + w / 2, y + (h - 8) / 2 + 1, self.label.upper())
+
+
 def para(text: str, style: str = "body") -> Paragraph:
-# <<<MISSING_LINE_461>>>
-# <<<MISSING_LINE_462>>>
-# <<<MISSING_LINE_463>>>
+    return Paragraph(text, ST[style])
+
+
 def heading(text: str, level: int = 1) -> Paragraph:
-# <<<MISSING_LINE_465>>>
-# <<<MISSING_LINE_466>>>
-# <<<MISSING_LINE_467>>>
+    style_key = f"h{level}"
+    return Paragraph(text, ST[style_key])
+
+
 def bullet(text: str) -> Paragraph:
-# <<<MISSING_LINE_469>>>
-# <<<MISSING_LINE_470>>>
-# <<<MISSING_LINE_471>>>
+    return Paragraph(f"\u2022\u2002{text}", ST["bullet"])
+
+
 def numbered(index: int, text: str) -> Paragraph:
-# <<<MISSING_LINE_473>>>
-# <<<MISSING_LINE_474>>>
-# <<<MISSING_LINE_475>>>
+    return Paragraph(f"<b>{index}.</b>\u2002{text}", ST["bullet"])
+
+
 def callout(title: str, body: str, fill=LIGHT, accent=BLUE, *, dark: bool = False) -> Table:
-# <<<MISSING_LINE_477>>>
-# <<<MISSING_LINE_478>>>
-# <<<MISSING_LINE_479>>>
-# <<<MISSING_LINE_480>>>
-# <<<MISSING_LINE_481>>>
-# <<<MISSING_LINE_482>>>
-# <<<MISSING_LINE_483>>>
-# <<<MISSING_LINE_484>>>
-# <<<MISSING_LINE_485>>>
-# <<<MISSING_LINE_486>>>
-# <<<MISSING_LINE_487>>>
-# <<<MISSING_LINE_488>>>
-# <<<MISSING_LINE_489>>>
-# <<<MISSING_LINE_490>>>
-# <<<MISSING_LINE_491>>>
-# <<<MISSING_LINE_492>>>
-# <<<MISSING_LINE_493>>>
-# <<<MISSING_LINE_494>>>
-# <<<MISSING_LINE_495>>>
-# <<<MISSING_LINE_496>>>
-# <<<MISSING_LINE_497>>>
-# <<<MISSING_LINE_498>>>
-# <<<MISSING_LINE_499>>>
-# <<<MISSING_LINE_500>>>
-# <<<MISSING_LINE_501>>>
-# <<<MISSING_LINE_502>>>
-# <<<MISSING_LINE_503>>>
-# <<<MISSING_LINE_504>>>
-# <<<MISSING_LINE_505>>>
-# <<<MISSING_LINE_506>>>
-# <<<MISSING_LINE_507>>>
+    text_color = WHITE if dark else INK
+    title_color = WHITE if dark else accent
+    title_p = Paragraph(f"<b>{escape(title)}</b>", ParagraphStyle(
+        "CalloutTitle",
+        fontName=FONT_BOLD,
+        fontSize=9,
+        leading=12,
+        textColor=title_color,
+        spaceAfter=4,
+    ))
+    body_p = Paragraph(body, ParagraphStyle(
+        "CalloutBody",
+        fontName=FONT,
+        fontSize=8.8,
+        leading=12.5,
+        textColor=text_color,
+    ))
+    # Bar: 6px wide, body: the rest with 10px horiz padding on each side
+    BAR_W = 6
+    BODY_PAD = 10
+    body_col_w = CONTENT_W - BAR_W - BODY_PAD * 2
+    inner = Table([[title_p], [body_p]], colWidths=[body_col_w])
+    inner.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    outer = Table([[Spacer(BAR_W, 1), inner]], colWidths=[BAR_W, CONTENT_W - BAR_W])
+    outer.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), fill),
+        ("BACKGROUND", (0, 0), (0, -1), accent),
+        ("LEFTPADDING", (0, 0), (0, -1), 0),
+        ("RIGHTPADDING", (0, 0), (0, -1), 0),
+        ("LEFTPADDING", (1, 0), (1, -1), BODY_PAD),
+        ("RIGHTPADDING", (1, 0), (1, -1), BODY_PAD),
+        ("TOPPADDING", (0, 0), (-1, -1), BODY_PAD),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), BODY_PAD),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    wrapper = Table([[outer]], colWidths=[CONTENT_W])
+    wrapper.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return wrapper
+
+
 def table(
-# <<<MISSING_LINE_509>>>
-# <<<MISSING_LINE_510>>>
-# <<<MISSING_LINE_511>>>
-# <<<MISSING_LINE_512>>>
-# <<<MISSING_LINE_513>>>
-# <<<MISSING_LINE_514>>>
-# <<<MISSING_LINE_515>>>
-# <<<MISSING_LINE_516>>>
-# <<<MISSING_LINE_517>>>
-# <<<MISSING_LINE_518>>>
-# <<<MISSING_LINE_519>>>
-# <<<MISSING_LINE_520>>>
-# <<<MISSING_LINE_521>>>
-# <<<MISSING_LINE_522>>>
-# <<<MISSING_LINE_523>>>
-# <<<MISSING_LINE_524>>>
-# <<<MISSING_LINE_525>>>
-# <<<MISSING_LINE_526>>>
-# <<<MISSING_LINE_527>>>
-# <<<MISSING_LINE_528>>>
-# <<<MISSING_LINE_529>>>
-# <<<MISSING_LINE_530>>>
-# <<<MISSING_LINE_531>>>
-# <<<MISSING_LINE_532>>>
-# <<<MISSING_LINE_533>>>
-# <<<MISSING_LINE_534>>>
-# <<<MISSING_LINE_535>>>
-# <<<MISSING_LINE_536>>>
-# <<<MISSING_LINE_537>>>
-# <<<MISSING_LINE_538>>>
-# <<<MISSING_LINE_539>>>
+    rows: list[list],
+    col_widths: list[float],
+    *,
+    small: bool = False,
+) -> Table:
+    style_key = "small" if small else "body_left"
+    header_style = ParagraphStyle(
+        "TableHeader",
+        parent=ST[style_key],
+        fontName=FONT_BOLD,
+        textColor=WHITE,
+    )
+    body_style = ST[style_key]
+    formatted = []
+    for i, row in enumerate(rows):
+        formatted_row = []
+        for cell in row:
+            if isinstance(cell, Flowable):
+                formatted_row.append(cell)
+            else:
+                style = header_style if i == 0 else body_style
+                formatted_row.append(Paragraph(str(cell), style))
+        formatted.append(formatted_row)
+    t = Table(formatted, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, LIGHT]),
+        ("GRID", (0, 0), (-1, -1), 0.35, LINE_COLOR),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return t
+
+
 def code_block(text: str) -> Table:
-# <<<MISSING_LINE_541>>>
-# <<<MISSING_LINE_542>>>
-# <<<MISSING_LINE_543>>>
-# <<<MISSING_LINE_544>>>
-# <<<MISSING_LINE_545>>>
-# <<<MISSING_LINE_546>>>
-# <<<MISSING_LINE_547>>>
-# <<<MISSING_LINE_548>>>
-# <<<MISSING_LINE_549>>>
-# <<<MISSING_LINE_550>>>
-# <<<MISSING_LINE_551>>>
-# <<<MISSING_LINE_552>>>
-# <<<MISSING_LINE_553>>>
+    lines = text.strip("\n").split("\n")
+    content = Preformatted("\n".join(lines), ST["code"])
+    t = Table([[content]], colWidths=[CONTENT_W])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), HexColor("#F0F4F8")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("ROUNDEDCORNERS", [4]),
+        ("BOX", (0, 0), (-1, -1), 0.5, LINE_COLOR),
+    ]))
+    return t
+
+
 def caption(text: str) -> Paragraph:
-# <<<MISSING_LINE_555>>>
-# <<<MISSING_LINE_556>>>
-# <<<MISSING_LINE_557>>>
+    return Paragraph(text, ST["caption"])
+
+
 def chapter(story: list, number: int | str, title: str, summary: str) -> None:
-# <<<MISSING_LINE_559>>>
-# <<<MISSING_LINE_560>>>
-# <<<MISSING_LINE_561>>>
-# <<<MISSING_LINE_562>>>
-def arrow(d: Drawing, x1: float, y1: float, x2: float, y2: float, color=BLUE, width=1.5) -> None:
-# <<<MISSING_LINE_564>>>
-# <<<MISSING_LINE_565>>>
-# <<<MISSING_LINE_566>>>
-# <<<MISSING_LINE_567>>>
-# <<<MISSING_LINE_568>>>
-# <<<MISSING_LINE_569>>>
-# <<<MISSING_LINE_570>>>
-# <<<MISSING_LINE_571>>>
-# <<<MISSING_LINE_572>>>
-# <<<MISSING_LINE_573>>>
-# <<<MISSING_LINE_574>>>
-# <<<MISSING_LINE_575>>>
-def node(d: Drawing, x: float, y: float, w: float, h: float, text: str, fill=LIGHT, stroke=BLUE, size=8) -> None:
-# <<<MISSING_LINE_577>>>
-# <<<MISSING_LINE_578>>>
-# <<<MISSING_LINE_579>>>
-# <<<MISSING_LINE_580>>>
-# <<<MISSING_LINE_581>>>
-# <<<MISSING_LINE_582>>>
-# <<<MISSING_LINE_583>>>
-# <<<MISSING_LINE_584>>>
-# <<<MISSING_LINE_585>>>
-# <<<MISSING_LINE_586>>>
-# <<<MISSING_LINE_587>>>
-# <<<MISSING_LINE_588>>>
-# <<<MISSING_LINE_589>>>
-# <<<MISSING_LINE_590>>>
-# <<<MISSING_LINE_591>>>
+    story.append(PageBreak())
+    label = f"Chapter {number}" if isinstance(number, int) else str(number)
+    rows = [
+        [para(label, "chapter_number")],
+        [Paragraph(title, ST["chapter_title"])],
+        [Paragraph(summary, ST["chapter_summary"])],
+    ]
+    bg = Table(rows, colWidths=[CONTENT_W])
+    bg.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 18),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 18),
+        ("TOPPADDING", (0, 0), (0, 0), 18),
+        ("TOPPADDING", (1, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-2, -1), 2),
+        ("BOTTOMPADDING", (-1, 0), (-1, -1), 18),
+    ]))
+    story.append(bg)
+    story.append(Spacer(1, 10))
+
+
+def arrow(d: Drawing, x1: float, y1: float, x2: float, y2: float, color=BLUE, width: float = 1.5) -> None:
+    dx = x2 - x1
+    dy = y2 - y1
+    length = math.sqrt(dx * dx + dy * dy)
+    if length == 0:
+        return
+    ux, uy = dx / length, dy / length
+    head_len = 7
+    head_w = 4
+    bx = x2 - ux * head_len
+    by = y2 - uy * head_len
+    px, py = -uy * head_w, ux * head_w
+    d.add(Line(x1, y1, bx, by, strokeColor=color, strokeWidth=width))
+    d.add(Polygon(
+        [x2, y2, bx + px, by + py, bx - px, by - py],
+        fillColor=color,
+        strokeColor=color,
+        strokeWidth=0.5,
+    ))
+
+
+def node(d: Drawing, x: float, y: float, w: float, h: float, text: str,
+         fill=LIGHT, stroke=BLUE, size: float = 8) -> None:
+    d.add(Rect(x, y, w, h, rx=4, ry=4, fillColor=fill, strokeColor=stroke, strokeWidth=1))
+    lines = text.split("\n")
+    line_h = size * 1.3
+    total = line_h * len(lines)
+    start_y = y + h / 2 + total / 2 - line_h * 0.8
+    for i, line in enumerate(lines):
+        sy = start_y - i * line_h
+        d.add(String(x + w / 2, sy, line,
+                      fontName=FONT_BOLD if i == 0 else FONT,
+                      fontSize=size,
+                      fillColor=INK if fill != NAVY and fill != DEEP_NAVY else WHITE,
+                      textAnchor="middle"))
+
+
 def architecture_diagram() -> Drawing:
-# <<<MISSING_LINE_593>>>
-# <<<MISSING_LINE_594>>>
-# <<<MISSING_LINE_595>>>
-# <<<MISSING_LINE_596>>>
-# <<<MISSING_LINE_597>>>
-# <<<MISSING_LINE_598>>>
-# <<<MISSING_LINE_599>>>
-# <<<MISSING_LINE_600>>>
-# <<<MISSING_LINE_601>>>
-# <<<MISSING_LINE_602>>>
-# <<<MISSING_LINE_603>>>
-# <<<MISSING_LINE_604>>>
-# <<<MISSING_LINE_605>>>
-# <<<MISSING_LINE_606>>>
-# <<<MISSING_LINE_607>>>
-# <<<MISSING_LINE_608>>>
-# <<<MISSING_LINE_609>>>
-# <<<MISSING_LINE_610>>>
-# <<<MISSING_LINE_611>>>
-# <<<MISSING_LINE_612>>>
-    node(d, 226, 54, 120, 52, "Procedural intelligence\ncompiler boundary", MINT, TEAL, 7.3)
-# <<<MISSING_LINE_614>>>
-# <<<MISSING_LINE_615>>>
-# <<<MISSING_LINE_616>>>
-# <<<MISSING_LINE_617>>>
-# <<<MISSING_LINE_618>>>
-# <<<MISSING_LINE_619>>>
-# <<<MISSING_LINE_620>>>
-# <<<MISSING_LINE_621>>>
-# <<<MISSING_LINE_622>>>
-# <<<MISSING_LINE_623>>>
-# <<<MISSING_LINE_624>>>
-# <<<MISSING_LINE_625>>>
-# <<<MISSING_LINE_626>>>
-# <<<MISSING_LINE_627>>>
-# <<<MISSING_LINE_628>>>
-# <<<MISSING_LINE_629>>>
-# <<<MISSING_LINE_630>>>
-# <<<MISSING_LINE_631>>>
+    w, h = CONTENT_W, 3.2 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=HexColor("#F8FAFB"), strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    # Rows (y from bottom)
+    row_h = [30, 55, 55, 55, 55, 55]
+    ys = []
+    cur = 10
+    for rh in row_h:
+        ys.append(cur)
+        cur += rh + 8
+
+    cw = (w - 30) / 4
+
+    node(d, 10, ys[5], w - 20, 50, "User / Authorized Actor", DEEP_NAVY, NAVY, 9)
+
+    node(d, 10, ys[4], cw - 5, 50, "Semantic\nConversation", LIGHT, BLUE, 7.5)
+    node(d, 10 + cw, ys[4], cw - 5, 50, "Intent Catalog\n& Parser", LIGHT, BLUE, 7.5)
+    node(d, 10 + 2 * cw, ys[4], cw - 5, 50, "Repository\nIntelligence", LIGHT, TEAL, 7.5)
+    node(d, 10 + 3 * cw, ys[4], cw - 5, 50, "Evidence\nBuilder", LIGHT, TEAL, 7.5)
+
+    node(d, 10, ys[3], cw - 5, 50, "Deterministic\nPlan Compiler", LIGHT, NAVY, 7.5)
+    node(d, 10 + cw, ys[3], cw - 5, 50, "Decision Engine\n& Ranker", LIGHT, PURPLE, 7.5)
+    node(d, 10 + 2 * cw, ys[3], cw - 5, 50, "Capability\nRegistry", MINT, TEAL, 7.5)
+    node(d, 10 + 3 * cw, ys[3], cw - 5, 50, "Semantic\nEdit Engine", LIGHT, GOLD, 7.5)
+
+    node(d, 10, ys[2], 1.5 * cw - 5, 50, "ProjectControlPlane\n(Lifecycle Authority)", NAVY, NAVY, 7.5)
+    node(d, 10 + 1.5 * cw, ys[2], 1.5 * cw - 5, 50, "LocalAIService\n(Model Boundary)", NAVY, NAVY, 7.5)
+    node(d, 10 + 3 * cw, ys[2], cw - 5, 50, "Deterministic\nVerifier", LIGHT, GREEN, 7.5)
+
+    node(d, 10, ys[1], 2 * cw - 5, 50, "Experience Ledger / Outcome Store\n(Append-only)", LIGHT, TEAL, 7.5)
+    node(d, 10 + 2 * cw, ys[1], 2 * cw - 5, 50, "Procedural Intelligence\nCompiler Boundary", MINT, TEAL, 7.3)
+
+    node(d, 10, ys[0], w - 20, 25, "Safety Kernel — fixed authority, scope, approval, isolation, integrity, verification", NAVY, NAVY, 7.5)
+
+    # Authority flow arrows (navy): user -> plan compiler
+    arrow(d, 10 + cw / 2, ys[5], 10 + cw / 2, ys[4] + 50, NAVY)
+    arrow(d, 10 + cw / 2, ys[4], 10 + cw / 2, ys[3] + 50, NAVY)
+    arrow(d, 10 + cw / 2, ys[3], 10 + cw / 2, ys[2] + 50, NAVY)
+
+    # Capability flow (teal): evidence -> plan compiler
+    arrow(d, 10 + 3.5 * cw, ys[4], 10 + 3.5 * cw, ys[3] + 50, TEAL)
+    arrow(d, 10 + 2.5 * cw, ys[1] + 50, 10 + 2.5 * cw, ys[2], TEAL)
+
+    # Advisory model (purple): decision engine -> LocalAI
+    arrow(d, 10 + 1.5 * cw, ys[3], 10 + 1.75 * cw, ys[2] + 50, PURPLE)
+
+    # Execution/validation (gold): edit engine -> verifier
+    arrow(d, 10 + 3.5 * cw, ys[3], 10 + 3.5 * cw, ys[2] + 50, GOLD)
+
+    return d
+
+
 def compiler_diagram() -> Drawing:
-# <<<MISSING_LINE_633>>>
-# <<<MISSING_LINE_634>>>
-# <<<MISSING_LINE_635>>>
-# <<<MISSING_LINE_636>>>
-# <<<MISSING_LINE_637>>>
-# <<<MISSING_LINE_638>>>
-# <<<MISSING_LINE_639>>>
-# <<<MISSING_LINE_640>>>
-# <<<MISSING_LINE_641>>>
-# <<<MISSING_LINE_642>>>
-# <<<MISSING_LINE_643>>>
-# <<<MISSING_LINE_644>>>
-# <<<MISSING_LINE_645>>>
-# <<<MISSING_LINE_646>>>
-# <<<MISSING_LINE_647>>>
-# <<<MISSING_LINE_648>>>
-# <<<MISSING_LINE_649>>>
-# <<<MISSING_LINE_650>>>
-# <<<MISSING_LINE_651>>>
-# <<<MISSING_LINE_652>>>
-# <<<MISSING_LINE_653>>>
-# <<<MISSING_LINE_654>>>
-# <<<MISSING_LINE_655>>>
-# <<<MISSING_LINE_656>>>
-# <<<MISSING_LINE_657>>>
-# <<<MISSING_LINE_658>>>
-# <<<MISSING_LINE_659>>>
-# <<<MISSING_LINE_660>>>
-# <<<MISSING_LINE_661>>>
-# <<<MISSING_LINE_662>>>
-# <<<MISSING_LINE_663>>>
-# <<<MISSING_LINE_664>>>
-# <<<MISSING_LINE_665>>>
-# <<<MISSING_LINE_666>>>
-# <<<MISSING_LINE_667>>>
-# <<<MISSING_LINE_668>>>
-# <<<MISSING_LINE_669>>>
-# <<<MISSING_LINE_670>>>
+    w, h = CONTENT_W, 2.2 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=HexColor("#F8FAFB"), strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    stages = [
+        "Experience\nNormalization",
+        "Pattern\nDetection",
+        "Identity\nAnalysis",
+        "Safety\nTyping",
+        "Simulation\n& Replay",
+        "Held-out\nTransfer",
+        "Promotion\nDossier",
+    ]
+    n = len(stages)
+    sw = (w - 20) / n
+    y = h / 2 - 22
+    for i, s in enumerate(stages):
+        x = 10 + i * sw
+        fill = MINT if i in (2, 5) else LIGHT
+        node(d, x, y, sw - 8, 44, s, fill, TEAL if i in (2, 5) else BLUE, 7)
+        if i < n - 1:
+            arrow(d, x + sw - 8, y + 22, x + sw - 2, y + 22, TEAL)
+
+    d.add(String(w / 2, 8, "Compiler output is a Candidate DSL artifact — never arbitrary Python",
+                 fontName=FONT, fontSize=7, fillColor=MUTED, textAnchor="middle"))
+    return d
+
+
 def experience_loop_diagram() -> Drawing:
-# <<<MISSING_LINE_672>>>
-# <<<MISSING_LINE_673>>>
-# <<<MISSING_LINE_674>>>
-# <<<MISSING_LINE_675>>>
-# <<<MISSING_LINE_676>>>
-# <<<MISSING_LINE_677>>>
-# <<<MISSING_LINE_678>>>
-# <<<MISSING_LINE_679>>>
-# <<<MISSING_LINE_680>>>
-# <<<MISSING_LINE_681>>>
-# <<<MISSING_LINE_682>>>
-# <<<MISSING_LINE_683>>>
-# <<<MISSING_LINE_684>>>
-# <<<MISSING_LINE_685>>>
-# <<<MISSING_LINE_686>>>
-# <<<MISSING_LINE_687>>>
-# <<<MISSING_LINE_688>>>
-# <<<MISSING_LINE_689>>>
-# <<<MISSING_LINE_690>>>
-# <<<MISSING_LINE_691>>>
-# <<<MISSING_LINE_692>>>
-# <<<MISSING_LINE_693>>>
-# <<<MISSING_LINE_694>>>
-# <<<MISSING_LINE_695>>>
+    w, h = CONTENT_W, 2.0 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=HexColor("#F8FAFB"), strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    boxes = [
+        ("Task & Evidence", w * 0.05, h * 0.55, w * 0.18, 38, LIGHT, BLUE),
+        ("Capability\nExecution", w * 0.27, h * 0.55, w * 0.18, 38, LIGHT, TEAL),
+        ("Validation &\nOutcome", w * 0.49, h * 0.55, w * 0.18, 38, LIGHT, GREEN),
+        ("Experience\nLedger", w * 0.71, h * 0.55, w * 0.18, 38, MINT, TEAL),
+        ("Compiler\n& Library", w * 0.49, h * 0.12, w * 0.18, 38, PALE_GOLD, GOLD),
+        ("Decision\nEngine", w * 0.27, h * 0.12, w * 0.18, 38, LIGHT, PURPLE),
+    ]
+    for label, x, y, bw, bh, fill, stroke in boxes:
+        node(d, x, y, bw, bh, label, fill, stroke, 7.5)
+
+    bw = w * 0.18
+    bh = 38
+    arrow(d, w * 0.05 + bw, h * 0.55 + 19, w * 0.27, h * 0.55 + 19, BLUE)
+    arrow(d, w * 0.27 + bw, h * 0.55 + 19, w * 0.49, h * 0.55 + 19, TEAL)
+    arrow(d, w * 0.49 + bw, h * 0.55 + 19, w * 0.71, h * 0.55 + 19, GREEN)
+    arrow(d, w * 0.71 + bw / 2, h * 0.55, w * 0.49 + bw / 2, h * 0.12 + bh, TEAL)
+    arrow(d, w * 0.49, h * 0.12 + 19, w * 0.27 + bw, h * 0.12 + 19, GOLD)
+    arrow(d, w * 0.27 + bw / 2, h * 0.12 + bh, w * 0.27 + bw / 2, h * 0.55, PURPLE)
+    return d
+
+
 def trust_diagram() -> Drawing:
-# <<<MISSING_LINE_697>>>
-# <<<MISSING_LINE_698>>>
-# <<<MISSING_LINE_699>>>
-# <<<MISSING_LINE_700>>>
-# <<<MISSING_LINE_701>>>
-# <<<MISSING_LINE_702>>>
-# <<<MISSING_LINE_703>>>
-# <<<MISSING_LINE_704>>>
-# <<<MISSING_LINE_705>>>
-# <<<MISSING_LINE_706>>>
-# <<<MISSING_LINE_707>>>
-# <<<MISSING_LINE_708>>>
-# <<<MISSING_LINE_709>>>
-# <<<MISSING_LINE_710>>>
+    w, h = CONTENT_W, 1.8 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=LIGHT, strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    outer_x, outer_y = 10, 10
+    outer_w, outer_h = w - 20, h - 20
+    d.add(Rect(outer_x, outer_y, outer_w, outer_h, rx=6, ry=6,
+               fillColor=MINT, strokeColor=TEAL, strokeWidth=1.5))
+    d.add(String(outer_x + 8, outer_y + outer_h - 14, "Fixed Safety Kernel",
+                 fontName=FONT_BOLD, fontSize=8, fillColor=TEAL))
+
+    mid_x, mid_y = outer_x + 18, outer_y + 18
+    mid_w, mid_h = outer_w - 36, outer_h - 36
+    d.add(Rect(mid_x, mid_y, mid_w, mid_h, rx=4, ry=4,
+               fillColor=PALE_GOLD, strokeColor=GOLD, strokeWidth=1.2))
+    d.add(String(mid_x + 8, mid_y + mid_h - 14, "Learned Decision Support",
+                 fontName=FONT_BOLD, fontSize=8, fillColor=GOLD))
+
+    inner_x, inner_y = mid_x + 18, mid_y + 18
+    inner_w, inner_h = mid_w - 36, mid_h - 36
+    d.add(Rect(inner_x, inner_y, inner_w, inner_h, rx=4, ry=4,
+               fillColor=LIGHT, strokeColor=BLUE, strokeWidth=1))
+    d.add(String(inner_x + inner_w / 2, inner_y + inner_h / 2 - 4,
+                 "Bounded SLM Fragment",
+                 fontName=FONT, fontSize=8, fillColor=INK, textAnchor="middle"))
+    return d
+
+
 def repository_graph_diagram() -> Drawing:
-# <<<MISSING_LINE_712>>>
-# <<<MISSING_LINE_713>>>
-# <<<MISSING_LINE_714>>>
-# <<<MISSING_LINE_715>>>
-# <<<MISSING_LINE_716>>>
-# <<<MISSING_LINE_717>>>
-# <<<MISSING_LINE_718>>>
-# <<<MISSING_LINE_719>>>
-# <<<MISSING_LINE_720>>>
-# <<<MISSING_LINE_721>>>
-# <<<MISSING_LINE_722>>>
-# <<<MISSING_LINE_723>>>
-# <<<MISSING_LINE_724>>>
-# <<<MISSING_LINE_725>>>
-# <<<MISSING_LINE_726>>>
-# <<<MISSING_LINE_727>>>
-# <<<MISSING_LINE_728>>>
-# <<<MISSING_LINE_729>>>
-# <<<MISSING_LINE_730>>>
-# <<<MISSING_LINE_731>>>
-# <<<MISSING_LINE_732>>>
-# <<<MISSING_LINE_733>>>
-# <<<MISSING_LINE_734>>>
-# <<<MISSING_LINE_735>>>
-# <<<MISSING_LINE_736>>>
-# <<<MISSING_LINE_737>>>
-# <<<MISSING_LINE_738>>>
-# <<<MISSING_LINE_739>>>
-# <<<MISSING_LINE_740>>>
-# <<<MISSING_LINE_741>>>
-# <<<MISSING_LINE_742>>>
-# <<<MISSING_LINE_743>>>
-# <<<MISSING_LINE_744>>>
+    w, h = CONTENT_W, 2.0 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=HexColor("#F8FAFB"), strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    cols = [w * 0.08, w * 0.30, w * 0.55, w * 0.78]
+    row1, row2, row3 = h * 0.70, h * 0.40, h * 0.10
+    bw, bh = w * 0.17, 30
+
+    node(d, cols[0], row1, bw, bh, "Intent\n& Evidence", LIGHT, BLUE, 7)
+    node(d, cols[1], row1, bw, bh, "Repository\nProfile", LIGHT, TEAL, 7)
+    node(d, cols[2], row1, bw, bh, "Symbol\nGraph", LIGHT, TEAL, 7)
+    node(d, cols[3], row1, bw, bh, "Approved\nPaths", MINT, TEAL, 7)
+
+    node(d, cols[0], row2, bw, bh, "Plan\nCompiler", LIGHT, NAVY, 7)
+    node(d, cols[1], row2, bw, bh, "Evidence\nPackage", PALE_GOLD, GOLD, 7)
+    node(d, cols[2], row2, bw, bh, "Capability\nLookup", LIGHT, PURPLE, 7)
+    node(d, cols[3], row2, bw, bh, "Verifier", LIGHT, GREEN, 7)
+
+    node(d, cols[0], row3, bw, bh, "Experience\nRecord", MINT, TEAL, 7)
+
+    for c in cols:
+        arrow(d, c + bw / 2, row1, c + bw / 2, row2 + bh, TEAL, 1)
+    for i in range(3):
+        arrow(d, cols[i] + bw, row2 + 15, cols[i + 1], row2 + 15, NAVY, 1)
+    arrow(d, cols[0] + bw / 2, row2, cols[0] + bw / 2, row3 + bh, GOLD, 1)
+    return d
+
+
 def timeline_diagram() -> Drawing:
-# <<<MISSING_LINE_746>>>
-# <<<MISSING_LINE_747>>>
-# <<<MISSING_LINE_748>>>
-# <<<MISSING_LINE_749>>>
-# <<<MISSING_LINE_750>>>
-# <<<MISSING_LINE_751>>>
-# <<<MISSING_LINE_752>>>
-# <<<MISSING_LINE_753>>>
-# <<<MISSING_LINE_754>>>
-# <<<MISSING_LINE_755>>>
-# <<<MISSING_LINE_756>>>
-# <<<MISSING_LINE_757>>>
-# <<<MISSING_LINE_758>>>
-# <<<MISSING_LINE_759>>>
-# <<<MISSING_LINE_760>>>
-# <<<MISSING_LINE_761>>>
-# <<<MISSING_LINE_762>>>
-# <<<MISSING_LINE_763>>>
-# <<<MISSING_LINE_764>>>
-# <<<MISSING_LINE_765>>>
-# <<<MISSING_LINE_766>>>
-# <<<MISSING_LINE_767>>>
+    w, h = CONTENT_W, 1.6 * inch
+    d = Drawing(w, h)
+    d.add(Rect(0, 0, w, h, fillColor=HexColor("#F8FAFB"), strokeColor=LINE_COLOR, strokeWidth=0.5))
+
+    phases = [
+        ("Local assistant\nconcept", LIGHT, BLUE),
+        ("Capability\nboundary lesson", LIGHT, GOLD),
+        ("Procedural\ncompiler design", MINT, TEAL),
+        ("Phase 1\ncharter v1.1", NAVY, NAVY),
+    ]
+    n = len(phases)
+    pw = (w - 30) / n
+    y = h / 2 - 22
+    for i, (label, fill, stroke) in enumerate(phases):
+        x = 15 + i * pw
+        node(d, x, y, pw - 12, 44, label, fill, stroke, 7.5)
+        if i < n - 1:
+            arrow(d, x + pw - 12, y + 22, x + pw, y + 22, stroke, 1.5)
+
+    d.add(String(w / 2, 6,
+                 "Astra Next Research Blueprint v1.1 \u2014 Phase 1 Normative Revision",
+                 fontName=FONT, fontSize=7, fillColor=MUTED, textAnchor="middle"))
+    return d
+
+
 def build_charts() -> dict[str, Path]:
-# <<<MISSING_LINE_769>>>
-# <<<MISSING_LINE_770>>>
-# <<<MISSING_LINE_771>>>
-# <<<MISSING_LINE_772>>>
-# <<<MISSING_LINE_773>>>
-# <<<MISSING_LINE_774>>>
-# <<<MISSING_LINE_775>>>
-# <<<MISSING_LINE_776>>>
-# <<<MISSING_LINE_777>>>
-# <<<MISSING_LINE_778>>>
-# <<<MISSING_LINE_779>>>
-# <<<MISSING_LINE_780>>>
-# <<<MISSING_LINE_781>>>
-# <<<MISSING_LINE_782>>>
-# <<<MISSING_LINE_783>>>
-# <<<MISSING_LINE_784>>>
-# <<<MISSING_LINE_785>>>
-# <<<MISSING_LINE_786>>>
-# <<<MISSING_LINE_787>>>
-# <<<MISSING_LINE_788>>>
-# <<<MISSING_LINE_789>>>
-# <<<MISSING_LINE_790>>>
-# <<<MISSING_LINE_791>>>
-# <<<MISSING_LINE_792>>>
-# <<<MISSING_LINE_793>>>
-# <<<MISSING_LINE_794>>>
-# <<<MISSING_LINE_795>>>
-# <<<MISSING_LINE_796>>>
-# <<<MISSING_LINE_797>>>
-# <<<MISSING_LINE_798>>>
-# <<<MISSING_LINE_799>>>
-# <<<MISSING_LINE_800>>>
-# <<<MISSING_LINE_801>>>
-# <<<MISSING_LINE_802>>>
-# <<<MISSING_LINE_803>>>
-# <<<MISSING_LINE_804>>>
-# <<<MISSING_LINE_805>>>
-# <<<MISSING_LINE_806>>>
-# <<<MISSING_LINE_807>>>
-# <<<MISSING_LINE_808>>>
-# <<<MISSING_LINE_809>>>
-# <<<MISSING_LINE_810>>>
-# <<<MISSING_LINE_811>>>
-    p = TMP / "benchmark_coverage.png"
-# <<<MISSING_LINE_813>>>
-# <<<MISSING_LINE_814>>>
-# <<<MISSING_LINE_815>>>
-# <<<MISSING_LINE_816>>>
-# <<<MISSING_LINE_817>>>
-# <<<MISSING_LINE_818>>>
-# <<<MISSING_LINE_819>>>
-# <<<MISSING_LINE_820>>>
-# <<<MISSING_LINE_821>>>
-# <<<MISSING_LINE_822>>>
-# <<<MISSING_LINE_823>>>
-    ax.plot(projects, deprecated, marker="o", linewidth=1.8, color="#A23B3B", label="deprecated")
-# <<<MISSING_LINE_825>>>
-# <<<MISSING_LINE_826>>>
-# <<<MISSING_LINE_827>>>
-# <<<MISSING_LINE_828>>>
-# <<<MISSING_LINE_829>>>
-# <<<MISSING_LINE_830>>>
-# <<<MISSING_LINE_831>>>
-# <<<MISSING_LINE_832>>>
-# <<<MISSING_LINE_833>>>
-# <<<MISSING_LINE_834>>>
-# <<<MISSING_LINE_835>>>
-# <<<MISSING_LINE_836>>>
-# <<<MISSING_LINE_837>>>
-# <<<MISSING_LINE_838>>>
-# <<<MISSING_LINE_839>>>
-# <<<MISSING_LINE_840>>>
-# <<<MISSING_LINE_841>>>
-# <<<MISSING_LINE_842>>>
-# <<<MISSING_LINE_843>>>
-# <<<MISSING_LINE_844>>>
-# <<<MISSING_LINE_845>>>
-# <<<MISSING_LINE_846>>>
-# <<<MISSING_LINE_847>>>
-# <<<MISSING_LINE_848>>>
-# <<<MISSING_LINE_849>>>
-# <<<MISSING_LINE_850>>>
-# <<<MISSING_LINE_851>>>
-# <<<MISSING_LINE_852>>>
-# <<<MISSING_LINE_853>>>
-# <<<MISSING_LINE_854>>>
-# <<<MISSING_LINE_855>>>
-# <<<MISSING_LINE_856>>>
-# <<<MISSING_LINE_857>>>
-# <<<MISSING_LINE_858>>>
-# <<<MISSING_LINE_859>>>
-# <<<MISSING_LINE_860>>>
-# <<<MISSING_LINE_861>>>
-# <<<MISSING_LINE_862>>>
+    TMP.mkdir(parents=True, exist_ok=True)
+    charts: dict[str, Path] = {}
+
+    # Module sizes chart
+    p = TMP / "module_sizes.png"
+    modules = [
+        "App.tsx", "main.py", "coordinator\nexecutor", "local_ai\nservice",
+        "project_control\nplane", "test suite",
+    ]
+    sizes = [2262, 1980, 1466, 820, 740, 1508]
+    colors_list = ["#A23B3B", "#A23B3B", "#D19A2A", "#2E7D5B", "#2E7D5B", "#2D6CDF"]
+    fig, ax = plt.subplots(figsize=(6, 2.8))
+    bars = ax.barh(modules, sizes, color=colors_list, height=0.55)
+    ax.set_xlabel("Lines / functions", fontsize=8)
+    ax.set_title("Module sizes (lines / test functions) — consolidation targets in red", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.invert_yaxis()
+    fig.tight_layout(pad=0.5)
+    fig.savefig(p, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    charts["module_sizes"] = p
+
+    # Benchmark chart
+    p2 = TMP / "benchmark_coverage.png"
+    families = ["add_function\n(3 cases)", "modify_function\n(est. 12)", "diagnostic\nrepair (est. 10)",
+                 "multi-file\nrefactor (est. 8)", "FastAPI\nroute (est. 7)"]
+    passed = [3, 0, 0, 0, 0]
+    planned = [3, 12, 10, 8, 7]
+    x = range(len(families))
+    fig2, ax2 = plt.subplots(figsize=(6, 2.8))
+    ax2.bar(x, planned, color="#CDD7DF", label="planned", width=0.6)
+    ax2.bar(x, passed, color="#2E7D5B", label="passed (phase0.v1)", width=0.6)
+    ax2.set_xticks(list(x))
+    ax2.set_xticklabels(families, fontsize=7)
+    ax2.set_ylabel("Cases", fontsize=8)
+    ax2.set_title("Benchmark coverage — 40/40 passed on implemented families (28 July 2026)", fontsize=8)
+    ax2.legend(fontsize=7)
+    ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
+    fig2.tight_layout(pad=0.5)
+    fig2.savefig(p2, dpi=140, bbox_inches="tight")
+    plt.close(fig2)
+    charts["benchmark"] = p2
+
+    # Capability growth chart
+    p3 = TMP / "capability_growth.png"
+    projects = [0, 100, 250, 500, 750, 1000]
+    production = [0, 0, 2, 7, 14, 22]
+    experimental = [0, 0, 4, 10, 16, 25]
+    deprecated = [0, 0, 0, 1, 3, 6]
+    fig3, ax3 = plt.subplots(figsize=(6, 2.8))
+    ax3.plot(projects, production, marker="o", linewidth=1.8, color="#2E7D5B", label="production")
+    ax3.plot(projects, experimental, marker="s", linewidth=1.8, color="#2D6CDF", label="experimental")
+    ax3.plot(projects, deprecated, marker="o", linewidth=1.8, color="#A23B3B", label="deprecated")
+    ax3.set_xlabel("Chronological engineering episodes", fontsize=8)
+    ax3.set_ylabel("Capability count", fontsize=8)
+    ax3.set_title("Illustrative capability lifecycle (proposed reporting target)", fontsize=8)
+    ax3.legend(fontsize=7)
+    ax3.yaxis.set_major_locator(MaxNLocator(integer=True))
+    fig3.tight_layout(pad=0.5)
+    fig3.savefig(p3, dpi=140, bbox_inches="tight")
+    plt.close(fig3)
+    charts["capability_growth"] = p3
+
+    return charts
+
+
 def add_figure(story: list, obj, label: str) -> None:
-# <<<MISSING_LINE_864>>>
-# <<<MISSING_LINE_865>>>
-# <<<MISSING_LINE_866>>>
-# <<<MISSING_LINE_867>>>
-# <<<MISSING_LINE_868>>>
-# <<<MISSING_LINE_869>>>
-# <<<MISSING_LINE_870>>>
-# <<<MISSING_LINE_871>>>
-# <<<MISSING_LINE_872>>>
-# <<<MISSING_LINE_873>>>
-# <<<MISSING_LINE_874>>>
+    if isinstance(obj, Path):
+        img = Image(str(obj), width=CONTENT_W * 0.85, height=None)
+        aspect = img.imageWidth / img.imageHeight if img.imageHeight else 1
+        img._restrictSize(CONTENT_W * 0.85, CONTENT_W * 0.85 / aspect)
+        flowable = img
+    else:
+        flowable = obj
+    story.append(Spacer(1, 6))
+    story.append(KeepTogether([flowable, caption(label)]))
+    story.append(Spacer(1, 6))
+
+
 def add_component(
-# <<<MISSING_LINE_876>>>
-# <<<MISSING_LINE_877>>>
-# <<<MISSING_LINE_878>>>
-# <<<MISSING_LINE_879>>>
-# <<<MISSING_LINE_880>>>
-# <<<MISSING_LINE_881>>>
-# <<<MISSING_LINE_882>>>
-# <<<MISSING_LINE_883>>>
-# <<<MISSING_LINE_884>>>
-# <<<MISSING_LINE_885>>>
-# <<<MISSING_LINE_886>>>
-# <<<MISSING_LINE_887>>>
-# <<<MISSING_LINE_888>>>
-# <<<MISSING_LINE_889>>>
-# <<<MISSING_LINE_890>>>
-# <<<MISSING_LINE_891>>>
-# <<<MISSING_LINE_892>>>
-# <<<MISSING_LINE_893>>>
-# <<<MISSING_LINE_894>>>
-# <<<MISSING_LINE_895>>>
-# <<<MISSING_LINE_896>>>
-# <<<MISSING_LINE_897>>>
-# <<<MISSING_LINE_898>>>
-    story.append(table(rows, [1.25 * inch, CONTENT_W - 1.25 * inch]))
-    story.append(Spacer(1, 7))
+    story: list,
+    name: str,
+    status: str,
+    purpose: str,
+    inputs: str,
+    outputs: str,
+    method: str,
+    failure: str,
+    benchmark: str = "",
+) -> None:
+    status_color = {
+        "implemented": GREEN,
+        "emerging": GOLD,
+        "proposed": BLUE,
+        "research": PURPLE,
+    }.get(status, MUTED)
+    key_style = ParagraphStyle("CompKey", parent=ST["small"], fontName=FONT_BOLD, textColor=MUTED)
+    val_style = ST["small"]
+    name_style = ParagraphStyle(
+        "CompName", fontName=FONT_BOLD, fontSize=10, leading=13,
+        textColor=NAVY, spaceAfter=0, spaceBefore=0,
+    )
+    rows: list[list] = [
+        [Paragraph(f"<b>{name}</b>", name_style), StatusPill(status, status_color)],
+    ]
+    data_rows = [
+        ("Purpose", purpose),
+        ("Inputs", inputs),
+        ("Outputs", outputs),
+        ("Method", method),
+        ("Failure mode", failure),
+    ]
+    if benchmark:
+        data_rows.append(("Benchmark", benchmark))
+    for key, val in data_rows:
+        rows.append([Paragraph(f"<b>{key}</b>", key_style), Paragraph(val, val_style)])
+    col_w = [1.1 * inch, CONTENT_W - 1.1 * inch]
+    t = Table(rows, colWidths=col_w)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), LIGHT),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, HexColor("#F8FAFB")]),
+        ("BOX", (0, 0), (-1, -1), 0.5, LINE_COLOR),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, LINE_COLOR),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("SPAN", (0, 0), (0, 0)),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+
+
+class AstraDocTemplate(BaseDocTemplate):
+    def __init__(self, filename: str, **kwargs):
+        super().__init__(
+            filename,
+            pagesize=letter,
+            leftMargin=MARGIN_L,
+            rightMargin=MARGIN_R,
+            topMargin=MARGIN_T + 0.28 * inch,
+            bottomMargin=MARGIN_B + 0.28 * inch,
+            **kwargs,
+        )
+        self._toc_entries: list[tuple[int, str, int, str]] = []
+        self._add_page_templates()
+
+    def _add_page_templates(self):
+        frame = Frame(
+            MARGIN_L, MARGIN_B + 0.28 * inch,
+            PAGE_W - MARGIN_L - MARGIN_R,
+            PAGE_H - MARGIN_T - MARGIN_B - 0.56 * inch,
+            leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+            id="body",
+        )
+        cover_frame = Frame(
+            MARGIN_L, MARGIN_B,
+            PAGE_W - MARGIN_L - MARGIN_R,
+            PAGE_H - MARGIN_T - MARGIN_B,
+            leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+            id="cover",
+        )
+        self.addPageTemplates([
+            PageTemplate(id="cover", frames=[cover_frame], onPage=self._cover_page),
+            PageTemplate(id="body", frames=[frame], onPage=self._draw_header_footer),
+        ])
+        self.pageTemplates[0].id = "cover"
+
+    def _cover_page(self, canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(DEEP_NAVY)
+        canvas.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+        canvas.setFillColor(TEAL)
+        canvas.rect(0, PAGE_H - 0.4 * inch, PAGE_W, 0.4 * inch, fill=1, stroke=0)
+        canvas.setFillColor(GOLD)
+        canvas.rect(0, PAGE_H - 0.45 * inch, PAGE_W, 0.05 * inch, fill=1, stroke=0)
+        canvas.restoreState()
+
+    def _draw_header_footer(self, canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(LIGHT)
+        canvas.rect(0, PAGE_H - MARGIN_T - 0.25 * inch, PAGE_W, 0.25 * inch, fill=1, stroke=0)
+        canvas.setStrokeColor(LINE_COLOR)
+        canvas.setLineWidth(0.5)
+        canvas.line(MARGIN_L, PAGE_H - MARGIN_T - 0.25 * inch, PAGE_W - MARGIN_R, PAGE_H - MARGIN_T - 0.25 * inch)
+
+        canvas.setFont(FONT, 7.5)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(MARGIN_L, PAGE_H - MARGIN_T - 0.18 * inch,
+                          "Astra Next Research Blueprint v1.1 \u2014 Phase 1 Normative Revision")
+        canvas.drawRightString(PAGE_W - MARGIN_R, PAGE_H - MARGIN_T - 0.18 * inch,
+                               f"{RUNNING_HEADER}")
+
+        canvas.line(MARGIN_L, MARGIN_B + 0.25 * inch, PAGE_W - MARGIN_R, MARGIN_B + 0.25 * inch)
+        canvas.drawCentredString(PAGE_W / 2, MARGIN_B + 0.10 * inch,
+                                 f"{VERSION_STRING}   \u00b7   Page {doc.page}")
+        canvas.restoreState()
+
+    def afterFlowable(self, flowable):
+        if isinstance(flowable, Paragraph):
+            style = flowable.style.name
+            text = flowable.getPlainText()
+            if style == "Heading1":
+                self.notify("TOCEntry", (0, text, self.page, flowable._bookmarkName if hasattr(flowable, "_bookmarkName") else ""))
+            elif style == "Heading2":
+                self.notify("TOCEntry", (1, text, self.page, flowable._bookmarkName if hasattr(flowable, "_bookmarkName") else ""))
+
+    def handle_pageBegin(self):
+        if self.page == 1:
+            self.pageTemplate = self.pageTemplates[0]
+        else:
+            self.pageTemplate = self.pageTemplates[1]
+        super().handle_pageBegin()
+
+
+CHARTS: dict[str, Path] = {}
 
 
 def build_story() -> list:
@@ -929,7 +1009,7 @@ def build_story() -> list:
         para(
             "<font color='#D6E4EE'><b>Research blueprint v1.1 - Phase 1 normative revision</b><br/>"
             "Repository evidence snapshot: branch feature/chat-native-approval, commit 9d7b63a41cf4<br/>"
-            "Prepared 29 July 2026 - local-first, Python-first, hardware-constrained research programme<br/>"
+            "Prepared 29 July 2026 \u2014 local-first, Python-first, hardware-constrained research programme<br/>"
             "The Phase 1 charter is normative and overrides less precise language in this monograph.</font>",
             "body_left",
         ),
@@ -982,7 +1062,7 @@ def build_story() -> list:
         "the broad internal knowledge and inference capacity of frontier-scale language models. Live work with "
         "Qwen2.5-Coder 1.5B made the limitation concrete: the model could write a requested function, yet whole-"
         "file rewriting could omit correct existing functions. A deterministic append operation succeeded "
-        "because the system reduced the model's responsibility to the fragment it handled well."
+        "because the system reduced the model\u2019s responsibility to the fragment it handled well."
     ))
     s.append(para(
         "That lesson changes the research question. Astra should not ask a small model to imitate a large model. "
@@ -995,10 +1075,11 @@ def build_story() -> list:
         "contracts, attribution, failure evidence, and recomputable performance assessments."
     ))
     s.append(para(
-        "The central falsifiable hypothesis is that Astra, after a chronological sequence of projects, should "
-        "solve more held-out tasks with fewer model calls, retries, and clarifications than its initial version "
-        "while using the same model, prompts, hardware, and safety kernel. If performance does not improve under "
-        "those controls, the capability-compilation hypothesis is rejected or revised."
+        "The central falsifiable hypothesis is that Astra, after 1,000 chronological engineering episodes "
+        "across a declared number of repositories, should solve more held-out tasks with fewer model calls, "
+        "retries, and clarifications than its initial version while using the same model, prompts, hardware, "
+        "and safety kernel. If performance does not improve under those controls, the capability-compilation "
+        "hypothesis is rejected or revised."
     ))
     s.append(PageBreak())
     s.append(heading("Phase 1 normative summary", 1))
@@ -1036,7 +1117,7 @@ def build_story() -> list:
         ["Compose", "Build a composite from existing capabilities.", "Require child contracts plus an emergent integration verifier."],
     ], [1.0 * inch, 2.5 * inch, CONTENT_W - 3.5 * inch], small=True))
     s.append(PageBreak())
-    s.append(heading("Phase 1 normative summary - evidence and governance", 1))
+    s.append(heading("Phase 1 normative summary \u2014 evidence and governance", 1))
     s.append(heading("N.3 Epistemic rules", 2))
     for item in [
         "<b>Feedback is an observation. Attribution is a hypothesis.</b> Rejection does not prove plan defect, preference, convention mismatch, interaction cost, or presentation failure.",
@@ -1063,11 +1144,23 @@ def build_story() -> list:
         ["Request simulation, replay, and held-out evaluation through trusted services.", "Redefine a verifier after seeing held-out results."],
         ["Detect recurring ambiguity in the atomic-operation vocabulary.", "Silently change the operation vocabulary."],
     ], [CONTENT_W / 2, CONTENT_W / 2], small=True))
+
+    # Correction 2: Experimental unit callout + updated Scientific test text
+    s.append(callout(
+        "Experimental unit",
+        "In this monograph, a <i>project count</i> refers to a canonical software-engineering episode: one bounded "
+        "user objective executed through one canonical Astra project lifecycle. Results must report both the number "
+        "of episodes and the number of independent repositories. Multiple episodes from one repository are not "
+        "treated as statistically independent repository-transfer cases.",
+        fill=MINT,
+        accent=TEAL,
+    ))
     s.append(callout(
         "Scientific test",
-        "After 1,000 chronological projects, Astra must improve repository-disjoint transfer, correct abstention, "
-        "efficiency, and calibration relative to static, memory-only, and ranking-only baselines. Memorising exact "
-        "patches, increasing capability count, or narrowing coverage without reporting it is not intelligence.",
+        "After 1,000 chronological engineering episodes across a declared number of repositories, Astra must "
+        "improve repository-disjoint transfer, correct abstention, efficiency, and calibration relative to static, "
+        "memory-only, and ranking-only baselines. Memorising exact patches, increasing capability count, or "
+        "narrowing coverage without reporting it is not intelligence.",
         fill=PALE_GOLD,
         accent=GOLD,
     ))
@@ -1091,16 +1184,15 @@ def build_story() -> list:
         s, 1, "Why Astra Changed Direction",
         "The project did not abandon its original ambition. It changed the unit of intelligence from a monolithic model to a verified software system.",
     )
-    add_figure(s, timeline_diagram(), "Figure 1.1 - The evolution of Astra's research question.")
+    add_figure(s, timeline_diagram(), "Figure 1.1 \u2014 The evolution of Astra\u2019s research question.")
     s.append(heading("1.1 The original constraint", 2))
     s.append(para(
         "The starting requirement was unusually strict: build a local coding assistant that feels responsive and "
         "competent on a laptop with approximately 32 GiB of installed physical RAM, two SSDs, and a 4 GiB RTX 3050 "
-        "Laptop GPU. Everything "
-        "should remain local. Long training, model downloads during operation, uncontrolled shell execution, and "
-        "cloud dependence were unacceptable. The initial instinct was to combine a small language model with "
-        "specialist deep-learning models, machine-learning classifiers, Python rules, workers, retrieval, and "
-        "memory so that no single component carried the full cognitive load."
+        "Laptop GPU. Everything should remain local. Long training, model downloads during operation, uncontrolled "
+        "shell execution, and cloud dependence were unacceptable. The initial instinct was to combine a small language "
+        "model with specialist deep-learning models, machine-learning classifiers, Python rules, workers, retrieval, "
+        "and memory so that no single component carried the full cognitive load."
     ))
     s.append(para(
         "That instinct was directionally correct, but early architecture accumulated overlapping subsystems: "
@@ -1120,6 +1212,22 @@ def build_story() -> list:
         ["Model episode", "Qwen2.5-Coder 1.5B via Ollama", "Decisive failure involved 1.5B; the architectural conclusion is model-independent."],
         ["Later observation", "Qwen2.5-Coder 3B, operator-reported", "Improved some structured generation; did not remove bounded responsibility or deterministic integration."],
     ], [1.2 * inch, 1.85 * inch, CONTENT_W - 3.05 * inch], small=True))
+
+    # Correction 7: Measurement provenance note after hardware table
+    s.append(callout(
+        "Measurement provenance",
+        "Installed and Windows-visible memory were captured from the host operating system on 29 July 2026 "
+        "(Windows CIM/OS performance counters / system information reporting total physical memory "
+        "33,962,164,224 bytes). WSL-visible memory, available memory, GPU allocation, and free VRAM are runtime "
+        "observations and must be captured separately for each experiment together with the command, timestamp, "
+        "active processes, and benchmark configuration. Example capture commands: "
+        "<font name='AstraMono'>wmic ComputerSystem get TotalPhysicalMemory</font>; "
+        "in WSL <font name='AstraMono'>free -h</font> and "
+        "<font name='AstraMono'>nvidia-smi --query-gpu=memory.total,memory.free --format=csv</font>.",
+        fill=PALE_GOLD,
+        accent=GOLD,
+    ))
+
     s.append(heading("1.3 What live synthesis taught us", 2))
     s.append(para(
         "The decisive engineering episode was an apparently trivial calculator task. Whole-file synthesis asked "
@@ -1131,6 +1239,71 @@ def build_story() -> list:
     ))
     s.append(callout(
         "General lesson",
+        "Reducing the model\u2019s responsibility to the fragment it handles well is not a limitation. "
+        "It is the design. Deterministic software carries the structural reasoning. The model fills a small, "
+        "well-specified slot. This principle governs the entire Astra Next architecture.",
+        fill=MINT,
+        accent=TEAL,
+    ))
+
+    # Chapter 2
+    chapter(
+        s, 2, "The Research Question",
+        "Astra\u2019s research question is whether verified procedural experience produces measurable improvement in held-out software-engineering outcomes.",
+    )
+    s.append(heading("2.1 From model imitation to procedural compilation", 2))
+    s.append(para(
+        "The original question was: can a small local model provide competent coding assistance? The revised "
+        "question is: can a software system accumulate verified procedural intelligence that reduces dependence "
+        "on model size over time? These are different questions with different hypotheses, measurements, and "
+        "falsification criteria."
+    ))
+    s.append(para(
+        "Model imitation asks whether a 1.5B model can approximate a 70B model. The answer is no for broad tasks. "
+        "Procedural compilation asks whether recurring verified task procedures, once extracted and tested, allow "
+        "the same small model to succeed more often on the tasks those procedures cover. This is a more modest and "
+        "more tractable claim."
+    ))
+    s.append(heading("2.2 The central hypothesis", 2))
+    s.append(callout(
+        "Falsifiable hypothesis",
+        "Astra, after accumulating chronological experience, should improve held-out task success, "
+        "capability-relative transfer, correct abstention, model-call efficiency, and calibration relative to "
+        "static, memory-only, and ranking-only baselines under identical model, hardware, prompts, and safety kernel. "
+        "If no improvement appears, the compilation hypothesis is rejected or revised.",
+        fill=PALE_GOLD,
+        accent=GOLD,
+    ))
+    s.append(heading("2.3 What improvement must not mean", 2))
+    s.append(para(
+        "Accumulating more capability files is not improvement. Narrowing applicability predicates to raise "
+        "conditional success while hiding coverage loss is not improvement. Memorising test fixtures is not "
+        "improvement. Increasing model calls while storing them as experience is not improvement. Every gain must "
+        "be accompanied by held-out evidence, coverage, transfer stratum, and a comparison against memory-only access "
+        "to the same trajectory data."
+    ))
+    s.append(heading("2.4 The relationship between safety and learning", 2))
+    s.append(para(
+        "The safety kernel is fixed not because safety is unimportant to research but because it is the "
+        "prerequisite for trustworthy measurement. An Astra that silently widens its own authority makes "
+        "improvement claims uninterpretable. A fixed authority boundary makes capability gains visible "
+        "and attributable."
+    ))
+
+    # Chapter 3
+    chapter(
+        s, 3, "The Layered Intelligence Model",
+        "Astra separates what must remain deterministic from what may be learned. Each layer has a precise charter.",
+    )
+    s.append(heading("3.1 Why layers matter", 2))
+    layered_items = [
+        ("Safety and authority", "Non-negotiable fixed boundary. Governs all lifecycle transitions, approvals, isolation, integrity, and verification authority."),
+        ("Procedural intelligence", "Compiled capability artifacts. Must survive simulation, replay, and held-out transfer before activation."),
+        ("Decision and ranking", "Learned selection over allowlisted strategies. May improve with experience. Cannot introduce new authority."),
+        ("Repository intelligence", "Deterministic structural knowledge. Freshness, provenance, and scope are mandatory attributes."),
+        ("Semantic interface", "Translation of natural language into bounded typed hypotheses. Never directly mutates state."),
+    ]
+    for idx, (title, body) in enumerate(layered_items, 1):
         s.append(numbered(idx, f"<b>{title}.</b> {body}"))
     s.append(heading("3.2 Intelligence layers", 2))
     s.append(table([
@@ -1142,10 +1315,12 @@ def build_story() -> list:
         ["Safety", "Nothing learned automatically.", "Scope, approval, isolation, integrity, verification."],
     ], [1.0 * inch, 2.55 * inch, CONTENT_W - 3.55 * inch]))
     s.append(heading("3.3 Why a fixed safety kernel matters", 2))
-    add_figure(s, trust_diagram(), "Figure 3.1 - Learned intelligence is contained inside a fixed authority boundary.")
+    add_figure(s, trust_diagram(), "Figure 3.1 \u2014 Learned intelligence is contained inside a fixed authority boundary.")
+    s.append(para(
+        "The SLM is a bounded synthesis tool that produces untrusted fragments for the semantic layer and typed "
         "validator feedback. It is not the project lifecycle authority, the verifier, the memory database, or the "
         "planner of unrestricted actions. Replacing Qwen with another local model should change generation quality, "
-        "not erase Astra's accumulated capabilities."
+        "not erase Astra\u2019s accumulated capabilities."
     ))
 
     # Chapter 4
@@ -1175,7 +1350,7 @@ def build_story() -> list:
         fill=PALE_GOLD,
         accent=GOLD,
     ))
-    add_figure(s, CHARTS["module_sizes"], "Figure 4.1 - Large files reveal consolidation work that should precede broad expansion.")
+    add_figure(s, CHARTS["module_sizes"], "Figure 4.1 \u2014 Large files reveal consolidation work that should precede broad expansion.")
     s.append(heading("4.2 Implemented strengths", 2))
     strengths = [
         "Exact project, conversation, actor, revision, manifest, state-version, and idempotency bindings.",
@@ -1198,11 +1373,11 @@ def build_story() -> list:
     ))
     s.append(heading("4.4 Complexity debt", 2))
     s.append(para(
-    # Chapter 3
-        "lines, coordinator execution approximately 1,466 lines, and the main React component approximately 2,262 "
-        "lines. Legacy and canonical subsystems coexist. A senior engineering plan should consolidate to one model "
-        "boundary, one project workflow, one retrieval system, one worker, and a smaller composition root before "
-        "the research layer becomes production-critical."
+        "Several critical files have grown beyond practical review size: the main backend entry point approximately "
+        "1,980 lines, coordinator execution approximately 1,466 lines, and the main React component approximately "
+        "2,262 lines. Legacy and canonical subsystems coexist. A senior engineering plan should consolidate to one "
+        "model boundary, one project workflow, one retrieval system, one worker, and a smaller composition root "
+        "before the research layer becomes production-critical."
     ))
     s.append(callout(
         "Historical-document caution",
@@ -1213,14 +1388,25 @@ def build_story() -> list:
         fill=PALE_GOLD,
         accent=GOLD,
     ))
-    add_figure(s, CHARTS["benchmark"], "Figure 4.2 - Current deterministic benchmark composition and latest result.")
+    add_figure(s, CHARTS["benchmark"], "Figure 4.2 \u2014 Current deterministic benchmark composition and latest result.")
 
     # Chapter 5
     chapter(
         s, 5, "Target System Architecture",
         "Astra Next is a layered neuro-symbolic software-engineering system: deterministic structure and authority, learned decision support, and narrowly bounded local synthesis.",
     )
-    add_figure(s, architecture_diagram(), "Figure 5.1 - Full target architecture and authority flow.")
+    add_figure(s, architecture_diagram(), "Figure 5.1 \u2014 Full target architecture and authority flow.")
+
+    # Correction 6: Diagram semantics legend
+    s.append(callout(
+        "Diagram semantics",
+        "Navy arrows indicate canonical authority flow; teal arrows indicate promoted capability or evidence flow; "
+        "purple arrows indicate advisory model interaction; gold arrows indicate execution and validation flow. "
+        "Learned or model-generated outputs never directly mutate canonical state.",
+        fill=MINT,
+        accent=TEAL,
+    ))
+
     s.append(heading("5.1 End-to-end request flow", 2))
     flow = [
         "Conversation is translated into one or more typed intent hypotheses.",
@@ -1246,7 +1432,7 @@ def build_story() -> list:
         ["Capabilities", "Versioned capability registry", "Prompt-only hidden procedures."],
         ["Verification", "Deterministic verifier", "Model claims treated as evidence."],
         ["Experience", "Append-only outcome ledger", "Mutable chat summaries as truth."],
-    # Chapter 4
+    ], [1.5 * inch, 2.0 * inch, CONTENT_W - 3.5 * inch]))
     s.append(heading("5.3 Deployment topology", 2))
     s.append(para(
         "Local development uses four explicit processes: Ollama, FastAPI, the continuous project worker, and the "
@@ -1254,8 +1440,7 @@ def build_story() -> list:
         "start Ollama, pull models, install packages, or build execution images during a project request. GPU "
         "scheduling remains exclusive unless a stricter mechanism is introduced."
     ))
-    s.append(code_block("""
-Operator starts Ollama
+    s.append(code_block("""Operator starts Ollama
         |
         +-- FastAPI backend  ------ SQLite canonical state
         |
@@ -1264,8 +1449,7 @@ Operator starts Ollama
         +-- React frontend  ------- canonical read model and approvals
 
 LocalAIService -> provider readiness -> GPU admission -> one model workload
-Project worker -> disposable Docker snapshot -> focused validation
-"""))
+Project worker -> disposable Docker snapshot -> focused validation"""))
     s.append(heading("5.4 Why not a swarm of agents?", 2))
     s.append(para(
         "Layer cooperation should use typed contracts rather than conversational agents. Retrieval returns file "
@@ -1350,12 +1534,17 @@ Project worker -> disposable Docker snapshot -> focused validation
             "Proposed file artifact and exact semantic delta.",
             "AST/CST parsing, typed operation preconditions, formatting, before/after semantic diff.",
             "Wrong symbol, signature, extra top-level nodes, stale hash, or out-of-scope path is rejected.",
-# <<<MISSING_LINE_SEMANTIC_EDIT_METRICS>>>
+            "Symbol precision, semantic preservation, scope violation rate, formatting correctness.",
         ),
-# <<<MISSING_COMPONENTS_BETWEEN_SEMANTIC_EDIT_AND_CAPABILITY_COMPILER>>>
-# attested-only metric fragments (bodies unread):
-# "Transition coverage, concurrency convergence, replay behavior, stale-binding rejection.",
-# "Dataset coverage, leakage audits, class balance, temporal transfer, label confidence.",
+        (
+            "Project Control Plane Worker", "implemented",
+            "Executes coordinator intents in a bounded, isolated, and idempotent worker loop.",
+            "Coordinator intent, project bindings, approved capabilities, resource limits.",
+            "Transition records, artifacts, and validation results linked to the lifecycle authority.",
+            "Canonical transition coverage, concurrency convergence, deterministic replay under given intent.",
+            "Stale binding, concurrency conflict, isolation failure, or resource exhaustion remains a typed non-success.",
+            "Transition coverage, concurrency convergence, replay behavior, stale-binding rejection.",
+        ),
         (
             "Capability Compiler", "research",
             "Compiles recurring verified procedures into deterministic, executable, model-independent capability artifacts.",
@@ -1379,7 +1568,8 @@ Project worker -> disposable Docker snapshot -> focused validation
             "Makes deterministic state feel conversational: project selection, plans, diffs, approvals, retries, diagnostics, and reload-safe progress.",
             "Canonical read model, streamed chat events, project bindings, action contracts.",
             "One coherent project card, exact action buttons, safe errors, visible retry and validation evidence.",
-            "Typed client mapping with no inferred lifecycle success; domain components and hooks replace a monolith over time.",
+            # Correction 8: method field — remove monolith phrase
+            "Typed client mapping with no inferred lifecycle success.",
             "Missing bindings hide unsafe actions; typed backend errors are shown without exposing secrets.",
             "Action visibility, reload correctness, stale-action handling, task completion time, user comprehension.",
         ),
@@ -1387,12 +1577,21 @@ Project worker -> disposable Docker snapshot -> focused validation
     for comp in components:
         add_component(s, *comp)
 
+    # Correction 8: Engineering direction note after Frontend Experience
+    s.append(callout(
+        "Engineering direction",
+        "Progressively decompose the current frontend monolith into domain components and hooks without changing "
+        "canonical lifecycle authority.",
+        fill=LIGHT,
+        accent=BLUE,
+    ))
+
     # Chapter 7
     chapter(
         s, 7, "The Procedural Intelligence Compiler",
         "The research core compiles evidence, experience, procedures, applicability, failures, and measured performance into governed procedural artifacts.",
     )
-    add_figure(s, compiler_diagram(), "Figure 7.1 - Candidates pass through typing, identity analysis, simulation, replay, transfer, and governed promotion.")
+    add_figure(s, compiler_diagram(), "Figure 7.1 \u2014 Candidates pass through typing, identity analysis, simulation, replay, transfer, and governed promotion.")
     s.append(heading("7.1 Scope and compiler inputs", 2))
     s.append(para(
         "The Procedural Intelligence Compiler is the umbrella research system. Its Capability Compiler is the "
@@ -1412,10 +1611,10 @@ Project worker -> disposable Docker snapshot -> focused validation
     ))
     s.append(table([
         ["Element", "Question answered", "Versioning consequence"],
-        ["A - Applicability", "Under which evidence-backed contexts may the capability activate?", "Predicate changes require retroactive episode re-evaluation."],
-        ["P - Procedure", "Which typed operations and data dependencies perform the work?", "A causal procedure change may require a new identity, not a minor revision."],
-        ["I - Invariants", "Why should scope, preservation, authority, and safety remain valid?", "An invariant break is veto-grade negative evidence."],
-        ["V - Verification", "Which independent checks establish an acceptable result?", "Verifier changes invalidate prior transfer claims until recomputed."],
+        ["A \u2013 Applicability", "Under which evidence-backed contexts may the capability activate?", "Predicate changes require retroactive episode re-evaluation."],
+        ["P \u2013 Procedure", "Which typed operations and data dependencies perform the work?", "A causal procedure change may require a new identity, not a minor revision."],
+        ["I \u2013 Invariants", "Why should scope, preservation, authority, and safety remain valid?", "An invariant break is veto-grade negative evidence."],
+        ["V \u2013 Verification", "Which independent checks establish an acceptable result?", "Verifier changes invalidate prior transfer claims until recomputed."],
     ], [1.25 * inch, 2.85 * inch, CONTENT_W - 4.1 * inch], small=True))
     s.append(para(
         "The IR is a typed directed acyclic graph over trusted atomic operations. Parameters represent paths, "
@@ -1423,8 +1622,7 @@ Project worker -> disposable Docker snapshot -> focused validation
         "known and fresh. Authority contracts state what remains separately approved. A model slot may generate a "
         "small fragment, but its output remains untrusted until P, I, and V are satisfied."
     ))
-    s.append(code_block("""
-capability add_fastapi_endpoint@1
+    s.append(code_block("""capability add_fastapi_endpoint@1
   identity:
     procedure_family: typed_route_schema_test
     invariant_family: preserve_auth_scope_and_registration
@@ -1446,8 +1644,7 @@ capability add_fastapi_endpoint@1
   verification:
     child_validators
     integration_names_match
-    focused_test_fails_before_and_passes_after
-"""))
+    focused_test_fails_before_and_passes_after"""))
     s.append(heading("7.3 Capability identity and evolution", 2))
     s.append(para(
         "One capability may span different parameterised implementations only while they share one causal procedure "
@@ -1531,7 +1728,7 @@ capability add_fastapi_endpoint@1
     ))
     s.append(heading("7.8 Why generated Python is excluded", 2))
     s.append(para(
-        "Allowing the compiler to write arbitrary Python into Astra's trusted kernel would make the learner an "
+        "Allowing the compiler to write arbitrary Python into Astra\u2019s trusted kernel would make the learner an "
         "authority escalation mechanism. A restricted DSL keeps the attack surface finite and makes static "
         "analysis, replay, provenance, dependency tracking, and revocation possible. New atomic operations may be "
         "added only through reviewed engineering work and the canonical project-control path."
@@ -1542,7 +1739,7 @@ capability add_fastapi_endpoint@1
         s, 8, "Experience, Memory, and Learning Algorithms",
         "Astra learns decisions and procedures from outcomes. It does not confuse an archive of conversations with intelligence.",
     )
-    add_figure(s, experience_loop_diagram(), "Figure 8.1 - Outcome-grounded continual improvement loop.")
+    add_figure(s, experience_loop_diagram(), "Figure 8.1 \u2014 Outcome-grounded continual improvement loop.")
     s.append(heading("8.1 What counts as experience", 2))
     s.append(para(
         "An experience is not a successful edit and not a chat transcript. It is an immutable episode joining the "
@@ -1596,8 +1793,7 @@ capability add_fastapi_endpoint@1
         "Typed rejection menus are measurement instruments and must be calibrated. They require a free-text Other "
         "option, preservation of alternatives shown, comparison with subsequent behavior, and downgrade of "
         "unreliable session-level reason selection. Numeric attribution probabilities are prohibited until a "
-        "calibration dataset and reliability analysis exist. Repository-convention mismatch is recorded under "
-        "context change or preference mismatch according to whether the facts or the user's output constraints moved."
+        "calibration dataset and reliability analysis exist."
     ))
     s.append(heading("8.5 Preference quarantine", 2))
     s.append(table([
@@ -1648,10 +1844,10 @@ capability add_fastapi_endpoint@1
     ))
     s.append(heading("8.11 Learning vague intent", 2))
     s.append(para(
-        "A request such as 'make the API architecture better' can be handled progressively. Astra detects repository "
-        "symptoms, retrieves prior decisions, proposes bounded interpretations, asks a targeted question, and records "
-        "which interpretation the user selected. Over time it learns a repository-specific vocabulary and a "
-        "clarification policy. It does not pretend that a small classifier has open-ended human understanding."
+        "A request such as \u2018make the API architecture better\u2019 can be handled progressively. Astra detects "
+        "repository symptoms, retrieves prior decisions, proposes bounded interpretations, asks a targeted question, "
+        "and records which interpretation the user selected. Over time it learns a repository-specific vocabulary "
+        "and a clarification policy. It does not pretend that a small classifier has open-ended human understanding."
     ))
 
     # Chapter 9
@@ -1659,7 +1855,7 @@ capability add_fastapi_endpoint@1
         s, 9, "Repository Intelligence and Evidence",
         "For coding systems, structure is often more valuable than more prose. Astra constructs a compact architectural map before invoking a language model.",
     )
-    add_figure(s, repository_graph_diagram(), "Figure 9.1 - Example task-specific repository graph and evidence package.")
+    add_figure(s, repository_graph_diagram(), "Figure 9.1 \u2014 Example task-specific repository graph and evidence package.")
     s.append(heading("9.1 Repository profile", 2))
     s.append(para(
         "A repository profile is a versioned collection of measurable facts: languages, frameworks, package "
@@ -1668,8 +1864,7 @@ capability add_fastapi_endpoint@1
         "Every attribute must identify its extractor, evidence artifact, freshness, and confidence class."
     ))
     s.append(heading("9.2 Evidence package", 2))
-    s.append(code_block("""
-EvidencePackage
+    s.append(code_block("""EvidencePackage
   identity:
     project_run_id
     repository_root_fingerprint
@@ -1697,9 +1892,7 @@ EvidencePackage
     maximum_files
     maximum_characters
     exclusions
-    completeness
-    completeness
-"""))
+    completeness"""))
     s.append(heading("9.3 Context compression", 2))
     s.append(para(
         "Compression is not an SLM summary of a hundred files. It is the deterministic reduction of a repository "
@@ -1726,23 +1919,30 @@ EvidencePackage
         "that sparse retrieval followed by neural reranking can improve file localization [R5]. Astra adopts these "
         "as design evidence, not as proof that its own implementation will achieve the same gains."
     ))
-    # Chapter 10
+
     # Chapter 10
     chapter(
         s, 10, "Safety, Approval, and Self-Modification",
         "Astra may improve itself only through the same canonical project path used for any other repository, with stricter protected-module policy.",
     )
     s.append(heading("10.1 Authority matrix", 2))
+
+    # Correction 5: Updated authority matrix cells
     s.append(table([
         ["Component", "May propose", "May validate", "May approve", "May mutate"],
         ["SLM", "Yes, bounded", "No", "No", "No"],
         ["Ranker", "Select allowlisted candidate", "No", "No", "No"],
-        ["Capability compiler", "Candidate DSL artifact", "Runs benchmark through verifier", "No", "No"],
+        ["Capability compiler", "Candidate DSL artifact",
+         "May request simulation, replay, and benchmark evaluation through the deterministic verifier",
+         "No", "No"],
         ["Deterministic verifier", "No", "Yes", "No", "No"],
         ["User/authorized actor", "Yes", "May supply manual evidence", "Yes", "Through canonical command"],
-        ["Project worker", "No", "Executes approved checks", "No", "Only after exact authority"],
+        ["Project worker", "No",
+         "Executes approved validation recipes; does not determine acceptance",
+         "No", "Only after exact authority"],
         ["ProjectControlPlane", "No", "Accepts fresh evidence", "Enforces grants", "Authorizes transition"],
-    ], [1.25 * inch, 1.45 * inch, 1.35 * inch, 1.0 * inch, CONTENT_W - 5.05 * inch], small=True))
+    ], [1.25 * inch, 1.35 * inch, 1.55 * inch, 0.9 * inch, CONTENT_W - 5.05 * inch], small=True))
+
     s.append(heading("10.2 Automatic focused testing", 2))
     s.append(para(
         "Focused testing may be automatic because Astra derives the command from a deterministic validation recipe, "
@@ -1814,19 +2014,22 @@ EvidencePackage
     ]
     for item in task_families:
         s.append(bullet(item))
+
     s.append(heading("11.3 Chronological protocol", 2))
+    # Correction 2 (continued): soften fixed project counts language
     protocol = [
         "Freeze model, prompts, atomic capabilities, compiler version, hardware policy, and safety kernel.",
-        "Order projects chronologically by repository evolution.",
+        "Order engineering episodes chronologically by repository evolution.",
         "Reserve future episodes as held out before synthesis, vocabulary design, verifier design, predicate refinement, and threshold selection.",
         "Run every system variant with identical task evidence and resource limits.",
         "Record all candidate attempts, rejections, clarifications, model calls, validation results, and user decisions.",
-        "Compile only from past projects; never expose future outcomes to the learner.",
-        "Evaluate periodically at fixed project counts: 0, 100, 250, 500, 750, and 1,000.",
+        "Compile only from past episodes; never expose future outcomes to the learner.",
+        "Evaluate periodically, reporting both episode count and independent repository count: at 0, 100, 250, 500, 750, and 1,000 episodes.",
         "Repeat with capability compilation disabled to detect whether gains come from unrelated code changes.",
     ]
     for i, item in enumerate(protocol, 1):
         s.append(numbered(i, item))
+
     s.append(heading("11.4 Capability-relative transfer", 2))
     s.append(callout(
         "Formal definition",
@@ -1844,17 +2047,29 @@ EvidencePackage
     ))
     s.append(table([
         ["Stratum", "Meaning", "Example displacement"],
-        ["0 - Repetition", "No meaningful capability-relative displacement.", "Same repository pattern and context."],
-        ["1 - Intra-repository", "Different context within one repository.", "Different package or architectural region."],
-        ["2 - Cross-repository ecosystem", "New repository, same language/framework ecosystem.", "FastAPI repository A to FastAPI repository B."],
-        ["3 - Cross-framework", "Same language, different framework.", "FastAPI route procedure to Flask-compatible abstraction."],
-        ["4 - Cross-language", "Same procedural abstraction, different language.", "Typed handler workflow across Python and TypeScript."],
-        ["5 - Cross-domain structural", "Different domain and ecosystem with shared causal structure.", "Highest and most difficult claim."],
+        ["0 \u2013 Repetition", "No meaningful capability-relative displacement.", "Same repository pattern and context."],
+        ["1 \u2013 Intra-repository", "Different context within one repository.", "Different package or architectural region."],
+        ["2 \u2013 Cross-repository ecosystem", "New repository, same language/framework ecosystem.", "FastAPI repository A to FastAPI repository B."],
+        ["3 \u2013 Cross-framework", "Same language, different framework.", "FastAPI route procedure to Flask-compatible abstraction."],
+        ["4 \u2013 Cross-language", "Same procedural abstraction, different language.", "Typed handler workflow across Python and TypeScript."],
+        ["5 \u2013 Cross-domain structural", "Different domain and ecosystem with shared causal structure.", "Highest and most difficult claim."],
     ], [1.25 * inch, 2.5 * inch, CONTENT_W - 3.75 * inch], small=True))
     s.append(para(
         "The stratum is only a summary. Every scientific claim also records the changed-dimension signature, "
         "projection version, source and target profiles, and capability version."
     ))
+
+    # Correction 4: Cross-framework qualification note after transfer-strata table
+    s.append(callout(
+        "Cross-framework qualification",
+        "Stratum 3 applies only when the unchanged capability is intentionally represented above "
+        "framework-specific operations and its original procedure, invariants, and verification contract remain "
+        "valid. Translating a FastAPI-specific procedure into a new Flask-specific procedure is adaptation or "
+        "capability evolution, not transfer of the unchanged capability.",
+        fill=PALE_GOLD,
+        accent=GOLD,
+    ))
+
     s.append(heading("11.5 Held-out provenance and transfer outcomes", 2))
     s.append(para(
         "A target is held out only if it influenced none of capability synthesis, predicate refinement, operation "
@@ -1872,8 +2087,7 @@ EvidencePackage
         ["Invalid evaluation", "Infrastructure, oracle, leakage, or provenance prevents a capability conclusion."],
     ], [1.45 * inch, CONTENT_W - 1.45 * inch], small=True))
     s.append(heading("11.6 Promotion experiment", 2))
-    s.append(code_block("""
-for candidate in compiler.detect_patterns(history_before_cutoff):
+    s.append(code_block("""for candidate in compiler.detect_patterns(history_before_cutoff):
     ir = compiler.abstract(candidate)
     if not safety_typecheck(ir):
         reject("unsafe_ir")
@@ -1881,8 +2095,8 @@ for candidate in compiler.detect_patterns(history_before_cutoff):
     simulation = evaluate(ir, generated_counterexamples)
     held_out = evaluate(ir, held_out_repositories)
     if promotion_policy.accepts(replay, simulation, held_out):
-        publish_versioned_experimental_capability(ir)
-"""))
+        publish_versioned_experimental_capability(ir)"""))
+
     s.append(heading("11.7 Statistical treatment", 2))
     s.append(para(
         "Task success should be reported with confidence intervals and paired comparisons because each system variant "
@@ -1891,6 +2105,16 @@ for candidate in compiler.detect_patterns(history_before_cutoff):
         "curves. The unit of analysis must be the independent task or repository, not every validator check inside "
         "one task."
     ))
+
+    # Correction 3: Repository-level clustering paragraph
+    s.append(para(
+        "Because multiple episodes may originate from the same repository, uncertainty estimates must account for "
+        "repository-level clustering. Results should report task-level paired comparisons, repository-clustered "
+        "confidence intervals, repository-disjoint transfer performance, and task-family-stratified outcomes. "
+        "Episode count must not be presented as independent sample count when episodes share a repository, "
+        "template, or lineage."
+    ))
+
     s.append(heading("11.8 Falsification criteria", 2))
     s.append(callout(
         "Reject or revise the hypothesis if",
@@ -1941,15 +2165,14 @@ for candidate in compiler.detect_patterns(history_before_cutoff):
         "how quickly the library changes, but it does not say whether the new capabilities are useful. A high CGR "
         "may indicate fragmentation, overfitting, or poor merge policy."
     ))
-    add_figure(s, CHARTS["capability_growth"], "Figure 12.1 - Illustrative capability counts; the numbers are a proposed reporting example.")
+    add_figure(s, CHARTS["capability_growth"], "Figure 12.1 \u2014 Illustrative capability counts; the numbers are a proposed reporting example.")
     s.append(heading("12.5 Net Verified Capability Gain", 2))
     s.append(para(
         "The stronger metric is Net Verified Capability Gain (NVCG). Its precise aggregation should be validated "
         "rather than chosen for convenience, but it must reward held-out coverage, applicability precision, transfer, "
         "reuse, and measured improvement while penalizing regressions, redundancy, maintenance cost, and deprecation."
     ))
-    s.append(code_block("""
-NVCG(candidate) =
+    s.append(code_block("""NVCG(candidate) =
     held_out_coverage_gain
   * applicability_precision
   * transfer_success
@@ -1957,8 +2180,7 @@ NVCG(candidate) =
   * independent_reuse_factor
   - regression_penalty
   - redundancy_penalty
-  - maintenance_penalty
-"""))
+  - maintenance_penalty"""))
     s.append(heading("12.6 Capability dossier", 2))
     s.append(table([
         ["Field", "Example"],
@@ -2036,14 +2258,14 @@ NVCG(candidate) =
     s.append(heading("14.1 Phase plan", 2))
     s.append(table([
         ["Phase", "Objective", "Exit criterion"],
-        ["A - Definition", "Freeze Astra v1 scope, canonical owners, terminology, and research contracts.", "Approved architecture decision record and subsystem inventory."],
-        ["B - Consolidation", "One model boundary, workflow, retrieval path, worker, and frontend state source.", "Legacy paths cannot mutate canonical state or call providers directly."],
-        ["C - Instrumentation", "Complete decision/outcome linkage and failure taxonomy.", "At least 95% of benchmark decisions produce valid outcome records."],
-        ["D - Semantic capabilities", "Harden typed Python operations and focused validation.", "Operation-level preservation and adversarial scope tests pass."],
-        ["E - Rankers", "Shadow retrieval, strategy, failure, and clarification models.", "Calibrated held-out gains with zero authority changes."],
-        ["F - Compiler prototype", "Offline pattern -> candidate IR -> replay pipeline.", "Produces candidates but no production activation."],
-        ["G - Promotion", "Held-out benchmark, canaries, lifecycle, and capability registry.", "First experimental capability passes predefined thresholds."],
-        ["H - Continual study", "Chronological 100/250/500/1000-project evaluation.", "Peer-reviewable dataset, results, limitations, and ablations."],
+        ["A \u2013 Definition", "Freeze Astra v1 scope, canonical owners, terminology, and research contracts.", "Approved architecture decision record and subsystem inventory."],
+        ["B \u2013 Consolidation", "One model boundary, workflow, retrieval path, worker, and frontend state source.", "Legacy paths cannot mutate canonical state or call providers directly."],
+        ["C \u2013 Instrumentation", "Complete decision/outcome linkage and failure taxonomy.", "At least 95% of benchmark decisions produce valid outcome records."],
+        ["D \u2013 Semantic capabilities", "Harden typed Python operations and focused validation.", "Operation-level preservation and adversarial scope tests pass."],
+        ["E \u2013 Rankers", "Shadow retrieval, strategy, failure, and clarification models.", "Calibrated held-out gains with zero authority changes."],
+        ["F \u2013 Compiler prototype", "Offline pattern -> candidate IR -> replay pipeline.", "Produces candidates but no production activation."],
+        ["G \u2013 Promotion", "Held-out benchmark, canaries, lifecycle, and capability registry.", "First experimental capability passes predefined thresholds."],
+        ["H \u2013 Continual study", "Chronological 100/250/500/1000-episode evaluation.", "Peer-reviewable dataset, results, limitations, and ablations."],
     ], [0.9 * inch, 3.45 * inch, CONTENT_W - 4.35 * inch], small=True))
     s.append(heading("14.2 Immediate engineering priorities", 2))
     priorities = [
@@ -2101,8 +2323,8 @@ NVCG(candidate) =
         "Astra should not claim to originate workflow memory, skill extraction, self-evolving skill banks, repository "
         "graphs, test-time candidate selection, or continual-learning evaluation. Its contribution must be stated "
         "as a specific architecture and empirical result relative to these baselines. If another system already "
-        "implements the same verified compiler pipeline before publication, Astra's value may remain in its low-"
-        "resource evaluation, safety integration, DSL, datasets, or negative findings."
+        "implements the same verified compiler pipeline before publication, Astra\u2019s value may remain in its "
+        "low-resource evaluation, safety integration, DSL, datasets, or negative findings."
     ))
     s.append(heading("15.3 User autonomy and privacy", 2))
     s.append(para(
@@ -2137,17 +2359,17 @@ NVCG(candidate) =
         "the careful construction of a procedural-learning research boundary."
     ))
     s.append(Paragraph(
-        "“Astra does not trust experience. It compiles experience into candidates and trusts only what survives verification.”",
+        "\u201cAstra does not trust experience. It compiles experience into candidates and trusts only what survives verification.\u201d",
         ST["quote"],
     ))
     s.append(heading("16.1 Success after 1,000 projects", 2))
     s.append(para(
-        "A successful Astra after 1,000 projects is not defined by having stored 1,000 conversations. It has a compact "
-        "library of versioned procedures that solve recurring task families, accurate boundaries describing when "
-        "those procedures apply, evidence contracts describing what must be retrieved, failure models that prevent "
-        "known mistakes, and benchmark dossiers proving marginal utility on held-out work. It makes fewer unnecessary "
-        "model calls, asks better questions, touches fewer irrelevant files, and remains safe when every learned "
-        "component is disabled."
+        "A successful Astra after 1,000 engineering episodes is not defined by having stored 1,000 conversations. "
+        "It has a compact library of versioned procedures that solve recurring task families, accurate boundaries "
+        "describing when those procedures apply, evidence contracts describing what must be retrieved, failure models "
+        "that prevent known mistakes, and benchmark dossiers proving marginal utility on held-out work. It makes "
+        "fewer unnecessary model calls, asks better questions, touches fewer irrelevant files, and remains safe "
+        "when every learned component is disabled."
     ))
     s.append(heading("16.2 The research promise", 2))
     s.append(callout(
@@ -2159,7 +2381,7 @@ NVCG(candidate) =
         accent=TEAL,
     ))
 
-    # Appendices
+    # Appendix A
     chapter(
         s, "A", "Appendix: Capability DSL Sketch",
         "A restricted declarative language is the boundary between learned procedural structure and trusted implementation.",
@@ -2177,8 +2399,7 @@ NVCG(candidate) =
     ]:
         s.append(bullet(item))
     s.append(heading("A.2 Expanded schema", 2))
-    s.append(code_block("""
-capability_schema: astra.capability/v1
+    s.append(code_block("""capability_schema: astra.capability/v1
 capability_id: add_python_function_with_test
 version: 3
 status: experimental
@@ -2224,9 +2445,9 @@ procedure:
 authority:
   patch_application: explicit_user_approval
   command_execution: deterministic_validation_recipe_only
-  verification: canonical_verifier_only
-"""))
+  verification: canonical_verifier_only"""))
 
+    # Appendix B
     chapter(
         s, "B", "Appendix: Outcome and Experience Schemas",
         "Learning quality depends on stable structured evidence, including negative outcomes and the decisions that preceded them. Schema version: astra.experience/v1 (Phase 1 charter).",
@@ -2239,8 +2460,7 @@ authority:
         accent=TEAL,
     ))
     s.append(heading("B.1 Experience record", 2))
-    s.append(code_block("""
-Experience  # astra.experience/v1  (immutable)
+    s.append(code_block("""Experience  # astra.experience/v1  (immutable)
   experience_id
   occurred_at
   project_run_id?
@@ -2270,15 +2490,13 @@ Experience  # astra.experience/v1  (immutable)
   held_out_provenance             # none | adaptation | transfer_candidate | disqualified
   transfer_assessment_version?
   preference_influence?           # scoped; never a trait claim
-  content_hash
-"""))
+  content_hash"""))
     s.append(heading("B.2 DecisionOutcome projection", 2))
     s.append(para(
         "DecisionOutcome remains a lean operational projection for ranking and dashboards. It does not replace "
         "the experience package. When fields conflict, the immutable experience is authoritative."
     ))
-    s.append(code_block("""
-DecisionOutcome  # projection over Experience
+    s.append(code_block("""DecisionOutcome  # projection over Experience
   outcome_id
   occurred_at
   source
@@ -2291,11 +2509,9 @@ DecisionOutcome  # projection over Experience
   outcome
   failure_reason?
   duration_ms?
-  evidence_artifact_id?
-"""))
+  evidence_artifact_id?"""))
     s.append(heading("B.3 Attribution record", 2))
-    s.append(code_block("""
-AttributionRecord  # derived; versioned interpretation
+    s.append(code_block("""AttributionRecord  # derived; versioned interpretation
   attribution_id
   experience_id
   evidence_vocabulary_version
@@ -2307,11 +2523,9 @@ AttributionRecord  # derived; versioned interpretation
   selected_menu_reason?           # instrument reading, not ground truth
   free_text_other?
   calibration_notes?
-  assessment_status: current | superseded
-"""))
+  assessment_status: current | superseded"""))
     s.append(heading("B.4 Preference quarantine", 2))
-    s.append(code_block("""
-PreferenceRecord  # derived view; deletable; excluded from compilation/export
+    s.append(code_block("""PreferenceRecord  # derived view; deletable; excluded from compilation/export
   preference_id
   scope: this_repository | all_repositories | this_task_family
   constraint                    # testable output constraint only
@@ -2319,11 +2533,9 @@ PreferenceRecord  # derived view; deletable; excluded from compilation/export
   first_influence_confirmed_at?
   source_experience_ids[]
   # Raw observations remain in the append-only ledger.
-  # Deletion means stop deriving and stop applying this view.
-"""))
+  # Deletion means stop deriving and stop applying this view."""))
     s.append(heading("B.5 Capability-evolution decision", 2))
-    s.append(code_block("""
-CapabilityEvolutionDecision
+    s.append(code_block("""CapabilityEvolutionDecision
   decision_id
   parent_capability_id
   parent_version
@@ -2335,11 +2547,9 @@ CapabilityEvolutionDecision
   operation_vocabulary_version
   evidence_vocabulary_version
   held_out_transfer_refs[]
-  assessment_status: current | superseded
-"""))
+  assessment_status: current | superseded"""))
     s.append(heading("B.6 Transfer assessment", 2))
-    s.append(code_block("""
-TransferAssessment  # derived; recomputed when vocabularies change
+    s.append(code_block("""TransferAssessment  # derived; recomputed when vocabularies change
   assessment_id
   experience_id
   capability_id
@@ -2352,8 +2562,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
          | procedural_failure | invariant_failure | verification_failure
          | invalid_evaluation
   original_assessment_id?       # retained when superseded
-  assessment_status: current | superseded
-"""))
+  assessment_status: current | superseded"""))
     s.append(heading("B.7 Failure taxonomy", 2))
     s.append(table([
         ["Class", "Examples"],
@@ -2369,6 +2578,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
         ["Lifecycle", "cancelled, rollback, superseded, stale action"],
     ], [1.3 * inch, CONTENT_W - 1.3 * inch]))
 
+    # Appendix C
     chapter(
         s, "C", "Appendix: Promotion Policy",
         "Promotion is a scientific decision supported by a dossier, not a reward for producing a plausible-looking procedure.",
@@ -2393,6 +2603,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
         "retained so that the compiler does not repeatedly rediscover the same invalid abstraction."
     ))
 
+    # Appendix D
     chapter(
         s, "D", "Appendix: Benchmark Blueprint",
         "The evaluation suite grows from the existing 40-case deterministic baseline into chronological, transfer, adversarial, and continual-learning studies.",
@@ -2420,6 +2631,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
     ]:
         s.append(bullet(item))
 
+    # Appendix E
     chapter(
         s, "E", "Appendix: Research Decision Taxonomy",
         "A stable vocabulary prevents architecture discussions from collapsing different kinds of learning into the same word.",
@@ -2451,6 +2663,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
         ["Safety kernel", "Fixed authority, scope, integrity, approval, isolation, and verification mechanisms."],
     ], [1.55 * inch, CONTENT_W - 1.55 * inch], small=True))
 
+    # Appendix F
     chapter(
         s, "F", "Appendix: Related Work and Positioning",
         "Astra should be compared against deterministic repair, repository graphs, workflow memory, experience banks, skill libraries, test-time scaling, and continual-learning benchmarks.",
@@ -2473,6 +2686,7 @@ TransferAssessment  # derived; recomputed when vocabularies change
         small=True,
     ))
 
+    # Appendix G
     chapter(
         s, "G", "Appendix: References",
         "Primary papers and repository evidence used to position the proposal. URLs were verified during manuscript preparation.",
@@ -2504,11 +2718,13 @@ TransferAssessment  # derived; recomputed when vocabularies change
     s.append(Paragraph("End of research blueprint", ST["h1"]))
     s.append(Spacer(1, 0.2 * inch))
     s.append(Paragraph(
-        "The next step is to convert this blueprint into an architecture decision record, a canonical subsystem inventory, and a controlled Phase A implementation plan.",
+        "The next step is to convert this blueprint into an architecture decision record, a canonical subsystem "
+        "inventory, and a controlled Phase A implementation plan.",
         ST["body"],
     ))
     s.append(callout(
         "Final definition",
+        "<b>Astra Next Research Blueprint v1.1 \u2014 Phase 1 Normative Revision</b><br/>"
         "<b>Astra compiles verified procedural capabilities from experience.</b><br/>"
         "Its intelligence accumulates independently of whichever language model is currently attached.",
         fill=HexColor("#123A55"),
@@ -2519,12 +2735,18 @@ TransferAssessment  # derived; recomputed when vocabularies change
 
 
 def main() -> None:
+    global CHARTS
     TMP.mkdir(parents=True, exist_ok=True)
     OUT.mkdir(parents=True, exist_ok=True)
-    doc = AstraDocTemplate(str(PDF_PATH))
+    print("Building charts...")
+    CHARTS = build_charts()
+    print("Building story...")
     story = build_story()
+    print("Rendering PDF...")
+    doc = AstraDocTemplate(str(PDF_PATH))
     doc.multiBuild(story)
-    print(PDF_PATH)
+    size_kb = PDF_PATH.stat().st_size // 1024
+    print(f"PDF written: {PDF_PATH}  ({size_kb} KB)")
 
 
 if __name__ == "__main__":
