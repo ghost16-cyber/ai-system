@@ -1,110 +1,148 @@
 {
-  "schema_version": "astra.artifact-index.v1",
+  "schema_version": "astra.artifact-index.v2",
   "programme": "astra-next",
-  "created_at": "2026-07-30T16:04:30Z",
-  "git_commit": "bcfb83887496047346463886a0fd1bab0253ac26",
+  "created_at": "2026-07-30T16:20:45Z",
+  "git_commit": "97fac1c33c9ee7abb3f07c7fbabeda903b652054",
   "normative_charter": "phase1",
+  "normative_phase_numbering": "Phase 1 Research Charter \u00a70.1",
+  "identity_convention": "artifact_id = phase{N}{letter}-kebab-name nested under charter phases 0-7",
   "catalog": [
     {
       "path": "docs/astra-next-master-plan.md",
       "status": "present",
-      "bytes": 24514,
-      "sha256": "19547b9f8a415629dcac3591b8daaf312782914272943759c2788cb1d55a5bd6",
-      "role": "master_plan"
+      "bytes": 22510,
+      "sha256": "b20927d7fca659803ccd707de9b78ca7787ed8abcb4e5688a106adbba885f436",
+      "role": "master_programme_plan",
+      "evidence_class": "repository_verified"
     },
     {
       "path": "docs/astra-next-master-status.json",
       "status": "present",
-      "bytes": 10592,
-      "sha256": "8d36a68609b5ce1edd5247989e4a8d49f2063cf35400e60321868e9c7df3f627",
-      "role": "master_status"
+      "bytes": 19074,
+      "sha256": "203b25994cd0ea584b6b41ed3990eb6b258f017b91d20a92062bc10d57c4b2e0",
+      "role": "master_status",
+      "evidence_class": "repository_verified"
     },
     {
       "path": "docs/astra-next-master-decision-index.md",
       "status": "present",
-      "bytes": 7114,
-      "sha256": "f9143e495f21d9fb12981818376b7be56c2f76b147e131a9661ad06a8346ea50",
-      "role": "decision_index"
-    },
-    {
-      "path": "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
-      "status": "pending_merge_from_blueprint_pr",
-      "role": "research_monograph",
-      "note": "Present on cursor/blueprint-v11-final-d240 (PR #3)."
-    },
-    {
-      "path": "tmp/pdfs/build_astra_next_pdf.py",
-      "status": "pending_merge_from_blueprint_pr",
-      "role": "monograph_builder",
-      "note": "Present on cursor/blueprint-v11-final-d240 (PR #3)."
+      "bytes": 8289,
+      "sha256": "49ea2fe742baa0bed47b58753471d8e310cd1e4a2c21259beb9fb5d7642ec2e6",
+      "role": "decision_index",
+      "evidence_class": "repository_verified"
     },
     {
       "path": "docs/stage1-canonical-project-control-plane.md",
-      "status": "present",
-      "bytes": 13218,
-      "sha256": "f02091bbb772b69c9a86115b245b95e2ae6c0a414a5b277d04480e67e2941973",
-      "role": "supporting_doc"
+      "status": "missing",
+      "role": "phase0a_supporting"
     },
     {
       "path": "docs/stage2c-container-isolation-and-control.md",
-      "status": "present",
-      "bytes": 7102,
-      "sha256": "815d02a7307eff298e64fe2b17b9f5d399e30beab639df9560f5d10e91ab33cc",
-      "role": "supporting_doc"
+      "status": "missing",
+      "role": "phase0a_supporting"
     },
     {
       "path": "docs/astra-phase9-canonical-chat-runtime.md",
-      "status": "present",
-      "bytes": 8936,
-      "sha256": "3a9955de803717b4c9f36ad9029c6fc14bde2d15f648425aaa1d36eee42f750f",
-      "role": "supporting_doc"
+      "status": "missing",
+      "role": "phase0a_supporting"
     },
     {
       "path": "docs/stabilization-checkpoint.md",
-      "status": "present",
-      "bytes": 8567,
-      "sha256": "72e35b6e8a0b5d8762dbfa29a0c07338bc7f7cdf4dc927b3d1c531cf310e84da",
-      "role": "supporting_doc"
+      "status": "missing",
+      "role": "phase0a_supporting"
     },
     {
+      "artifact_id": "phase1-research-identity",
       "path": "docs/astra-next-phase1-research-charter.md",
       "role": "phase1_charter",
       "status": "external_or_pending",
-      "note": "Normative charter; must be hash-bound when synced into this repository."
+      "evidence_class": "operator_reported",
+      "note": "Normative charter; hash-bind when synced."
     },
     {
-      "path": "artifacts/research/phase2/fastapi-grammar/",
-      "role": "phase2_grammar",
-      "status": "external_or_pending"
-    },
-    {
-      "path": "artifacts/research/phase2/pytest-grammar/",
-      "role": "phase2_grammar",
-      "status": "external_or_pending"
-    },
-    {
-      "path": "artifacts/research/phase2/probe-report.json",
-      "role": "phase2_probe",
-      "status": "external_or_pending"
-    },
-    {
-      "path": "artifacts/research/phase3/recomputation-probe/",
-      "role": "phase3_probe",
-      "status": "not_started"
-    },
-    {
-      "path": "benchmarks/results/baseline_phase0.v1.json",
-      "role": "phase0_benchmark",
+      "artifact_id": "phase2a-grammar-contracts",
+      "path": "artifacts/research/phase2/grammar-contracts/",
       "status": "external_or_pending",
-      "note": "Monograph cites 40/40 phase0.v1; bind exact results file when available in-repo."
+      "evidence_class": "operator_reported"
+    },
+    {
+      "artifact_id": "phase2b-fastapi-operationalisation",
+      "path": "artifacts/research/phase2/fastapi-grammar/",
+      "status": "external_or_pending",
+      "evidence_class": "operator_reported"
+    },
+    {
+      "artifact_id": "phase2c-pytest-operationalisation",
+      "path": "artifacts/research/phase2/pytest-grammar/",
+      "status": "external_or_pending",
+      "evidence_class": "operator_reported"
+    },
+    {
+      "artifact_id": "phase2d-grammar-versioning-and-artifact-closure",
+      "path": "artifacts/research/phase2/probe-report.json",
+      "status": "external_or_pending",
+      "evidence_class": "proposed"
+    },
+    {
+      "artifact_id": "phase3a-evidence-architecture",
+      "path": "artifacts/research/phase3a-evidence-architecture/",
+      "status": "not_started",
+      "evidence_class": "proposed"
+    },
+    {
+      "artifact_id": "phase3b-recomputation-probe",
+      "path": "artifacts/research/phase3b-recomputation-probe/",
+      "status": "not_started",
+      "evidence_class": "proposed"
+    },
+    {
+      "artifact_id": "phase3c-trajectory-normalization",
+      "path": "artifacts/research/phase3c-trajectory-normalization/",
+      "status": "not_started",
+      "evidence_class": "proposed"
+    },
+    {
+      "artifact_id": "phase4a-manual-compiler",
+      "path": "artifacts/research/phase4a-manual-compiler/",
+      "status": "blocked",
+      "evidence_class": "proposed",
+      "note": "Blocked until 3B gate and phase7a-preregistered-protocol."
+    },
+    {
+      "artifact_id": "phase4c-pattern-mining",
+      "path": "artifacts/research/phase4c-pattern-mining/",
+      "status": "blocked",
+      "evidence_class": "proposed"
+    },
+    {
+      "artifact_id": "phase7a-preregistered-protocol",
+      "path": "docs/protocols/phase7a-preregistered-protocol.md",
+      "status": "not_started",
+      "evidence_class": "proposed",
+      "note": "Must complete before 4A."
+    },
+    {
+      "artifact_id": "phase0-benchmark-phase0.v1",
+      "path": "benchmarks/results/baseline_phase0.v1.json",
+      "status": "external_or_pending",
+      "evidence_class": "operator_reported",
+      "note": "Monograph cites 40/40; bind exact file when available."
+    },
+    {
+      "artifact_id": "research-monograph-v1.1",
+      "path": "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
+      "status": "pending_merge_from_blueprint_pr",
+      "evidence_class": "repository_verified",
+      "note": "PR #3 cursor/blueprint-v11-final-d240"
     }
   ],
   "commands": {
-    "rebuild_monograph": "python3 tmp/pdfs/build_astra_next_pdf.py",
-    "validate_status_json": "python3 -m json.tool docs/astra-next-master-status.json > /dev/null"
+    "validate_status_json": "python3 -m json.tool docs/astra-next-master-status.json > /dev/null",
+    "validate_artifact_index": "python3 -m json.tool artifacts/research/master/artifact-index.json > /dev/null"
   },
   "notes": [
-    "Pending entries are intentionally listed so Phase 2/3 local probe artifacts can be bound without renaming IDs.",
-    "Do not delete superseded assessments; record supersession in Phase 3 stores."
+    "Do not use parallel phase numbers 8-15 as identity.",
+    "Upgrade Phase 2 entries from operator_reported to repository_verified only after hashes and tests are bound.",
+    "phase7a-preregistered-protocol is required before phase4a-manual-compiler."
   ]
 }

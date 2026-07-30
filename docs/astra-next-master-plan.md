@@ -1,43 +1,59 @@
-# Astra Next Master Plan
+# Astra Next Master Programme Plan
 
-Status: **active programme plan** (30 July 2026)  
-Normative charter: Phase 1 Research Charter (frozen)  
-Companion monograph: `output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf`  
+Status: **active operational decomposition of the frozen seven-phase roadmap**  
+Normative phase numbering: Phase 1 Research Charter §0.1  
+Companion monograph: `output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf` (explanatory)  
 Machine status: `docs/astra-next-master-status.json`  
 Decision index: `docs/astra-next-master-decision-index.md`  
-Artifact catalogue: `artifacts/research/master/artifact-index.json`
+Artifact catalogue: `artifacts/research/master/artifact-index.json`  
+Updated: 30 July 2026
 
 ---
 
 ## 0. Role of this document
 
-The master plan sits **above** the phase charters. It does not replace them.
+This master programme plan is the **operational decomposition** of the frozen seven-phase roadmap in the Phase 1 Research Charter. It does not replace the charter.
 
 Its job is to show:
 
 - where Astra is now;
 - what is frozen;
 - what remains experimental;
-- the dependency order;
-- the completion gate for every phase;
-- which claims each phase is allowed to support;
+- work-package dependencies under each **charter phase**;
+- the completion gate for every work package;
+- which claims each work package is allowed to support;
 - what must not be built early.
 
 It matches the research monograph’s separation between **implemented / emerging / proposed / research** work, and the requirement that learned components remain subordinate to the fixed safety kernel.
 
-### Document hierarchy (authority order)
+### Normative phase numbering (charter — do not rename)
+
+| Charter phase | Official name |
+|---|---|
+| 0 | Boundaries |
+| 1 | Identity |
+| 2 | Knowledge |
+| 3 | Evidence |
+| 4 | Capability Compiler |
+| 5 | Algorithms |
+| 6 | Purposeful Data Collection |
+| 7 | Integration & Longitudinal Evaluation |
+
+Detailed units in this plan are **work packages** (e.g. `3A`, `4C`, `7A`), nested under these seven phases. They are **not** a second phase-numbering system.
+
+### Document hierarchy
 
 | # | Artifact | Role |
 |---|---|---|
-| 1 | **Phase 1 Research Charter** | Normative definitions, authority boundaries, evidence rules, research claims |
-| 2 | **Astra Next Master Plan** (this document) | Programme sequencing, dependencies, gates, deliverables, current status |
-| 3 | **Phase Charters** | Normative rules for each individual phase |
-| 4 | **Phase Protocols** | Pre-registered implementation and experiment procedures |
-| 5 | **Decision Logs** | Frozen conclusions and amendments |
-| 6 | **Probe Artifacts** | Machine-readable evidence and results |
-| 7 | **Research Monograph** | Explanatory architecture and overall research vision |
+| 1 | **Phase 1 Research Charter** | Normative research constitution (definitions, authority, evidence, claims) |
+| 2 | **Master Programme Plan** (this document) | Operational decomposition of the charter’s seven phases; may not rename them |
+| 3 | **Phase charters** | Normative phase-local decisions |
+| 4 | **Pre-registered protocols** | Experimental procedures fixed before relevant implementation |
+| 5 | **Decision logs** | Amendments and frozen interpretations |
+| 6 | **Probe artifacts** | Machine-readable evidence |
+| 7 | **Monograph** | Explanatory synthesis |
 
-**Precedence.** The Phase 1 charter overrides less precise monograph language. This master plan preserves that precedence: it sequences work; it does not redefine intelligence, capability, learning, transfer, or authority.
+**Coordination rule.** The master plan coordinates and sequences phase work. It outranks phase documents only on programme status and dependency ordering where no higher charter rule applies. It may **not** override the Phase 1 charter or silently replace normative phase-local decisions. The Phase 1 charter overrides less precise monograph language.
 
 ---
 
@@ -45,166 +61,192 @@ It matches the research monograph’s separation between **implemented / emergin
 
 > Astra compiles verified procedural capabilities from experience.
 
-The model is temporary reasoning support. Authority, evidence, execution, verification, and accumulated procedural intelligence belong to Astra. Improvement is measured over memory-only baselines (B2), under fixed resources and a fixed safety kernel, separately for within-repository adaptation and cross-repository transfer, plus survival under model replacement or removal (B5).
+The model is temporary reasoning support. Authority, evidence, execution, verification, and accumulated procedural intelligence belong to Astra.
 
-**Experimental unit.** A *project count* in this programme means a **canonical software-engineering episode**: one bounded user objective executed through one canonical Astra project lifecycle. Results must report both episode count and independent-repository count. Multiple episodes from one repository are not statistically independent repository-transfer cases.
+**Canonical engineering episode** (charter term — use exactly):
+
+> One immutable request-to-outcome record containing the pre-decision evidence package, available alternatives, intervention, execution, verification, and final classified outcome.
+
+The words *project*, *task*, *attempt*, *work unit*, and *episode* are **not** interchangeable. Longitudinal checkpoints count **canonical engineering episodes** and separately report **repositories** and **repository-lineage clusters**.
+
+Do **not** define “project count” as episode count. Retire “project count” from experimental reporting.
+
+Improvement is measured over memory-only baselines (B2), under fixed resources and a fixed safety kernel, separately for within-repository adaptation and cross-repository transfer, plus survival under model replacement or removal (B5).
 
 ---
 
-## 2. Where Astra is now
+## 2. Evidence-status labels
 
-| Layer | Status | Notes |
-|---|---|---|
-| Deterministic baseline (Phase 0) | **Complete** | Canonical lifecycle, approvals, Docker isolation, LocalAIService, semantic edits, retrieval, 40/40 phase0.v1 benchmark |
-| Research identity (Phase 1) | **Frozen** | Charter definitions; reopen only by amendment |
-| Knowledge / grammars (Phase 2) | **Complete** (housekeeping remains) | FastAPI + pytest grammars; distinct graphs; declared gaps; no fixture-identity features |
-| Evidence architecture (Phase 3) | **In progress** | Observation / interpretation / assessment split; recomputation probe |
-| Trajectory → compiler → transfer → governance | **Not started** | Phases 4–11 |
-| Decision learning | **Emerging baseline only** | Advisory ranker / decision spine — not a capability compiler |
-| Longitudinal / model-independence / capstone | **Not started** | Phases 13–15 |
-| Track E (engineering health) | **Ongoing parallel** | Complexity debt; must not masquerade as research gain |
+When stating current status, every evidence item carries one of:
+
+| Evidence class | Meaning |
+|---|---|
+| **Repository verified** | Inspected code, artifact, and test outputs in this repository |
+| **Operator reported** | Report supplied; underlying files not independently inspected in this review |
+| **Proposed** | Planned deliverable |
+| **Research hypothesis** | Requires experiment |
+
+Upgrade Phase 2 from operator-reported to repository-verified only after the artifact catalogue binds grammar probe hashes and test records.
+
+---
+
+## 3. Where Astra is now
+
+| Charter phase | Work packages | Status | Evidence class |
+|---|---|---|---|
+| 0 Boundaries | 0A deterministic baseline; 0B engineering health | 0A complete; 0B ongoing | Repository verified (lifecycle, LocalAI boundary, isolation docs); benchmark 40/40 cited in monograph |
+| 1 Identity | Frozen charter | Frozen | Operator reported / external until charter file is hash-bound in-repo |
+| 2 Knowledge | 2A–2D grammar foundation | Complete; closure pending | **Operator reported** probes (FastAPI / pytest tables below) |
+| 3 Evidence | 3A architecture; 3B recomputation | **In progress** | Proposed / in implementation |
+| 3 Evidence | 3C trajectory normalization; 3D dataset quality | Blocked | Proposed |
+| 4 Capability Compiler | 4A–4F | Blocked until 7A + 3 gate | Proposed |
+| 5 Algorithms | 5A–5D | Emerging baseline only (shadow) | Repository verified advisory spine ≠ compiler |
+| 6 Purposeful Data Collection | 6A–6E | Not started | Proposed |
+| 7 Integration & Longitudinal | 7A pre-registration | **Must occur before 4A** | Proposed (next conceptual task) |
+| 7 Integration & Longitudinal | 7B–7G | Not started | Research hypothesis |
 
 The monograph is explicit: the current decision/outcome spine is **not** a capability compiler.
 
+### Phase 2 probe summary (operator reported)
+
+| Grammar | Ops | Evidence features | Invariants | Verifiers / contracts | Fixtures | Distinct graphs | Declared gaps | Fixture-specific features |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| FastAPI | 7 | 8 | 6 | 4 | 3 | 3 | 1 | 0 |
+| Pytest | 6 (+1 typed binding) | 6 | 4 | 3 | 3 | 3 | 1 | 0 |
+
+**Supported claim (once repository-verified):** two structurally distinct bounded grammars can represent multiple evidence-conditioned procedures without fixture identity or unrestricted generation.  
+**Not yet supported:** automatic discovery; learned applicability; transfer; promotion; capability growth.
+
 ---
 
-## 3. What is frozen vs experimental
+## 4. What is frozen vs experimental
 
-### Frozen (amendment required)
+### Frozen (charter amendment required)
 
 - Safety / authority / approvals / workspace / verification kernel
 - Capability object \(C = (A, P, I, V)\)
 - Immutable observations; versioned interpretations; recomputable derived assessments
-- Compiler recommendation-only authority (no self-promotion)
-- Preference quarantine and lowest-authority preference rules
+- Compiler recommendation-only authority
+- Preference quarantine
 - Capability-relative transfer; held-out means uninvolved
-- Repository-clustered evaluation discipline
+- Repository-clustered evaluation
 - “Capability count is not intelligence”
-- Document hierarchy and charter precedence
+- Official seven-phase numbering (§0.1)
+- **Phase 7 pre-registration before Phase 4 compiler implementation**
 
-### Experimental (must remain fail-closed / shadow until gates pass)
+### Experimental (fail-closed / shadow until gates pass)
 
 - Pattern mining and anti-unification
 - Learned applicability and strategy ranking
 - Capability promotion and production execution
 - Longitudinal growth claims (B0–B5)
 - Model-independence claims
-- Any production import from `research/` packages
+- Production imports from research packages
 
 ---
 
-## 4. Dependency chain (critical path)
+## 5. Critical pre-registration rule (charter)
+
+> **Before Charter Phase 4A begins, pre-register the Charter Phase 7 evaluation protocol**, including baseline definitions, repository and lineage partitioning, checkpoints, metrics, clustering method, held-out contamination rules, and falsification criteria. Amendments after compiler implementation must be versioned, justified, and reported as protocol deviations.
+
+This is stronger than “before confirmatory claims.” The protocol must be frozen **before compiler implementation begins**, so implementation cannot adapt to an unstated evaluation target.
+
+Codex is currently on Charter Phase 3; timing remains recoverable. **7A is the next conceptual task before 4A.**
+
+---
+
+## 6. Dependency chain (charter phases + work packages)
 
 ```text
-Phase 1 definitions
+Phase 0  Boundaries / baseline
     ↓
-Phase 2 grammar
+Phase 1  Identity (frozen)
     ↓
-Phase 3 immutable evidence
+Phase 2  Knowledge (grammars)
     ↓
-Phase 4 normalized trajectories
+Phase 3  Evidence (3A → 3B gate → 3C/3D preparation)
     ↓
-Phase 5 compiler contracts
+Phase 7A Pre-register longitudinal protocol   ←── required before 4A
     ↓
-Phase 6 discovery
+Phase 4  Capability Compiler (4A → … → 4F)
     ↓
-Phase 7 applicability
+Phase 5  Algorithms (shadow → gated promote)
     ↓
-Phase 8 replay and mutation
+Phase 6  Purposeful Data Collection (only for pre-registered experiments)
     ↓
-Phase 9 held-out transfer
-    ↓
-Phase 10 governance
-    ↓
-Phase 11 authorized execution
-    ↓
-Phase 12 decision learning
-    ↓
-Phase 13 longitudinal experiment
-    ↓
-Phase 14 model independence
-    ↓
-Phase 15 capstone delivery
+Phase 7  Integration & Longitudinal Evaluation (7B–7G)
 ```
+
+Phase 6 may run **in parallel with late Phase 4 / Phase 5** only for datasets named in the Phase 7A protocol. It must not become an open-ended data grab driven by the compiler.
 
 ### Must not be built early
 
 | Forbidden early step | Blocked until |
 |---|---|
-| Miner / discovery algorithms | Evidence recomputation (Phase 3 gate) |
-| Learned applicability | Normalized positive **and** negative examples (Phase 4) |
-| Promotion / lifecycle mutation | Replay + held-out evaluation (Phases 8–9) + governance (Phase 10) |
-| Production capability execution | Governance + authorized library path (Phases 10–11) |
-| Intelligence-growth claim | Chronological B0–B5 baselines (Phase 13) |
-| Model-independence claim | Model swap or removal experiment (Phase 14) |
-| Production imports from research packages | Explicit promotion gate + Track E review |
+| 4A manual compiler contracts | Phase 3 gate **and** 7A pre-registration |
+| 4C+ miner / discovery | 3B recomputation gate + 4A/4B contracts + normalized negatives (3C) |
+| Learned applicability (4E) | Normalized positive **and** negative examples |
+| Production promotion | Final promotion evidence + research path complete; see §8 |
+| Intelligence-growth claim | 7E chronological B0–B5 |
+| Model-independence claim | 7F model swap/removal |
+| Bulk “data collection” under Phase 3 | Reserved for Phase 6; Phase 3 only prepares existing evidence |
 
 ---
 
-## 5. Phase programme
+## 7. Work-package programme (nested under charter phases)
 
-### Phase 0 — Existing deterministic baseline
+### Charter Phase 0 — Boundaries and deterministic baseline
+
+#### 0A — Baseline preservation
 
 **Purpose.** Establish that Astra already has a functioning, bounded engineering system before introducing learning.
 
-**Existing evidence.** Canonical project lifecycle; approvals and idempotency; bounded Docker validation; `LocalAIService`; deterministic semantic edits; retrieval and repository analysis; **40/40** deterministic benchmark (`phase0.v1`); worker and frontend flow.
+**Evidence (repository verified / monograph-cited).** Canonical project lifecycle; approvals and idempotency; bounded Docker validation; `LocalAIService`; deterministic semantic edits; retrieval; worker/frontend flow; deterministic benchmark programme (40/40 phase0.v1 cited in monograph).
 
-**Status.** Complete as baseline, not frozen forever.
+**Gate.** Reproducible static baseline with exact artifacts, tests, hardware configuration; no learned components required for operation.
 
-**Remaining maintenance.** Preserve regression tests; avoid production integration from research packages; reduce complexity debt on Track E; do not mix architectural cleanup with experimental results.
-
-**Gate.** A reproducible static baseline with exact artifacts, tests, hardware configuration, and no learned components required for operation.
-
-**Claims allowed.** “Astra operates as a bounded deterministic engineering assistant under a fixed safety kernel.”  
+**Claims allowed.** Bounded deterministic engineering under a fixed safety kernel.  
 **Claims forbidden.** Capability growth, transfer, model independence, learned intelligence.
+
+#### 0B — Engineering health and regression control (Track E)
+
+**Purpose.** Separate complexity debt from research experiments.
+
+**Work.** Reduce concentration in large entrypoints; consolidate legacy vs canonical routes; preserve one worker, one model boundary, one retrieval owner; full-suite regression; WSL/Docker tooling.
+
+**Rule.** Ordinary refactoring must not masquerade as research improvement.
 
 ---
 
-### Phase 1 — Research identity and epistemic charter
-
-**Purpose.** Define intelligence, evidence, experience, capability, learning, transfer, authority, and success.
-
-**Frozen results.** \(C=(A,P,I,V)\); canonical engineering episode; immutable observations / recomputable interpretations; fixed authority kernel; compiler recommendation-only; preference quarantine; capability-relative transfer; repository-clustered evaluation; held-out = uninvolved; capability count ≠ intelligence.
+### Charter Phase 1 — Identity
 
 **Status.** Complete and frozen.
 
-**Reopening rule.** Explicit charter amendment only.
+**Reopening.** Explicit charter amendment only.
 
-**Gate.** Frozen charter with amendment log; monograph language subordinate to charter.
-
-**Claims allowed.** Definitional and normative claims about programme identity.  
-**Claims forbidden.** Empirical performance claims beyond definitional probes.
+**Gate.** Frozen charter with amendment log; monograph subordinate on definitions.
 
 ---
 
-### Phase 2 — Knowledge representation and domain grammars
+### Charter Phase 2 — Knowledge
 
-**Purpose.** Define the legal procedural search space before discovery.
+| WP | Name | Status |
+|---|---|---|
+| 2A | Grammar contracts | Complete (closure pending) |
+| 2B | FastAPI operationalisation | Complete (operator reported) |
+| 2C | pytest operationalisation | Complete (operator reported) |
+| 2D | Grammar versioning and artifact closure | Remaining housekeeping |
 
-**Completed work.** Immutable grammar contracts; canonical serialization and hashing; operations vs bindings; FastAPI grammar; pytest grammar; evidence features; invariants; verification contracts; graph-level integration verification; declared capability gaps; grammar linting; manual traces; cross-grammar structural comparison.
+**Housekeeping (2D).** Patch-level grammar versions; freeze operation-versus-binding in the decision index; record granularity pressure points; hash-bind all Phase 2 artifacts.
 
-**Current result (operator-reported probes).**
+**Gate.** Two grammars, each with multiple valid graphs, mechanistic witnesses, independent integration verification, declared gaps, and no fixture-identity features — **repository verified**.
 
-| Grammar | Ops | Evidence features | Invariants | Verifiers / contracts | Supported fixtures | Distinct graphs | Declared gaps | Fixture-specific features |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| FastAPI | 7 | 8 | 6 | 4 | 3 | 3 | 1 | 0 |
-| Pytest | 6 (+1 typed binding) | 6 | 4 | 3 | 3 | 3 | 1 | 0 |
-
-**Supported claim.** Two structurally distinct bounded grammars can represent multiple evidence-conditioned procedures without fixture identity or unrestricted generation.
-
-**Not yet supported.** Automatic discovery; learned applicability; transfer; promotion; capability growth.
-
-**Status.** Knowledge-representation foundation complete.
-
-**Remaining housekeeping.** Apply patch-level grammar versions; freeze operation-versus-binding rule in the decision index; record granularity pressure points; ensure all Phase 2 artifacts are hash-bound and reproducible in `artifacts/research/`.
-
-**Gate.** Two grammars, each with multiple valid graphs, mechanistic witnesses, independent integration verification, declared gaps, and no fixture-identity features.
+**Supported claim after gate.** Representation without fixture identity or unrestricted generation.  
+**Not supported.** Discovery, learned applicability, transfer, promotion, capability growth.
 
 ---
 
-### Phase 3 — Evidence architecture
-
-**Purpose.** Preserve enough immutable information to recompute future claims without depending on mutable repository state.
+### Charter Phase 3 — Evidence
 
 **Core architecture.**
 
@@ -214,150 +256,112 @@ Interpretation layer   → versioned extractor outputs
 Assessment layer       → recomputable derived claims
 ```
 
-This operationalizes: outcome history belongs to immutable experiences; capability statistics are recomputable projections.
+| WP | Name | Status | Role |
+|---|---|---|---|
+| **3A** | Immutable evidence architecture | In progress | Schemas, stores, episode identity |
+| **3B** | Vocabulary recomputation probe | In progress | Scientific gate for Phase 3 |
+| **3C** | Trajectory normalization | Blocked | **Evidence preparation** — normalize existing fixture/canonical episode evidence |
+| **3D** | Dataset quality and lineage partitioning | Blocked | Splits, taxonomy, quality audit over **prepared** evidence |
 
-**Required deliverables.** `CanonicalEngineeringEpisode`; observation references; repository snapshot identity; feature interpretations; explicit missingness; extractor and vocabulary versions; derived assessments; supersession; append-only research store; recomputation engine; leakage validation; preference quarantine; evidence recomputation probe.
+**Distinction (critical).**  
+- **Phase 3** converts *existing* fixture and canonical episode evidence into normalized, recomputable records.  
+- **Phase 6** obtains *additional* repositories, episodes, seeded variants, adversarial cases, and transfer targets required by the **pre-registered** Phase 7 protocol.
 
-**Status.** In implementation.
+Trajectory normalization must not quietly become bulk data collection.
 
-**Scientific question.** Can Astra recompute a derived claim under a new evidence vocabulary while preserving original observations and the historical assessment unchanged?
+**3B scientific question.** Can Astra recompute a derived claim under a new evidence vocabulary while preserving original observations and the historical assessment unchanged?
 
-**Gate.** Probe demonstrates: unchanged observation hashes; new interpretations under vocabulary v2; superseded but unmodified v1 assessment; explicit changed result; no held-out leakage; no preference contamination; no episode fragmentation.
+**3B gate.** Unchanged observation hashes; new interpretations under vocabulary v2; superseded but unmodified v1 assessment; explicit changed result; no held-out leakage; no preference contamination; no episode fragmentation.
 
-**Claims allowed after gate.** “Derived assessments are recomputable under vocabulary change without mutating observations.”  
-**Claims forbidden until gate.** Any compiler, applicability, or transfer result that depends on mutable working-tree state alone.
-
----
-
-### Phase 4 — Procedural dataset and trajectory normalization
-
-**Purpose.** Convert canonical engineering episodes into clean, versioned procedural traces for compiler research.
-
-**Required work.** Normalize operations, bindings, inputs, outputs, failures, verification; represent positive, failed, rejected, abstained, and rolled-back episodes; preserve alternatives shown; separate model vs deterministic contribution; define trajectory equivalence; inclusion/exclusion rules; chronological and repository-lineage splits; negative and counterexample datasets.
-
-**Key risk.** Success-only datasets create self-confirming, overgeneralized procedures.
-
-**Gate.** A reproducible dataset where every trajectory links to immutable observations, exact vocabulary versions, and a canonical outcome taxonomy.
-
-**Status.** Not started (blocked on Phase 3 gate).
+**3C/3D gate.** Every trajectory links to immutable observations, exact vocabulary versions, and a canonical outcome taxonomy (including failures, rejections, abstentions, rollbacks). Success-only datasets are forbidden.
 
 ---
 
-### Phase 5 — Manual capability compiler baseline
+### Charter Phase 4 — Capability Compiler
 
-**Purpose.** Build compiler interfaces before discovery algorithms.
+**Blocked until:** Phase 3 gate **and** work package **7A** complete.
 
-**Required work.** Candidate capability contract; typed procedural IR; applicability predicate representation; invariant bundle; verification bundle; distinguishing witness; compilation batch identity; candidate dossier; manual candidate construction; static type checking; simulation / replay / held-out evaluation **requests**.
+| WP | Name | Notes |
+|---|---|---|
+| **4A** | Manual compiler baseline / contracts | Interfaces before discovery |
+| **4B** | Candidate IR and dossiers | Research artifacts only |
+| **4C** | Pattern mining | After 4A/4B + normalized negatives |
+| **4D** | Bounded anti-unification | Failed search → unresolved / provisional split only |
+| **4E** | Applicability inference | Must not hide alternate procedures in predicates |
+| **4F** | Simulation, mutation, historical replay | Required before held-out transfer claims |
 
-**Restriction.** Candidates remain research artifacts only. The compiler may propose and request evaluation; it cannot promote or modify lifecycle state.
+**Restriction.** Candidates remain research artifacts. The compiler may propose and **request** evaluation; it cannot promote or mutate lifecycle state.
 
-**Gate.** A human-authored candidate passes the entire compiler pipeline without production activation.
+**4A gate.** A human-authored candidate passes the compiler pipeline without production activation.
 
-**Status.** Not started.
+**4C–4D gate.** Candidates outperform exact-template recovery on held-out trace reconstruction while preserving type, invariant, and verifier compatibility.
 
----
+**4E gate.** Improves activation precision or coverage without increasing unsafe activation or encoding alternate procedures in the predicate.
 
-### Phase 6 — Pattern mining and bounded anti-unification
-
-**Purpose.** Determine whether repeated procedural structure can be discovered from normalized trajectories.
-
-**Required work.** Operation-graph clustering; typed graph matching; bounded anti-unification; parameter extraction; dependency preservation; negative-example use; unresolved identity state; provisional split candidates; vocabulary inadequacy detection.
-
-**Baselines.** Exact graph repetition; manually fixed template; nearest-neighbor reuse; clustering without negatives; bounded anti-unification.
-
-**Scientific question.** Can the compiler identify reusable causal procedure structure beyond exact replay without collapsing distinct procedures?
-
-**Gate.** Candidate procedures outperform exact-template recovery on held-out trace reconstruction while preserving type, invariant, and verifier compatibility.
-
-**Status.** Not started. **Forbidden** before Phase 3–5 gates.
+**4F gate.** Every candidate has simulation, mutation, and historical replay reports; known failure boundary; explicit unresolved cases.
 
 ---
 
-### Phase 7 — Applicability learning
+### Charter Phase 5 — Algorithms
 
-**Purpose.** Learn when a candidate procedure should activate.
+| WP | Name | Status |
+|---|---|---|
+| **5A** | Strategy ranker | Emerging / shadow only |
+| **5B** | Failure predictor | Not started |
+| **5C** | Memory utility | Emerging baseline |
+| **5D** | Calibration and shadow evaluation | Required before any promote |
 
-**Required work.** Deterministic applicability baseline; rule learners or small transparent models; positive / negative / abstention / invalid-evaluation labels; missing-feature semantics; calibration; false-applicability analysis; correct-abstention measurement; retroactive episode membership recomputation; vocabulary-version sensitivity.
-
-**Baselines.** Task-family-only; framework-only; repository-nearest-neighbor; manually authored predicate; learned transparent classifier.
-
-**Gate.** Applicability improves activation precision or coverage over static rules without increasing unsafe activation or hiding alternative procedures inside the predicate.
-
-**Status.** Not started.
-
----
-
-### Phase 8 — Simulation, mutation, and historical replay
-
-**Purpose.** Attack candidate capabilities before held-out evaluation.
-
-**Required work.** Boundary mutation; missing-evidence mutation; stale binding tests; invariant attacks; verifier mismatch; dependency drift; revoked child behavior; historical snapshot replay; changed predicate recomputation; graph-level integration failure tests.
-
-**Gate.** Every candidate has simulation, mutation, and historical replay reports; known failure boundary; explicit unresolved cases.
-
-**Status.** Not started.
+**Gate.** Ranker (or related models) improves selection efficiency or success while unsafe-selection rate remains zero; deterministic fallback remains available; allowlist only — no new strategies invented by the learner.
 
 ---
 
-### Phase 9 — Held-out transfer evaluation
+### Charter Phase 6 — Purposeful Data Collection
 
-**Purpose.** Test whether unchanged capabilities work outside their source contexts.
+Collect **only** what pre-registered experiments require.
 
-**Per-claim reporting.** Capability version; source/target profiles; evidence-vocabulary version; changed-dimension signature; transfer stratum; applicability / procedure / invariant / verification results; repository lineage.
+| WP | Name |
+|---|---|
+| **6A** | Defined experimental datasets only |
+| **6B** | Natural repositories |
+| **6C** | Seeded factorial variants |
+| **6D** | Negative and adversarial cases |
+| **6E** | Held-out repository reservations |
 
-**Outcomes.** Transfer success; correct abstention; false applicability; procedural failure; invariant failure; verification failure; invalid evaluation.
-
-**Gate.** Repository-disjoint evaluation with clustered uncertainty and no target involvement in grammar, verifier, predicate, or threshold design.
-
-**Status.** Not started.
-
----
-
-### Phase 10 — Capability governance and lifecycle
-
-**Purpose.** Authority-controlled lifecycle decisions after the research pipeline works.
-
-**Lifecycle states.** observed → candidate → probationary → replay-verified → experimental → production → degraded → deprecated → revoked.
-
-**Required work.** Governance contracts; exact version and dossier binding; actor authority; deterministic transition matrix; promotion thresholds; degradation/revocation; dependency propagation; idempotency; stale recommendation rejection; immutable governance decisions.
-
-**Gate.** Compiler cannot mutate lifecycle state directly; every transition is reproducible, authorized, and auditable.
-
-**Status.** Not started.
+**Gate.** Every collected artifact cites the Phase 7A protocol experiment that requires it; held-out targets are reserved before influencing vocabulary, verifiers, predicates, or thresholds.
 
 ---
 
-### Phase 11 — Capability library and execution
+### Charter Phase 7 — Integration and Longitudinal Evaluation
 
-**Purpose.** Execute only governance-authorized capability versions.
+| WP | Name | Status |
+|---|---|---|
+| **7A** | Pre-registration | **Must complete before 4A** |
+| **7B** | Held-out transfer evaluation | Not started |
+| **7C** | Capability governance (research vs production) | Not started |
+| **7D** | Authorized shadow execution | Not started |
+| **7E** | Chronological B0–B5 experiment | Not started |
+| **7F** | Model replacement / removal | Not started |
+| **7G** | Capstone consolidation and reproduction | Not started |
 
-**Required work.** Immutable package storage; dependency graph; execution adapter; trusted operation handler binding; bounded model slots; capability selection; runtime evidence checks; verifier invocation; dependency revocation; explicit fallback; shadow execution mode.
+#### 7A — Pre-registration contents
 
-**First deployment mode.** research-only → shadow → explicit opt-in → experimental → production candidate.
+Baseline definitions (B0–B5); repository and lineage partitioning; checkpoints; metrics (coverage, reliability, abstention, clustering); held-out contamination rules; falsification criteria; amendment policy for protocol deviations.
 
-**Gate.** A promoted capability executes through the canonical project-control path without bypassing approvals, scope, isolation, artifact identity, or verification.
+#### 7B — Transfer
 
-**Status.** Not started.
+Capability-relative reporting: capability version; source/target profiles; evidence-vocabulary version; changed-dimension signature; stratum; applicability / procedure / invariant / verification results; repository lineage.
 
----
+Outcomes: transfer success; correct abstention; false applicability; procedural / invariant / verification failure; invalid evaluation.
 
-### Phase 12 — Strategy ranking and decision learning
+#### 7C / 7D — Governance and execution (two ladders)
 
-**Purpose.** Learn which authorized strategy or capability to choose.
+**Research governance** may permit: candidate; probationary; replay-verified; experimental; **research shadow execution**.
 
-**Required work.** Rules baseline; memory-only baseline; transparent ranking models; calibration; regret; failure prediction; clarification recommendation; uncertainty threshold; shadow mode; ranker cannot introduce new strategies.
+**Production governance** may permit: production; normal strategy selection; user-facing automatic candidacy.
 
-**Gate.** Ranker improves selection efficiency or success while unsafe-selection rate remains zero and deterministic fallback remains available.
+Production state requires the final promotion evidence defined in the charter. The compiler remains recommendation-only in both ladders. Shadow/research execution before the longitudinal experiment must **not** imply production promotion before the core hypothesis is tested.
 
-**Status.** Emerging baseline only (existing advisory decision/ranker spine). Not a promotion path.
-
----
-
-### Phase 13 — Chronological growth experiment
-
-**Purpose.** Test the central intelligence hypothesis.
-
-**Baseline ladder.**
+#### 7E — Baseline ladder
 
 | ID | System | Purpose |
 |---|---|---|
@@ -369,116 +373,90 @@ This operationalizes: outcome history belongs to immutable experiences; capabili
 | B4 | Capability compiler | Central contribution |
 | B5 | Model swap / removal | Model independence |
 
-Comparable under fixed models, prompts, hardware, evidence, approval policy, and evaluation cases within an epoch.
+**Checkpoints.** 0, 100, 250, 500, 750, 1000 **canonical engineering episodes** — also report independent repositories, lineage clusters, task-family distribution, coverage, reliability, correct abstention, false applicability, model calls, generated characters, GPU time, human burden, regression cost, library maintenance cost.
 
-**Checkpoints.** 0, 100, 250, 500, 750, 1000 canonical engineering episodes — also report independent repositories, lineage clusters, task-family distribution, coverage, reliability, correct abstention, false applicability, model calls, generated characters, GPU time, human burden, regression cost, library maintenance cost.
+**7E gate.** Compiled capabilities outperform static, memory-only, and ranker-only baselines on repository-disjoint held-out tasks without weakening safety or merely narrowing coverage.
 
-**Gate.** Compiled capabilities outperform static, memory-only, and ranker-only baselines on repository-disjoint held-out tasks without weakening safety or merely narrowing coverage.
+#### 7F / 7G
 
-**Status.** Not started. Pre-registration required before Phase 6/compiler claims are treated as confirmatory.
-
----
-
-### Phase 14 — Model-independence experiment
-
-**Purpose.** Determine whether learned intelligence belongs to Astra rather than the model.
-
-**Conditions.** Original model; different small model; weaker model; no model where capabilities are fully deterministic.
-
-**Gate.** Previously compiled capabilities retain meaningful utility after model replacement or removal.
-
-**Status.** Not started.
+**7F gate.** Previously compiled capabilities retain meaningful utility after model replacement or removal.  
+**7G gate.** Another person can reproduce principal results from repository, frozen configuration, and documented commands.
 
 ---
 
-### Phase 15 — Consolidation and capstone delivery
+## 8. Master status dashboard
 
-**Purpose.** Turn the research programme into a defensible academic submission.
-
-**Required outputs.** Final system; frozen repository tag; architecture report; methodology; experimental results; negative results; threats to validity; demonstration scenario; presentation; reproducibility instructions; artifact index; examiner Q&A.
-
-**Gate.** Another person can reproduce the principal results from the repository, frozen configuration, and documented commands.
-
-**Status.** Not started.
-
----
-
-## 6. Parallel Track E — Engineering health
-
-Research phases must not absorb every engineering problem.
-
-| Work | Rule |
-|---|---|
-| Reduce `main.py`, project-control concentration, `App.tsx` | Separate PRs; no claim of research gain |
-| Consolidate legacy vs canonical routes | Preserve one worker, one model boundary, one retrieval owner |
-| Full-suite regression health | Required before any experimental promotion |
-| WSL / Docker / developer tooling | Runtime observations recorded per experiment |
-
-Ordinary refactoring must not masquerade as research improvement.
-
----
-
-## 7. Master status dashboard
-
-| Phase | Status | Evidence | Next gate |
-|---|---|---|---|
-| 0 Deterministic baseline | Complete | 40/40 benchmark, canonical control plane | Preserve regression |
-| 1 Research charter | Frozen | Phase 1 charter | Amendment only |
-| 2 Grammar foundation | Complete | FastAPI and pytest probes | Final versioning cleanup |
-| 3 Evidence architecture | In progress | Implementation under way | Recompute v1 → v2 without mutation |
-| 4 Trajectory normalization | Not started | — | Canonical dataset |
-| 5 Compiler contracts | Not started | — | Manual end-to-end candidate |
-| 6 Discovery | Not started | — | Held-out trace abstraction |
-| 7 Applicability | Not started | — | Calibrated activation |
-| 8 Replay/mutation | Not started | — | Candidate robustness |
-| 9 Transfer | Not started | — | Repository-disjoint result |
-| 10 Governance | Not started | — | Authorized lifecycle |
-| 11 Execution | Not started | — | Shadow capability run |
-| 12 Decision learning | Emerging baseline only | Advisory ranker / decision spine | Shadow improvement vs rules |
-| 13 Longitudinal study | Not started | — | B0–B5 comparison |
-| 14 Model independence | Not started | — | Model swap/removal |
-| 15 Capstone delivery | Not started | — | Reproducible submission |
+| Charter phase | Work package | Status |
+|---|---|---|
+| 0 | 0A deterministic baseline | Complete |
+| 0 | 0B engineering health | Ongoing |
+| 1 | Research identity | Frozen |
+| 2 | 2A–2D grammar foundation | Complete; closure pending |
+| 3 | 3A evidence architecture | In progress |
+| 3 | 3B recomputation probe | In progress |
+| 3 | 3C trajectory normalization | Blocked |
+| 3 | 3D dataset quality / lineage | Blocked |
+| 4 | 4A manual compiler baseline | Blocked (needs 3 gate + **7A**) |
+| 4 | 4B–4F discovery and replay | Blocked |
+| 5 | 5A–5D decision algorithms | Emerging baseline only |
+| 6 | 6A–6E purposeful collection | Not started |
+| 7 | **7A pre-registration** | **Must occur before 4A** |
+| 7 | 7B–7G integration and evaluation | Not started |
 
 Authoritative machine copy: `docs/astra-next-master-status.json`.
 
 ---
 
-## 8. Implementation, test, and experiment map
+## 9. Implementation, test, and experiment map
 
-| Phase | Implement | Test | Experiment |
+| WP | Implement | Test | Experiment |
 |---|---|---|---|
-| 0 | Maintain deterministic core | Regression + phase0.v1 | None (baseline only) |
-| 1 | Charter + amendment log | Editorial consistency probes | None |
-| 2 | Grammar packages + hashes | Lint, fixture traces, cross-grammar compare | Manual discovery probe only |
-| 3 | Episode store, extractors, assessments | Recomputation probe, leakage, preference quarantine | Vocabulary v1→v2 recompute |
-| 4 | Trajectory normalizer + splits | Schema round-trip, taxonomy coverage | Dataset quality audit |
-| 5 | Compiler IR + dossier + request APIs | Manual candidate pipeline | No discovery yet |
-| 6 | Miner + anti-unification | Type/invariant/verifier checks | vs exact template / NN baselines |
-| 7 | Applicability models | Calibration, abstention, false-activation | vs static predicates |
-| 8 | Mutation + replay harness | Boundary and drift suites | Robustness of each candidate |
-| 9 | Transfer evaluator | Lineage / held-out audits | Strata 0–5 claims |
-| 10 | Governance FSM | Authorization + idempotency | Promotion policy dry-runs |
-| 11 | Library + execution adapter | Shadow then opt-in | End-to-end authorized run |
-| 12 | Ranker shadow → promote | Unsafe-selection = 0 | vs rules + memory |
-| 13 | Chronological harness | Leakage + clustering stats | B0–B5 at checkpoints |
-| 14 | Model swap harness | Capability survival metrics | Model replace/remove |
-| 15 | Packaging + docs | External reproduction checklist | Examiner dry-run |
+| 0A | Maintain deterministic core | Regression + phase0.v1 | Baseline only |
+| 0B | Complexity reduction | Full-suite health | None (not research) |
+| 2D | Hash-bind grammars | Lint + fixture traces | Manual representation probe |
+| 3A/3B | Episode store, extractors, assessments | Recomputation, leakage, preference quarantine | Vocabulary v1→v2 |
+| 3C/3D | Trajectory normalizer over existing evidence | Schema round-trip, taxonomy | Dataset quality audit |
+| 7A | Protocol document | Review checklist | Freeze before 4A |
+| 4A/4B | Compiler IR + dossier + request APIs | Manual candidate pipeline | No discovery yet |
+| 4C/4D | Miner + anti-unification | Type/invariant/verifier | vs exact template / NN |
+| 4E | Applicability models | Calibration, abstention | vs static predicates |
+| 4F | Mutation + replay harness | Boundary/drift suites | Candidate robustness |
+| 5A–5D | Rankers / predictors | Unsafe-selection = 0 | Shadow vs rules |
+| 6A–6E | Collection only per protocol | Lineage / reservation audits | Named experiments only |
+| 7B–7G | Transfer, governance, chronos, model swap, capstone | Leakage + clustering | B0–B5 / model independence |
 
 ---
 
-## 9. Immediate next actions
+## 10. Artifact identity convention
 
-1. **Finish Phase 3 gate** — evidence recomputation probe (observation hashes stable; v1 assessment superseded, not rewritten).
-2. **Phase 2 housekeeping** — hash-bind grammar artifacts into `artifacts/research/`; freeze operation-vs-binding in the decision index.
-3. **Do not start Phase 6+** until Phases 3–5 gates pass.
-4. **Track E** — continue complexity reduction on a separate track from research PRs.
-5. **Pre-register Phase 13 protocol** before treating any compiler result as confirmatory.
+Use charter phase + work package in paths and IDs:
+
+| Example ID | Meaning |
+|---|---|
+| `phase3a-evidence-architecture` | 3A schemas/store |
+| `phase3b-recomputation-probe` | 3B gate probe |
+| `phase3c-trajectory-normalization` | 3C preparation |
+| `phase4a-manual-compiler` | 4A contracts |
+| `phase4c-pattern-mining` | 4C discovery |
+| `phase7a-preregistered-protocol` | 7A protocol freeze |
+
+Do not invent a parallel `phase13-…` style numbering.
 
 ---
 
-## 10. Amendment policy
+## 11. Immediate next actions
 
-- Changes to **definitions / authority / evidence rules** → Phase 1 charter amendment + decision-index entry.
-- Changes to **sequence, gates, or status** → update this master plan + `astra-next-master-status.json` in the same commit.
+1. **Finish 3A/3B** — evidence recomputation probe (observation hashes stable; v1 assessment superseded, not rewritten).
+2. **Draft 7A** — pre-register the Phase 7 evaluation protocol **before** any 4A compiler contract work.
+3. **2D housekeeping** — hash-bind grammar probes; upgrade Phase 2 evidence class when bound.
+4. **0B Track E** — continue complexity reduction on a separate track.
+5. **Do not start 4A+** until 3B gate **and** 7A pass.
+
+---
+
+## 12. Amendment policy
+
+- Changes to **definitions / authority / evidence rules / official phase names or numbers** → Phase 1 charter amendment + decision-index entry.
+- Changes to **work-package sequence, gates, or status** → update this plan + `astra-next-master-status.json` in the same commit; must not rename charter phases.
 - Changes to **phase-local rules** → that phase’s charter/protocol; indexed here.
 - Monograph updates are explanatory; they never silently override the charter or this plan’s gates.

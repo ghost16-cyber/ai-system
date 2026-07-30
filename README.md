@@ -19,7 +19,7 @@ Programme sequencing (not a replacement for the Phase 1 charter) lives in:
 - [`artifacts/research/master/artifact-index.json`](artifacts/research/master/artifact-index.json) — hash-bound catalogue
 - [`output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf`](output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf) — explanatory monograph (PR #3 until merged)
 
-Authority order: Phase 1 charter → master plan → phase charters → protocols → decision logs → probe artifacts → monograph.
+Authority order: Phase 1 charter → master programme plan (work packages under charter phases 0–7) → phase charters → protocols → decision logs → probe artifacts → monograph.
 
 ### Active Capabilities
 
