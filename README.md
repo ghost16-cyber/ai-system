@@ -9,6 +9,18 @@ layer is activated. The current system is a local FastAPI service with
 allowlisted tools, deterministic Python analysis, validated proposals, feedback,
 metrics, and queued project analysis.
 
+### Astra Next research programme
+
+Programme sequencing (not a replacement for the Phase 1 charter) lives in:
+
+- [`docs/astra-next-master-plan.md`](docs/astra-next-master-plan.md) — phases, gates, claims, forbidden early work
+- [`docs/astra-next-master-status.json`](docs/astra-next-master-status.json) — machine-readable status
+- [`docs/astra-next-master-decision-index.md`](docs/astra-next-master-decision-index.md) — frozen decision index
+- [`artifacts/research/master/artifact-index.json`](artifacts/research/master/artifact-index.json) — hash-bound catalogue
+- [`output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf`](output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf) — explanatory monograph (PR #3 until merged)
+
+Authority order: Phase 1 charter → master programme plan (work packages under charter phases 0–7) → phase charters → protocols → decision logs → probe artifacts → monograph.
+
 ### Active Capabilities
 
 - FastAPI service with direct code/file analysis, queued project analysis, rule/tool discovery, feedback, history, metrics, and job status endpoints.

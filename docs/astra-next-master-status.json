@@ -1,0 +1,557 @@
+{
+  "schema_version": "astra.master-status.v2",
+  "programme": "astra-next",
+  "title": "Astra Next Master Programme Plan — machine status",
+  "updated_at": "2026-07-30T16:20:00Z",
+  "normative_charter": "phase1",
+  "normative_phase_numbering": "Phase 1 Research Charter §0.1",
+  "charter_phases": [
+    {"phase": 0, "name": "Boundaries"},
+    {"phase": 1, "name": "Identity"},
+    {"phase": 2, "name": "Knowledge"},
+    {"phase": 3, "name": "Evidence"},
+    {"phase": 4, "name": "Capability Compiler"},
+    {"phase": 5, "name": "Algorithms"},
+    {"phase": 6, "name": "Purposeful Data Collection"},
+    {"phase": 7, "name": "Integration & Longitudinal Evaluation"}
+  ],
+  "charter_precedence": "Phase 1 Research Charter overrides less precise monograph and master-plan language on definitions, authority, evidence, phase numbering, and research claims. The master plan may not rename charter phases.",
+  "master_plan_role": "Operational decomposition of the charter seven-phase roadmap into work packages. Outranks phase documents only on programme status and dependency ordering where no higher charter rule applies.",
+  "experimental_unit": {
+    "term": "canonical engineering episode",
+    "definition": "One immutable request-to-outcome record containing the pre-decision evidence package, available alternatives, intervention, execution, verification, and final classified outcome.",
+    "retired_terms_for_reporting": ["project count"],
+    "reporting_rule": "Checkpoints count canonical engineering episodes and separately report repositories and repository-lineage clusters. project, task, attempt, work unit, and episode are not interchangeable."
+  },
+  "preregistration_rule": "Before Charter Phase 4A begins, pre-register the Charter Phase 7 evaluation protocol, including baseline definitions, repository and lineage partitioning, checkpoints, metrics, clustering method, held-out contamination rules, and falsification criteria. Amendments after compiler implementation must be versioned, justified, and reported as protocol deviations.",
+  "monograph": {
+    "path": "output/pdf/Astra_Next_Research_Blueprint_v1.1.pdf",
+    "identity": "Astra Next Research Blueprint v1.1 — Phase 1 Normative Revision",
+    "role": "explanatory",
+    "present_in_this_branch": false,
+    "note": "Tracked on cursor/blueprint-v11-final-d240 (PR #3) until merged."
+  },
+  "master_plan_path": "docs/astra-next-master-plan.md",
+  "decision_index_path": "docs/astra-next-master-decision-index.md",
+  "artifact_index_path": "artifacts/research/master/artifact-index.json",
+  "current_charter_phase": 3,
+  "current_work_packages": ["3A", "3B"],
+  "next_required_before_compiler": "7A",
+  "parallel_tracks": [
+    {
+      "id": "track-e",
+      "work_package": "0B",
+      "name": "engineering-health",
+      "status": "ongoing",
+      "rule": "Refactoring must not be reported as research improvement."
+    },
+    {
+      "id": "track-r",
+      "name": "isolated-research",
+      "status": "allowed",
+      "rule": "No production imports until an explicit promotion gate."
+    }
+  ],
+  "baseline_ladder": ["B0", "B1", "B2", "B3", "B3.5", "B4", "B5"],
+  "governance_ladders": {
+    "research": ["candidate", "probationary", "replay-verified", "experimental", "research_shadow_execution"],
+    "production": ["production", "normal_strategy_selection", "user_facing_automatic_candidacy"],
+    "rule": "Production requires final charter promotion evidence. Compiler remains recommendation-only in both ladders. Research shadow execution must not imply production promotion before the longitudinal hypothesis is tested."
+  },
+  "forbidden_early": [
+    "4A_before_3_gate_and_7A_preregistration",
+    "miner_before_evidence_recomputation",
+    "learned_applicability_before_normalized_negatives",
+    "bulk_data_collection_under_phase3",
+    "production_promotion_before_final_promotion_evidence",
+    "intelligence_growth_claim_before_7E",
+    "model_independence_claim_before_7F"
+  ],
+  "evidence_classes": [
+    "repository_verified",
+    "operator_reported",
+    "proposed",
+    "research_hypothesis"
+  ],
+  "work_packages": [
+    {
+      "id": "0A",
+      "charter_phase": 0,
+      "name": "deterministic-baseline",
+      "artifact_id": "phase0a-deterministic-baseline",
+      "status": "complete",
+      "gate_status": "passed",
+      "evidence_class": "repository_verified",
+      "evidence_artifacts": [
+        "docs/stage1-canonical-project-control-plane.md",
+        "docs/stage2c-container-isolation-and-control.md",
+        "docs/astra-phase9-canonical-chat-runtime.md"
+      ],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Treat architectural cleanup as experimental capability gain."
+      ]
+    },
+    {
+      "id": "0B",
+      "charter_phase": 0,
+      "name": "engineering-health",
+      "artifact_id": "phase0b-engineering-health",
+      "status": "ongoing",
+      "gate_status": "continuous",
+      "evidence_class": "repository_verified",
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Report Track E refactors as research improvement."
+      ]
+    },
+    {
+      "id": "1",
+      "charter_phase": 1,
+      "name": "research-identity",
+      "artifact_id": "phase1-research-identity",
+      "status": "frozen",
+      "gate_status": "passed",
+      "evidence_class": "operator_reported",
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "reopening_rule": "explicit_charter_amendment_only",
+      "forbidden_next_steps": [
+        "Silent redefinition of intelligence, capability, learning, transfer, or phase numbering."
+      ]
+    },
+    {
+      "id": "2A",
+      "charter_phase": 2,
+      "name": "grammar-contracts",
+      "artifact_id": "phase2a-grammar-contracts",
+      "status": "complete",
+      "gate_status": "passed_pending_closure",
+      "evidence_class": "operator_reported",
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Automatic discovery",
+        "Learned applicability",
+        "Transfer claims",
+        "Promotion"
+      ]
+    },
+    {
+      "id": "2B",
+      "charter_phase": 2,
+      "name": "fastapi-operationalisation",
+      "artifact_id": "phase2b-fastapi-operationalisation",
+      "status": "complete",
+      "gate_status": "passed_pending_repository_verification",
+      "evidence_class": "operator_reported",
+      "probe_summary": {
+        "operations": 7,
+        "evidence_features": 8,
+        "invariants": 6,
+        "verifiers": 4,
+        "supported_fixtures": 3,
+        "distinct_graphs": 3,
+        "declared_gaps": 1,
+        "fixture_specific_features": 0
+      },
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "2C",
+      "charter_phase": 2,
+      "name": "pytest-operationalisation",
+      "artifact_id": "phase2c-pytest-operationalisation",
+      "status": "complete",
+      "gate_status": "passed_pending_repository_verification",
+      "evidence_class": "operator_reported",
+      "probe_summary": {
+        "operations": 6,
+        "typed_bindings": 1,
+        "evidence_features": 6,
+        "invariants": 4,
+        "verification_contracts": 3,
+        "supported_fixtures": 3,
+        "distinct_graphs": 3,
+        "declared_gaps": 1,
+        "fixture_specific_features": 0
+      },
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "2D",
+      "charter_phase": 2,
+      "name": "grammar-versioning-and-artifact-closure",
+      "artifact_id": "phase2d-grammar-versioning-and-artifact-closure",
+      "status": "in_progress",
+      "gate_status": "open",
+      "evidence_class": "proposed",
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Upgrade Phase 2 to repository_verified without hash-bound probes"
+      ]
+    },
+    {
+      "id": "3A",
+      "charter_phase": 3,
+      "name": "immutable-evidence-architecture",
+      "artifact_id": "phase3a-evidence-architecture",
+      "status": "in_progress",
+      "gate_status": "open",
+      "evidence_class": "proposed",
+      "evidence_artifacts": [],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Rely on mutable working-tree state as sole evidence",
+        "Allow preference records into compilation inputs",
+        "Bulk data collection under Phase 3"
+      ]
+    },
+    {
+      "id": "3B",
+      "charter_phase": 3,
+      "name": "vocabulary-recomputation-probe",
+      "artifact_id": "phase3b-recomputation-probe",
+      "status": "in_progress",
+      "gate_status": "open",
+      "evidence_class": "proposed",
+      "scientific_question": "Can Astra recompute a derived claim under a new evidence vocabulary while preserving original observations and the historical assessment unchanged?",
+      "gate_criteria": [
+        "unchanged_observation_hashes",
+        "new_interpretations_under_vocabulary_v2",
+        "superseded_but_unmodified_v1_assessment",
+        "explicit_changed_result",
+        "no_held_out_leakage",
+        "no_preference_contamination",
+        "no_episode_fragmentation"
+      ],
+      "evidence_artifacts": [],
+      "blocked_by": ["3A"],
+      "forbidden_next_steps": [
+        "Start 4A before 3B gate and 7A"
+      ]
+    },
+    {
+      "id": "3C",
+      "charter_phase": 3,
+      "name": "trajectory-normalization",
+      "artifact_id": "phase3c-trajectory-normalization",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "role": "evidence_preparation_not_bulk_collection",
+      "evidence_artifacts": [],
+      "blocked_by": ["3B"],
+      "forbidden_next_steps": [
+        "Success-only dataset construction",
+        "Open-ended repository harvesting under 3C"
+      ]
+    },
+    {
+      "id": "3D",
+      "charter_phase": 3,
+      "name": "dataset-quality-and-lineage-partitioning",
+      "artifact_id": "phase3d-dataset-quality-and-lineage",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "evidence_artifacts": [],
+      "blocked_by": ["3C"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "4A",
+      "charter_phase": 4,
+      "name": "manual-compiler-baseline",
+      "artifact_id": "phase4a-manual-compiler",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "evidence_artifacts": [],
+      "blocked_by": ["3B", "7A"],
+      "forbidden_next_steps": [
+        "Begin 4A before 7A preregistration",
+        "Production activation of candidates",
+        "Compiler self-promotion"
+      ]
+    },
+    {
+      "id": "4B",
+      "charter_phase": 4,
+      "name": "candidate-ir-and-dossiers",
+      "artifact_id": "phase4b-candidate-ir-and-dossiers",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4A"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "4C",
+      "charter_phase": 4,
+      "name": "pattern-mining",
+      "artifact_id": "phase4c-pattern-mining",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4A", "4B", "3C"],
+      "forbidden_next_steps": [
+        "Treat failed bounded unification as committed split"
+      ]
+    },
+    {
+      "id": "4D",
+      "charter_phase": 4,
+      "name": "bounded-anti-unification",
+      "artifact_id": "phase4d-bounded-anti-unification",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4C"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "4E",
+      "charter_phase": 4,
+      "name": "applicability-inference",
+      "artifact_id": "phase4e-applicability-inference",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4B", "3C"],
+      "forbidden_next_steps": [
+        "Encode alternate procedures inside applicability predicates"
+      ]
+    },
+    {
+      "id": "4F",
+      "charter_phase": 4,
+      "name": "simulation-mutation-historical-replay",
+      "artifact_id": "phase4f-simulation-mutation-replay",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4B", "4E"],
+      "forbidden_next_steps": [
+        "Held-out transfer claims before mutation and replay reports"
+      ]
+    },
+    {
+      "id": "5A",
+      "charter_phase": 5,
+      "name": "strategy-ranker",
+      "artifact_id": "phase5a-strategy-ranker",
+      "status": "emerging_baseline",
+      "gate_status": "open_shadow_only",
+      "evidence_class": "repository_verified",
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Ranker introduces non-allowlisted strategies",
+        "Promote without beating rules baseline"
+      ]
+    },
+    {
+      "id": "5B",
+      "charter_phase": 5,
+      "name": "failure-predictor",
+      "artifact_id": "phase5b-failure-predictor",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["5D"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "5C",
+      "charter_phase": 5,
+      "name": "memory-utility",
+      "artifact_id": "phase5c-memory-utility",
+      "status": "emerging_baseline",
+      "gate_status": "open_shadow_only",
+      "evidence_class": "repository_verified",
+      "blocked_by": [],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "5D",
+      "charter_phase": 5,
+      "name": "calibration-and-shadow-evaluation",
+      "artifact_id": "phase5d-calibration-and-shadow-evaluation",
+      "status": "not_started",
+      "gate_status": "open",
+      "evidence_class": "proposed",
+      "blocked_by": [],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "6A",
+      "charter_phase": 6,
+      "name": "defined-experimental-datasets-only",
+      "artifact_id": "phase6a-defined-experimental-datasets",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7A"],
+      "forbidden_next_steps": [
+        "Collect data not named by the Phase 7A protocol"
+      ]
+    },
+    {
+      "id": "6B",
+      "charter_phase": 6,
+      "name": "natural-repositories",
+      "artifact_id": "phase6b-natural-repositories",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7A", "6A"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "6C",
+      "charter_phase": 6,
+      "name": "seeded-factorial-variants",
+      "artifact_id": "phase6c-seeded-factorial-variants",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7A", "6A"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "6D",
+      "charter_phase": 6,
+      "name": "negative-and-adversarial-cases",
+      "artifact_id": "phase6d-negative-and-adversarial-cases",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7A", "6A"],
+      "forbidden_next_steps": []
+    },
+    {
+      "id": "6E",
+      "charter_phase": 6,
+      "name": "held-out-repository-reservations",
+      "artifact_id": "phase6e-held-out-repository-reservations",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7A"],
+      "forbidden_next_steps": [
+        "Allow reserved targets to influence vocabulary, verifiers, predicates, or thresholds"
+      ]
+    },
+    {
+      "id": "7A",
+      "charter_phase": 7,
+      "name": "preregistration",
+      "artifact_id": "phase7a-preregistered-protocol",
+      "status": "not_started",
+      "gate_status": "required_before_4A",
+      "evidence_class": "proposed",
+      "priority": "next_conceptual_task_before_compiler",
+      "required_contents": [
+        "baseline_definitions_B0_B5",
+        "repository_and_lineage_partitioning",
+        "checkpoints",
+        "metrics",
+        "clustering_method",
+        "held_out_contamination_rules",
+        "falsification_criteria",
+        "protocol_deviation_amendment_policy"
+      ],
+      "blocked_by": [],
+      "forbidden_next_steps": [
+        "Begin 4A without frozen 7A protocol"
+      ]
+    },
+    {
+      "id": "7B",
+      "charter_phase": 7,
+      "name": "held-out-transfer",
+      "artifact_id": "phase7b-held-out-transfer",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "research_hypothesis",
+      "blocked_by": ["4F", "6E", "7A"],
+      "forbidden_next_steps": [
+        "Use adaptation targets as transfer evidence for the adapted version"
+      ]
+    },
+    {
+      "id": "7C",
+      "charter_phase": 7,
+      "name": "capability-governance",
+      "artifact_id": "phase7c-capability-governance",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["4F", "7A"],
+      "forbidden_next_steps": [
+        "Compiler-direct lifecycle mutation",
+        "Treat research shadow eligibility as production promotion"
+      ]
+    },
+    {
+      "id": "7D",
+      "charter_phase": 7,
+      "name": "authorized-shadow-execution",
+      "artifact_id": "phase7d-authorized-shadow-execution",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7C"],
+      "forbidden_next_steps": [
+        "Bypass approvals, scope, isolation, artifact identity, or verification"
+      ]
+    },
+    {
+      "id": "7E",
+      "charter_phase": 7,
+      "name": "chronological-b0-b5-experiment",
+      "artifact_id": "phase7e-chronological-b0-b5-experiment",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "research_hypothesis",
+      "checkpoints_canonical_engineering_episodes": [0, 100, 250, 500, 750, 1000],
+      "blocked_by": ["7A", "7D", "5D"],
+      "forbidden_next_steps": [
+        "Claim intelligence growth without B0-B5 comparison",
+        "Present episode count as independent repository sample count"
+      ]
+    },
+    {
+      "id": "7F",
+      "charter_phase": 7,
+      "name": "model-replacement-or-removal",
+      "artifact_id": "phase7f-model-replacement-or-removal",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "research_hypothesis",
+      "blocked_by": ["7E"],
+      "forbidden_next_steps": [
+        "Claim model independence without swap or removal condition"
+      ]
+    },
+    {
+      "id": "7G",
+      "charter_phase": 7,
+      "name": "capstone-consolidation-and-reproduction",
+      "artifact_id": "phase7g-capstone-consolidation-and-reproduction",
+      "status": "not_started",
+      "gate_status": "blocked",
+      "evidence_class": "proposed",
+      "blocked_by": ["7F"],
+      "forbidden_next_steps": [
+        "Submit without reproducible artifact index and commands"
+      ]
+    }
+  ]
+}
